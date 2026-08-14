@@ -16,6 +16,7 @@ fixture 的 teardown 里关闭，不留孤儿子进程。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -306,7 +307,9 @@ class TestTimeout:
         transport = StdioTransport(sys.executable, [str(script)], name="silent")
         await transport.start()
         try:
-            with pytest.raises(TimeoutError):
+            # 3.10 的 asyncio.TimeoutError 尚非内置 TimeoutError（3.11 才统一），
+            # 元组写法全版本兼容（3.11+ 二者为同一类）。
+            with pytest.raises((TimeoutError, asyncio.TimeoutError)):
                 await transport.request("initialize", {}, timeout=0.5)
         finally:
             await transport.close()
