@@ -6,6 +6,8 @@
 
 </div>
 
+[![tests](https://github.com/asmoc-alpha/openx/actions/workflows/test.yml/badge.svg)](https://github.com/asmoc-alpha/openx/actions/workflows/test.yml)
+
 English | [中文](README.zh.md)
 
 **Agentic coding CLI — chat with your codebase using LLMs.**
