@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 128" role="img" aria-label="OpenX mascot robot">
+  <style>
+    .ink { stroke: #0891b2; }
+    .eye { fill: #0891b2; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #67e8f9; }
+      .eye { fill: #67e8f9; }
+    }
+  </style>
+  <g class="ink" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="72" cy="26" r="7"/>
+    <path d="M72 33 V46"/>
+    <path d="M36 78 V54 Q36 46 44 46 H100 Q108 46 108 54 V78 Q108 86 100 86 H44 Q36 86 36 78 Z"/>
+    <path d="M72 86 V96"/>
+    <path d="M60 96 V106 Q60 114 68 114"/>
+    <path d="M84 96 V106 Q84 114 76 114"/>
+  </g>
+  <g class="eye" stroke="none">
+    <circle cx="60" cy="66" r="5"/>
+    <circle cx="84" cy="66" r="5"/>
+  </g>
+</svg>

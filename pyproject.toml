@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openx"
+version = "0.1.0"
+description = "OpenX - An open-source agentic coding CLI inspired by Claude Code"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "OpenX Contributors"}
+]
+keywords = ["cli", "coding-agent", "ai", "llm", "developer-tools"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "openai>=1.0.0",
+    # rich 私有接口依赖（Live._lock / LiveRender._shape / Console._lock，
+    # 见 services/streaming.py _ResizeAwareLive）：rich 13 的 stop() 最终
+    # 刷新 early-return 语义与 done/cancel 的光标算术假设不符；14 与 15
+    # 行为一致（已字节码级比对）。升级 16 前须复检上述私有面。
+    "rich>=14,<16",
+    "httpx>=0.25.0",
+    "pyperclip>=1.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+openx = "openx.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openx"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
