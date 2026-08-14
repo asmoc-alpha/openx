@@ -85,7 +85,7 @@ For agents, follow [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Contributing
 
-PRs welcome! Areas to help:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and PR guidelines. PRs welcome! Areas to help:
 
 - More tools (linting, testing frameworks, package managers)
 - Notebook editing support

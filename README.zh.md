@@ -80,7 +80,7 @@ Agent 请遵循 [docs/AGENTS.md](docs/AGENTS.md)。
 
 ## 贡献
 
-欢迎 PR！可以帮忙的方向：
+环境搭建与 PR 流程见 [CONTRIBUTING.zh.md](CONTRIBUTING.zh.md)。欢迎 PR！可以帮忙的方向：
 
 - 更多工具（lint、测试框架、包管理器）
 - Notebook 编辑支持
