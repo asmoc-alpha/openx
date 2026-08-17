@@ -283,7 +283,7 @@ class TestInteractiveWiring:
     async def test_stream_response_wires_and_clears_console_hooks(
         self, tmp_path, monkeypatch
     ):
-        from openx.cli.interactive import _stream_response
+        from openx.app.cli.interactive import _stream_response
 
         DeterministicLive.patch(monkeypatch)  # 流式全程无后台线程竞态
 

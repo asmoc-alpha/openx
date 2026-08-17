@@ -24,7 +24,7 @@ import json
 import pytest
 
 from openx.agent import OpenXAgent
-from openx.cli.single_shot import (
+from openx.app.cli.single_shot import (
     _run_json,
     _run_stream_json,
     run_single_shot,

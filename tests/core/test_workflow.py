@@ -571,7 +571,7 @@ class TestSlashCommand:
 
     @pytest.mark.asyncio
     async def test_no_args_lists_saved_workflows(self, tmp_path):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         wf = tmp_path / ".openx" / "workflows"
         wf.mkdir(parents=True)
@@ -592,7 +592,7 @@ class TestSlashCommand:
 
     @pytest.mark.asyncio
     async def test_no_args_empty_dir_shows_hint(self, tmp_path):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         agent = _make_agent(tmp_path, [])
         console = self._console(agent)
@@ -602,7 +602,7 @@ class TestSlashCommand:
 
     @pytest.mark.asyncio
     async def test_run_by_name(self, tmp_path, monkeypatch):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         wf = tmp_path / ".openx" / "workflows"
         wf.mkdir(parents=True)
@@ -625,7 +625,7 @@ class TestSlashCommand:
 
     @pytest.mark.asyncio
     async def test_unknown_name_prints_error_and_continues(self, tmp_path):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         agent = _make_agent(tmp_path, [])
         console = self._console(agent)

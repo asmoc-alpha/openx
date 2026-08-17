@@ -517,7 +517,7 @@ class PromptMixin:
         body = text[1:]
         if any(ch.isspace() for ch in body):
             return None  # 命令名已完整（正在写参数）→ 关菜单
-        from ...cli.commands import menu_entries
+        from ...app.cli.commands import menu_entries
         q = body.lower()
         items = [
             (name, desc, aliases)

@@ -501,7 +501,7 @@ class TestInstructionsInjection:
 class TestSingleShotMode:
     @pytest.mark.asyncio
     async def test_single_shot_forces_auto(self, tmp_path, monkeypatch):
-        from openx.cli.single_shot import run_single_shot
+        from openx.app.cli.single_shot import run_single_shot
 
         class MinimalConsole:
             mode = "manual"

@@ -34,10 +34,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..agent import OpenXAgent, ToolResultEvent, ToolStartEvent
-from ..image import is_image_file, image_to_base64_url, display_image, get_image_metadata
-from ..llm import StreamReasoning
-from ..ui.console import Console
+from ...agent import OpenXAgent, ToolResultEvent, ToolStartEvent
+from ...image import is_image_file, image_to_base64_url, display_image, get_image_metadata
+from ...llm import StreamReasoning
+from ...ui.console import Console
 
 # stream-json 单条 tool_result 输出的字符上限（防单事件撑爆管道缓冲）
 _STREAM_TOOL_OUTPUT_LIMIT = 2000

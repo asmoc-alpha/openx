@@ -33,11 +33,11 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
-from ..ui._components.prompt import paste_aware_input
+from ...ui._components.prompt import paste_aware_input
 
 if TYPE_CHECKING:
-    from ..agent import OpenXAgent
-    from ..ui.console import Console
+    from ...agent import OpenXAgent
+    from ...ui.console import Console
 
 # ── registry ────────────────────────────────────────────────────
 
@@ -145,7 +145,7 @@ async def _cmd_clear(agent, console, args):
 
 @register("model", description="Switch LLM model (e.g., /model gpt-4o)")
 async def _cmd_model(agent, console, args):
-    from ..config import OpenXConfig
+    from ...config import OpenXConfig
 
     # 带参数：直接切换（兼容旧行为）
     if args:
@@ -186,7 +186,7 @@ async def _cmd_model(agent, console, args):
         return True
 
     if choice == "__manual__":
-        from ..ui._style import PROMPT_STYLE
+        from ...ui._style import PROMPT_STYLE
         console.raw.print()
         value = paste_aware_input(console.raw, 
             f"  [{PROMPT_STYLE}]Model name[/{PROMPT_STYLE}]: "
@@ -303,8 +303,8 @@ async def _cmd_image(agent, console, args):
     if not args:
         console.print_warning("Usage: /image <path-to-image> [optional prompt]")
         return True
-    from ..image import is_image_file, image_to_base64_url, display_image, get_image_metadata
-    from ..services.streaming import StreamingService
+    from ...image import is_image_file, image_to_base64_url, display_image, get_image_metadata
+    from ...services.streaming import StreamingService
 
     image_path = Path(args[0]).expanduser().resolve()
     if not image_path.is_file() or not is_image_file(image_path):
@@ -345,13 +345,13 @@ async def _cmd_image(agent, console, args):
 
 @register("clipboard", description="Paste and analyze a clipboard screenshot")
 async def _cmd_clipboard(agent, console, args):
-    from ..image import (
+    from ...image import (
         check_clipboard_for_image,
         save_clipboard_image,
         display_image,
         image_to_base64_url,
     )
-    from ..services.streaming import StreamingService
+    from ...services.streaming import StreamingService
 
     png_data = check_clipboard_for_image()
     if png_data is None:
@@ -386,7 +386,7 @@ async def _cmd_clipboard(agent, console, args):
 
 @register("init", description="Create an OPENX.md instruction file")
 async def _cmd_init(agent, console, args):
-    from ..instructions import scaffold_openx_md
+    from ...instructions import scaffold_openx_md
 
     try:
         path, existed = scaffold_openx_md(agent.workspace)
@@ -440,12 +440,12 @@ async def _cmd_instructions(agent, console, args):
 
 @register("config", description="Show current configuration and edit model / API settings")
 async def _cmd_config(agent, console, args):
-    from ..config import OpenXConfig
-    from ..ui._style import PROMPT_STYLE
+    from ...config import OpenXConfig
+    from ...ui._style import PROMPT_STYLE
     c = agent.config
 
     def _show() -> None:
-        from ..ui._helpers import mask_key
+        from ...ui._helpers import mask_key
         console.raw.print(
             f"\n[bold]Configuration[/bold]\n\n"
             f"  Model:        [cyan]{c.model}[/cyan]\n"
@@ -482,7 +482,7 @@ async def _cmd_config(agent, console, args):
 
     def _add_model_profile() -> None:
         """交互式添加一个新的模型配置。"""
-        from ..ui._helpers import mask_key
+        from ...ui._helpers import mask_key
         console.raw.print("\n[bold]Add Model Profile[/bold]\n")
         name = paste_aware_input(console.raw, 
             f"  [{PROMPT_STYLE}]Profile name[/{PROMPT_STYLE}] "
@@ -572,7 +572,7 @@ async def _cmd_config(agent, console, args):
                 _apply("OPENX_BASE_URL", "api_base", value)
                 console.print_success(f"API base set to {value}")
         elif choice == "key":
-            from ..ui._helpers import mask_key
+            from ...ui._helpers import mask_key
             console.raw.print()
             disp = mask_key(c.api_key) if c.api_key else "(not set)"
             value = paste_aware_input(console.raw, 
@@ -614,7 +614,7 @@ async def _cmd_tips(agent, console, args):
 @register("release-notes", description="Browse release notes — pick a version to view",
           aliases=["release"])
 async def _cmd_release_notes(agent, console, args):
-    from ..ui._components.layout import LayoutMixin
+    from ...ui._components.layout import LayoutMixin
 
     # /release <version> → 直达指定版本
     if args:
@@ -750,8 +750,8 @@ async def _cmd_hooks(agent, console, args):
 
 @register("mcp", description="Manage MCP servers (status / add / remove)")
 async def _cmd_mcp(agent, console, args):
-    from ..config import OpenXConfig
-    from ..ui._style import PROMPT_STYLE
+    from ...config import OpenXConfig
+    from ...ui._style import PROMPT_STYLE
 
     subcmd = args[0].lower() if args else ""
 
@@ -865,11 +865,11 @@ async def _cmd_mcp(agent, console, args):
     aliases=["skills"],
 )
 async def _cmd_skill(agent, console, args):
-    from ..skills import (
+    from ...skills import (
         load_skills, install_skill, install_skill_from_content,
         uninstall_skill, GLOBAL_SKILLS_DIR,
     )
-    from ..ui._style import PROMPT_STYLE
+    from ...ui._style import PROMPT_STYLE
 
     subcmd = args[0].lower() if args else ""
 
@@ -1047,7 +1047,7 @@ async def _cmd_workflow(agent, console, args):
     # 所有 handler 都是 async 且由 handle_slash_command await 调度（/compact
     # 同款先例），因此这里直接跑引擎即可——此时 REPL 没有活跃的 Live 区域，
     # 子代理走非流式 child.run()，绝不争抢终端。
-    from ..core.workflow import WorkflowEngine, WorkflowError, list_workflows, load_workflow
+    from ...core.workflow import WorkflowEngine, WorkflowError, list_workflows, load_workflow
 
     if not args:
         rows = list_workflows(str(agent.workspace))
@@ -1127,7 +1127,7 @@ async def _cmd_compact(agent, console, args):
     aliases=["cmem"],
 )
 async def _cmd_cmemory(agent, console, args):
-    from ..coding_memory import CATEGORIES
+    from ...coding_memory import CATEGORIES
 
     store = agent.coding_memory
     subcmd = args[0].lower() if args else ""

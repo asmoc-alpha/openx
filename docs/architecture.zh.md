@@ -55,7 +55,7 @@ openx/
 │   │   └── exploration.py # 项目概览探测
 │   ├── ui/                # Rich TUI：console、内嵌输入框、对话框、输入捕获
 │   └── utils/             # 路径、文本、错误辅助
-├── tests/
+├── tests/                 # 子目录与 openx/ 布局对应（core/ llm/ services/ tools/ ui/ mcp/）
 ├── docs/
 ├── pyproject.toml
 └── README.md

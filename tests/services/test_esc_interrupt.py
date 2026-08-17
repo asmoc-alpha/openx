@@ -351,7 +351,7 @@ def _real_console() -> Console:
 
 class TestEndToEndEsc:
     async def test_esc_interrupts_and_returns_to_repl(self, deterministic_live):
-        from openx.cli.interactive import _stream_response
+        from openx.app.cli.interactive import _stream_response
 
         agent = FakeAgent()
         console = _real_console()
@@ -382,7 +382,7 @@ class TestEndToEndEsc:
 
     async def test_ctrl_c_still_raises_keyboardinterrupt(self, deterministic_live):
         """Ctrl-C 语义保持：清理后以 KeyboardInterrupt 上抛（退出 REPL）。"""
-        from openx.cli.interactive import _stream_response
+        from openx.app.cli.interactive import _stream_response
 
         class CtrlCAgent(FakeAgent):
             async def stream_run(self, content):

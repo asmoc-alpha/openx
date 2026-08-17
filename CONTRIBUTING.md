@@ -18,10 +18,10 @@ python -m pytest tests -q     # run the test suite
 ## Tests
 
 - `pytest-asyncio` runs in `auto` mode — write async tests directly, no decorators needed.
-- Prefer hand-written fakes (`FakeLLM`, `FakeConsole` in `tests/`) over `unittest.mock`.
+- Prefer hand-written fakes (`FakeLLM`, `FakeConsole` in `tests/test_bugfixes.py`) over `unittest.mock`.
 - Terminal UI behavior is tested with [pyte](https://pypi.org/project/pyte/) screen
-  simulation and real-pty end-to-end harnesses — see `tests/test_terminal_interaction.py`
-  and `tests/test_esc_interrupt.py` for the established patterns.
+  simulation and real-pty end-to-end harnesses — see `tests/services/test_terminal_interaction.py`
+  and `tests/services/test_esc_interrupt.py` for the established patterns.
 - Settings/sessions/tasks paths are monkeypatched via module constants; never touch real
   user state in tests.
 

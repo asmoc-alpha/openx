@@ -57,7 +57,7 @@ openx/
 │   │   └── exploration.py # Project overview detection
 │   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
 │   └── utils/             # Path, text, and error helpers
-├── tests/
+├── tests/                 # Subdirs mirror the openx/ layout (core/ llm/ services/ tools/ ui/ mcp/)
 ├── docs/
 ├── pyproject.toml
 └── README.md

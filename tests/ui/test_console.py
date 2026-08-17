@@ -263,7 +263,7 @@ class TestEOFHandling:
         # print_user_prompt 返回 None（EOF）：REPL 恰好提示一次就退出，
         # 而不是反复拿到空输入空转。Prompt exactly once on EOF — no loop.
         from openx.agent import OpenXAgent
-        from openx.cli.interactive import run_interactive
+        from openx.app.cli.interactive import run_interactive
         from openx.mcp.manager import MCPManager
 
         config = OpenXConfig()

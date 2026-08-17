@@ -17,10 +17,10 @@ python -m pytest tests -q     # 跑测试
 ## 测试
 
 - `pytest-asyncio` 为 `auto` 模式——直接写 async 测试，无需装饰器。
-- 用手写 fake（`tests/` 里的 `FakeLLM`、`FakeConsole`），不用 `unittest.mock`。
+- 用手写 fake（`tests/test_bugfixes.py` 里的 `FakeLLM`、`FakeConsole`），不用 `unittest.mock`。
 - 终端 UI 行为用 [pyte](https://pypi.org/project/pyte/) 屏幕模拟和真实 pty 端到端
-  harness 测试——参考 `tests/test_terminal_interaction.py` 与
-  `tests/test_esc_interrupt.py` 的既有模式。
+  harness 测试——参考 `tests/services/test_terminal_interaction.py` 与
+  `tests/services/test_esc_interrupt.py` 的既有模式。
 - settings/sessions/tasks 路径通过模块常量 monkeypatch；测试绝不触碰真实用户状态。
 
 任何用户可见的行为变更都应带回归测试。

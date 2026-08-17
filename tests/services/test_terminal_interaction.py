@@ -194,7 +194,7 @@ class TestCursorVisibility:
         self, deterministic_live, tmp_path
     ):
         """KeyboardInterrupt 打断流式：cancel 恢复光标后再上抛。"""
-        from openx.cli.interactive import _stream_response
+        from openx.app.cli.interactive import _stream_response
         from openx.config import OpenXConfig
         from openx.ui.console import Console
 

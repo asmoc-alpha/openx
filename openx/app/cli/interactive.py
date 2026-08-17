@@ -23,16 +23,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..agent import OpenXAgent
-from ..core.hooks import build_userprompt_payload
-from ..image import (
+from ...agent import OpenXAgent
+from ...core.hooks import build_userprompt_payload
+from ...image import (
     extract_image_paths,
     image_to_base64_url,
     display_image,
 )
-from ..instructions import ProjectInfo
-from ..services.streaming import StreamingService
-from ..ui.console import Console
+from ...instructions import ProjectInfo
+from ...services.streaming import StreamingService
+from ...ui.console import Console
 from .commands import handle_slash_command
 
 

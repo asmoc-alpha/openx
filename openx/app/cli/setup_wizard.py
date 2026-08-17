@@ -17,8 +17,8 @@ if __name__ == "__main__" and not __package__:
     _sys.path.insert(0, str(_root))
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
-from ..config import OpenXConfig
-from ..ui.console import Console
+from ...config import OpenXConfig
+from ...ui.console import Console
 
 
 async def run_setup_wizard() -> dict:

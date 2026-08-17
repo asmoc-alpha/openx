@@ -100,7 +100,7 @@ def _executor(hooks_cfg, tmp_path, console=None, session="t0"):
 def _make_agent(tmp_path, responses):
     """构造挂载 FakeLLM 的 OpenXAgent（绕过真实 API 与 settings.json）。"""
     from openx.agent import OpenXAgent
-    from .test_bugfixes import FakeLLM
+    from ..test_bugfixes import FakeLLM
 
     config = OpenXConfig()
     config.workspace = str(tmp_path)

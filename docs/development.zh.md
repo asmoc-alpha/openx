@@ -28,12 +28,12 @@ openx "fix the failing test"   # 单次模式
 ## 测试
 
 ```bash
-pytest                             # 全套
-pytest tests/test_core.py          # 单文件
-pytest tests/test_core.py -k edit  # 按名称过滤
+pytest                                        # 全套
+pytest tests/tools/test_tools_base.py         # 单文件
+pytest tests/tools/test_tools_base.py -k edit # 按名称过滤
 ```
 
-收集范围限定在 `tests/`（`pyproject.toml` 的 `testpaths`），async 测试无需装饰器（`asyncio_mode = "auto"`）。
+收集范围限定在 `tests/`（`pyproject.toml` 的 `testpaths`），async 测试无需装饰器（`asyncio_mode = "auto"`）。测试文件按与 `openx/` 包结构对应的子目录组织（`tests/core/`、`tests/llm/`、`tests/services/`、`tests/tools/`、`tests/ui/`、`tests/mcp/`）；顶层模块（`agent`、`main`、`image`、`instructions`）的测试放在 `tests/` 根目录。
 
 ## Lint
 

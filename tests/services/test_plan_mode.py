@@ -293,7 +293,7 @@ class TestModeCommand:
     async def test_switch_plan_and_back_with_auto_approve_roundtrip(
         self, tmp_path, monkeypatch
     ):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         agent = _make_agent(tmp_path, monkeypatch)
         agent.tool_executor.auto_approve = True  # 起始开启
@@ -324,7 +324,7 @@ class TestModeCommand:
 
     @pytest.mark.asyncio
     async def test_no_args_shows_current_mode(self, tmp_path, monkeypatch):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         agent = _make_agent(tmp_path, monkeypatch)
         console = FakeModeConsole(mode=agent.mode)
@@ -335,7 +335,7 @@ class TestModeCommand:
 
     @pytest.mark.asyncio
     async def test_invalid_arg_warns_and_keeps_mode(self, tmp_path, monkeypatch):
-        from openx.cli.commands import handle_slash_command
+        from openx.app.cli.commands import handle_slash_command
 
         agent = _make_agent(tmp_path, monkeypatch)
         console = FakeModeConsole(mode=agent.mode)

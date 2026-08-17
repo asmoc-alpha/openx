@@ -40,7 +40,7 @@ from openx.ui.console import Console
 
 class TestMenuEntries:
     def test_sorted_and_described(self):
-        from openx.cli.commands import menu_entries
+        from openx.app.cli.commands import menu_entries
         entries = menu_entries()
         names = [n for n, _, _ in entries]
         assert names == sorted(names)
@@ -49,7 +49,7 @@ class TestMenuEntries:
         assert descs["help"]  # 有描述
 
     def test_aliases_grouped(self):
-        from openx.cli.commands import menu_entries
+        from openx.app.cli.commands import menu_entries
         by_name = {n: a for n, _, a in menu_entries()}
         assert "exit" in by_name["quit"] and "q" in by_name["quit"]
 

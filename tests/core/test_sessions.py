@@ -64,7 +64,7 @@ def _make_agent(tmp_path, responses, session_store=None, session_id=None):
     """构造挂载 FakeLLM 的 OpenXAgent（绕过真实 API 与 settings.json）。"""
     from openx.agent import OpenXAgent
     from openx.permissions import PermissionRules
-    from .test_bugfixes import FakeLLM
+    from ..test_bugfixes import FakeLLM
 
     config = OpenXConfig()
     config.workspace = str(tmp_path)

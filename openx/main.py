@@ -31,9 +31,9 @@ from .config import OpenXConfig
 from .agent import OpenXAgent
 from .core.sessions import SessionMeta, SessionStore, resolve_by_id, resolve_latest
 from .ui.console import Console
-from .cli.setup_wizard import run_setup_wizard
-from .cli.interactive import run_interactive
-from .cli.single_shot import run_single_shot
+from .app.cli.setup_wizard import run_setup_wizard
+from .app.cli.interactive import run_interactive
+from .app.cli.single_shot import run_single_shot
 
 # --resume 不带值时的哨兵：进入交互式会话选择器
 _PICK_SENTINEL = "__pick__"
