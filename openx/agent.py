@@ -488,6 +488,16 @@ class OpenXAgent:
         if mcp is not None:
             registry.update(mcp.tools)
 
+        # 插件工具（微内核 P1）：仅顶层 agent 载入，子代理不继承
+        # （同 task/exit_plan_mode 等结构性工具待遇）；与内置重名时
+        # 内置优先（merge_tools 跳过并记 inventory 警告）。
+        if self._parent is None:
+            from .kernel import get_kernel
+
+            kernel = get_kernel()
+            kernel.ensure_loaded(str(self.workspace))
+            kernel.merge_tools(registry)
+
         # 子代理工具裁剪（Phase 8）：先结构性排除（task/ask_user/
         # exit_plan_mode），再按规格白名单取交集（None → 保留全部剩余）。
         if self._parent is not None:

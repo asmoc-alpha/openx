@@ -71,18 +71,29 @@ def register(
 
 
 def find_handler(name: str) -> Optional[Callable[..., Awaitable[bool]]]:
-    """Return the handler for *name*, or ``None``."""
+    """Return the handler for *name*, or ``None``.
+
+    内置优先；未命中才查插件命令注册表（微内核 P1）。
+    """
     if name in _commands:
         return _commands[name]
     canonical = _aliases.get(name)
     if canonical:
         return _commands.get(canonical)
-    return None
+    from ...kernel import get_kernel
+
+    return get_kernel().lookup_command(name)
 
 
 def all_descriptions() -> dict[str, str]:
     """Return ``{name: description}`` for every registered command."""
-    return dict(_descriptions)
+    desc = dict(_descriptions)
+    from ...kernel import get_kernel
+
+    # 插件命令并入帮助；内置名优先（setdefault 不覆盖）。
+    for name, d, _ in get_kernel().command_menu_entries():
+        desc.setdefault(name, d)
+    return desc
 
 
 def menu_entries() -> list[tuple[str, str, list[str]]]:
@@ -90,14 +101,24 @@ def menu_entries() -> list[tuple[str, str, list[str]]]:
 
     输入框键入 ``/`` 时的候选列表数据源（v0.4.2）。别名按规范名归组，
     补全匹配同时命中主名与别名（菜单仅展示主名 + 别名提示）。
+    插件命令追加其后（微内核 P1）；与内置重名时内置优先并记警告。
     """
     by_canonical: dict[str, list[str]] = {}
     for alias, canonical in _aliases.items():
         by_canonical.setdefault(canonical, []).append(alias)
-    return [
+    entries = [
         (name, _descriptions.get(name, ""), sorted(by_canonical.get(name, [])))
         for name in sorted(_commands)
     ]
+    from ...kernel import get_kernel
+
+    kernel = get_kernel()
+    for name, desc, aliases in kernel.command_menu_entries():
+        if name in _commands or name in _aliases:
+            kernel.note_command_conflict(name)
+            continue
+        entries.append((name, desc, aliases))
+    return entries
 
 
 async def handle_slash_command(
@@ -131,6 +152,17 @@ async def _cmd_quit(agent, console, args):
 @register("help", description="Show all available commands")
 async def _cmd_help(agent, console, args):
     console.print_help()
+    return True
+
+
+@register("plugins", description="List loaded plugins and their contributions")
+async def _cmd_plugins(agent, console, args):
+    """微内核 inventory 面板：阶段/贡献/警告，只读投影。"""
+    from ...kernel import get_kernel
+
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+    console.print_plugins(kernel.inventory())
     return True
 
 

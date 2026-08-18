@@ -19,9 +19,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from rich.markup import escape
+
 from .._helpers import box_rounded
 from .._style import (
-    ACCENT, CHROME, DIM, MARK_INFO, MARK_OK, MARK_PENDING, SUCCESS_STYLE,
+    ACCENT, CHROME, DIM, MARK_FAIL, MARK_INFO, MARK_OK, MARK_PENDING,
+    MARK_WARN, SUCCESS_STYLE,
 )
 
 
@@ -29,6 +32,43 @@ class MiscMixin:
     """Todo list, cost summary, image metadata, and file diff display."""
 
     _console: object
+
+    # ── plugins（微内核 inventory 面板）────────────────────────
+
+    def print_plugins(self, infos: list) -> None:
+        """Render the kernel inventory: phase, contributions, warnings.
+
+        ``infos`` 为 ``openx.kernel.PluginInfo`` 列表（只读投影）。
+        动态字段一律 escape——插件 id/警告可含方括号，防 MarkupError。
+        """
+        if not infos:
+            self._console.print(
+                "[dim]No plugins loaded. Drop .py modules into "
+                "~/.openx/plugins/ or .openx/plugins/.[/dim]"
+            )
+            return
+        for info in infos:
+            if info.phase == "active":
+                marker, style = f"{MARK_OK} active", SUCCESS_STYLE
+            elif info.phase == "failed":
+                marker, style = f"{MARK_FAIL} failed", "red"
+            elif info.phase == "disabled":
+                marker, style = f"{MARK_PENDING} disabled", DIM
+            else:
+                marker, style = f"{MARK_PENDING} {escape(info.phase)}", DIM
+            parts = [f"[{style}]{marker}[/] {escape(info.id)} [dim]({escape(info.source)})[/dim]"]
+            contrib = []
+            if info.tools:
+                contrib.append("tools: " + ", ".join(escape(t) for t in info.tools))
+            if info.commands:
+                contrib.append("commands: " + ", ".join(escape(c) for c in info.commands))
+            if contrib:
+                parts.append("[dim]·[/] " + " [dim]·[/] ".join(contrib))
+            self._console.print(" ".join(parts))
+            if info.error:
+                self._console.print(f"    [red]{MARK_FAIL} {escape(info.error)}[/red]")
+            for w in info.warnings:
+                self._console.print(f"    [dim]{MARK_WARN} {escape(w)}[/dim]")
 
     # ── todos ───────────────────────────────────────────────────
 

@@ -171,6 +171,18 @@ class OpenXConfig:
             return True
         return False
 
+    # ── Plugin management（微内核 P1）─────────────────────────
+
+    @staticmethod
+    def load_plugin_settings() -> dict:
+        """Plugin settings from the top-level ``plugins`` key.
+
+        Example::
+
+            {"plugins": {"disabled": ["noisy_plugin"]}}
+        """
+        return OpenXConfig._load_full_settings().get("plugins", {})
+
     # ── MCP server management ──────────────────────────────────────
 
     @staticmethod
