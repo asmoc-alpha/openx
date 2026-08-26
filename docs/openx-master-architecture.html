@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OpenX 总架构（v4 · 会消融的 harness · 详注）</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #fff; color: #222; margin: 0; padding: 40px 46px; }
+  h1 { font-size: 23px; font-weight: 700; margin: 0 0 6px; }
+  .sub { font-size: 14px; color: #777; margin: 0 0 14px; line-height: 1.7; }
+  .crit { font-size: 14px; color: #333; margin: 0 0 14px; line-height: 1.9; }
+  .crit b { background: #333; color: #fff; font-weight: 600; padding: 2px 8px; border-radius: 2px; margin-right: 5px; }
+  .legend { font-size: 13px; color: #555; margin: 0 0 20px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         margin: 0 5px 0 12px; vertical-align: middle; }
+  .d-have { background: #7fbf7f; } .d-evo { background: #e6a23c; } .d-new { background: #5b8def; }
+  .d-pend { background: #999; } .d-decay { background: #b98fd6; } .d-plug { background: #8e6bb5; }
+  .box { border: 1.5px solid #333; border-radius: 2px; box-sizing: border-box; position: relative; }
+  .t { font-size: 15px; letter-spacing: .3px; font-weight: 600; }
+  .s { font-size: 12.5px; color: #555; margin-top: 4px; line-height: 1.6; }
+  .tag { position: absolute; top: 5px; right: 6px; font-size: 10.5px; padding: 1px 6px;
+         border-radius: 2px; color: #fff; }
+  .tag.have { background: #7fbf7f; } .tag.evo { background: #e6a23c; } .tag.new { background: #5b8def; }
+  .tag.pend { background: #999; } .tag.inv { background: #000; } .tag.decay { background: #b98fd6; }
+  .tag.plug { background: #8e6bb5; }
+  .layerlabel { font-size: 14px; color: #555; font-weight: 600; margin: 15px 0 6px 2px; }
+  .strip { display: flex; gap: 10px; }
+  .strip .box { flex: 1; padding: 10px 9px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+  .thin .box { background: #f2f2f2; border-width: 1.2px; }
+  .arrowrow { display: flex; justify-content: center; gap: 56px; color: #999; font-size: 13px; margin: 6px 0; }
+
+  /* 组合输入 */
+  .comp { display: flex; gap: 10px; align-items: stretch; }
+  .comp .box { flex: 1; padding: 10px; text-align: center; display: flex; flex-direction: column; justify-content: center; background: #f2f2f2; }
+  .comp .merge { flex: none; border: none; display: flex; align-items: center; font-size: 18px; }
+  .comp .out { background: #fff; }
+  .comp .profile { background: #e8d9f5; }
+
+  /* 中部双列 */
+  .mid { display: flex; gap: 12px; align-items: stretch; }
+  .col { flex: 1; display: flex; flex-direction: column; }
+
+  /* 协议层 */
+  .proto { border: 3px double #333; background: #eef2fb; padding: 10px; display: flex; gap: 10px; }
+  .proto .box { flex: 1; background: #fff; padding: 9px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+
+  /* TCB */
+  .tcb { border: 4px dashed #000; padding: 16px 12px 12px; position: relative; margin-top: 12px; }
+  .tcb .tcbl { position: absolute; top: -14px; left: 18px; background: #000; color: #fff;
+               font-size: 13px; font-weight: 700; padding: 3px 12px; }
+  .kernel { background: #e3ecfa; border-width: 3px; border-style: double; padding: 12px; }
+  .row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .pad { padding: 9px 11px; }
+  .cap { font-size: 14px; font-weight: 700; margin-bottom: 7px; }
+
+  .pipe { display: flex; gap: 5px; align-items: stretch; }
+  .pipe .st { flex: 1; background: #fff; border: 1.5px solid #333; padding: 7px; text-align: center;
+              display: flex; flex-direction: column; justify-content: center; }
+  .pipe .st .t { font-size: 13px; }
+  .pipe .st .s { font-size: 11px; }
+  .pipe .ar { flex: none; border: none; display: flex; align-items: center; font-size: 15px; }
+
+  .regs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .reg { border: 1.5px solid #333; background: #fff; font-size: 12.5px; padding: 5px 9px; }
+  .reg .c { color: #666; }
+
+  .duty { background: #fff; }
+  .duty-guard { background: #f4d9d9; }
+  .duty-ledger { background: #dcead2; }
+
+  /* loop 与零件 */
+  .loopbox { border-width: 2.5px; background: #fdf6ec; padding: 11px; margin-top: 12px; }
+  .parts { display: flex; gap: 8px; margin-top: 8px; }
+  .parts .box { flex: 1; background: #fff; padding: 8px 6px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+
+  .slots { display: flex; gap: 8px; margin-top: 10px; }
+  .slots .box { flex: 1; background: #fff; padding: 8px 7px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+  .slots .open { background: #d7e3f4; }
+  .slots .shut { border-style: dashed; background: #fafafa; }
+
+  /* 插件脊 */
+  .spine-plug { width: 300px; flex: none; background: #efe6f7; border-width: 2.5px;
+                padding: 12px; display: flex; flex-direction: column; }
+  .spine-plug .title { font-size: 15.5px; font-weight: 700; text-align: center; margin-bottom: 3px; }
+  .spine-plug .subtitle { font-size: 11.5px; color: #666; text-align: center; margin-bottom: 10px; }
+  .spine-plug .stage { background: #fff; border: 1.5px solid #333; padding: 8px 9px; }
+  .spine-plug .stage .t { font-size: 13.5px; }
+  .spine-plug .stage .s { font-size: 11.5px; margin-top: 2px; }
+  .spine-plug .down { text-align: center; color: #666; font-size: 14px; margin: 3px 0; }
+  .spine-plug .ports { margin-top: 10px; background: #fff; border: 1.2px solid #555; padding: 8px 9px; }
+  .spine-plug .ports .cap { font-size: 12.5px; margin-bottom: 5px; }
+  .spine-plug .ports .p { font-size: 11.5px; color: #444; line-height: 1.7; }
+  .spine-plug .ports .p b { color: #5a3d7a; }
+
+  /* 脚手架 */
+  .scfld { display: flex; flex-wrap: wrap; gap: 10px; }
+  .scfld .box { flex: 1 1 30%; padding: 10px 9px; background: #faf6fd; }
+  .scfld .box.stay { background: #dcead2; }
+  .scfld .why { font-size: 11.5px; color: #555; margin-top: 5px; line-height: 1.6; text-align: left; }
+  .scfld .why b { color: #7a4fa0; font-weight: 600; }
+
+  /* 演进方向 + 棘轮 */
+  .trend { display: flex; gap: 10px; }
+  .trend .box { flex: 1; padding: 11px; display: flex; flex-direction: column; justify-content: center; }
+  .trend .thin-dir { background: #f4ecfa; border-style: dashed; }
+  .trend .grow-dir { background: #e9e9e9; border-width: 2.5px; }
+
+  .ratchet { border: 2.5px solid #333; background: #c8ccf1; padding: 10px 12px; }
+  .ratchet .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ratchet .chip { border: 1.2px solid #555; background: #fff; font-size: 12.5px; padding: 4px 8px; }
+  .ratchet .chip .c { color: #666; }
+
+  /* 演进表 */
+  .evo { max-width: 1060px; border-collapse: collapse; margin-top: 4px; }
+  .evo th, .evo td { border: 1.2px solid #555; font-size: 13px; padding: 6px 10px; text-align: left; line-height: 1.6; }
+  .evo th { background: #e9e9e9; }
+  .evo td.n { color: #2e7d32; font-weight: 600; text-align: center; white-space: nowrap; }
+
+  .invariants { border: 3px solid #000; background: #e9e9e9; padding: 10px 12px; }
+  .invariants .cap { font-size: 14px; font-weight: 700; margin-bottom: 7px; }
+  .invariants .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .invariants .chips .chip { background: #fff; border-color: #000; font-size: 12.5px; padding: 4px 8px; }
+
+  .note { margin-top: 18px; font-size: 13.5px; color: #666; line-height: 1.9; max-width: 1060px; }
+  .note b { color: #333; }
+
+  .gloss { margin-top: 30px; border-top: 3px solid #333; padding-top: 18px; max-width: 1060px; }
+  .gloss h2 { font-size: 19px; margin: 0 0 12px; }
+  .gloss h3 { font-size: 15px; margin: 18px 0 8px; border-left: 5px solid #333; padding-left: 9px; }
+  .gloss dl { margin: 0; }
+  .gloss dt { font-size: 14.5px; font-weight: 700; margin-top: 10px; }
+  .gloss dt .st { font-weight: 400; font-size: 11.5px; color: #fff; border-radius: 2px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px; }
+  .st.have { background: #7fbf7f; } .st.evo { background: #e6a23c; } .st.new { background: #5b8def; }
+  .st.pend { background: #999; } .st.inv { background: #000; } .st.decay { background: #b98fd6; } .st.plug { background: #8e6bb5; }
+  .gloss dd { margin: 3px 0 0 0; font-size: 13.5px; color: #444; line-height: 1.75; }
+</style>
+</head>
+<body>
+<h1>OpenX 总架构 -- 会消融的 harness</h1>
+<p class="sub">五层骨架：端（薄）-> 协议（账本外化）-> 内核（编排 / 沙箱执行 / 插件维护 / 记账）-> 循环与零件（全可换）-> 插件层（纵贯四层，模型配对 + 内核插入）<br>base bundle = f(模型能力档案) · 双棘轮：安全只紧不松，能力随模型实测双向 · 换模型 / 加端 / 装插件 / 换循环，内核零改动</p>
+<p class="crit">
+  <b>标准一</b>内核只留装配·把关·记账，其余皆可拆　<b>标准二</b>安全棘轮只紧不松　<b>标准三</b>每个脚手架必须声明 compensates 与 exit_when　<b>标准四</b>不加载 ≡ 现状　<b>标准五</b>base bundle = f(模型能力档案)，换模型零代码改动　<b>标准六</b>插件：模型只配对、内核才定位；贡献点由内核枚举
+</p>
+<p class="legend">
+  <span class="dot d-have"></span>已有<span class="dot d-evo"></span>演进<span class="dot d-new"></span>新增<span class="dot d-decay"></span>脚手架（将消融）<span class="dot d-plug"></span>插件层<span class="dot d-pend"></span>待定　·　虚线 = 按需 / 待定 / 消融方向　·　黑虚线包围圈 = TCB　·　灰底黑框 = 内核不变量
+</p>
+
+<div class="layerlabel">⓪ 组合输入 -- 模型能力档案是第一输入源</div>
+<div class="comp">
+  <div class="box profile"><span class="tag new">新增</span><div class="t">模型能力档案</div><div class="s">按模型版本声明：context / native_summarization / native_planning / parallel_tools / self_correction …</div></div>
+  <div class="merge">＋</div>
+  <div class="box"><div class="t">用户 overlay</div><div class="s">~/.openx/openx.yml · 增删替换 · 开关插件</div></div>
+  <div class="merge">＋</div>
+  <div class="box"><div class="t">项目 overlay</div><div class="s">.openx/openx.yml · 项目级补丁</div></div>
+  <div class="merge">⟶</div>
+  <div class="box out"><div class="t">动态 base bundle</div><div class="s">出厂组合 = f(档案) 的计算结果 · 换模型 / 升级 -> 组合自动变化，零代码改动</div></div>
+</div>
+
+<div class="layerlabel">① 端层 -- 薄客户端，只做渲染与上送，零 agent 逻辑</div>
+<div class="strip thin">
+  <div class="box"><span class="tag have">已有</span><div class="t">CLI / TUI</div><div class="s">参照实现 · 流式渲染 / 热键 / fleet 视图 · 语义最全的协议消费者</div></div>
+  <div class="box"><span class="tag new">新增</span><div class="t">DESKTOP</div><div class="s">系统级：剪贴板 / 截图 / 全局热键 / 通知 · 能力经意图流上送</div></div>
+  <div class="box"><span class="tag new">新增</span><div class="t">WEB</div><div class="s">会话共享链接 · 远程批准 · 复盘回放</div></div>
+  <div class="box" style="border-style:dashed"><span class="tag new">远期</span><div class="t">IDE / 移动伴随</div><div class="s">加端 = 写一个客户端 · 内核零改动</div></div>
+</div>
+
+<div class="arrowrow"><span>▲ 事件流（text / thinking / tool / permission_request / ui_slot / state）</span><span>▼ 意图流（message / approve / interrupt / queue）</span></div>
+
+<div class="mid">
+
+<div class="col">
+
+  <div class="proto">
+    <div class="box"><span class="tag evo">演进</span><div class="t">双向会话协议</div><div class="s">事件流↓ 意图流↑ · 版本化 + 能力协商 · 扩展走命名空间（x-*.*)</div></div>
+    <div class="box"><span class="tag new">新增</span><div class="t">openx serve</div><div class="s">会话长存服务端 · 多端 attach 同一会话 · 关终端 agent 继续跑</div></div>
+    <div class="box"><span class="tag evo">演进</span><div class="t">会话存储</div><div class="s">账本可重放 · 回放 = 把存储的事件流再发一遍 · UI 插件事件同 schema</div></div>
+  </div>
+
+  <div class="tcb">
+  <div class="tcbl">TCB · 可信计算基（= 微内核自身，不含 loop / executor）</div>
+  <div class="box kernel">
+    <div class="cap" style="font-size:16px">③ 微内核 · 四职责</div>
+    <div class="row">
+      <div class="box pad duty">
+        <div class="cap">装配（工作流串联）</div>
+        <div class="pipe">
+          <div class="st"><div class="t">发现</div><div class="s">目录 + entry-points + 动态 base</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">解析</div><div class="s">importlib · 失败跳过不炸</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">apply(ctx)</div><div class="s">内置失败=致命 / 用户失败=隔离</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">校验</div><div class="s">逐注册验证器 · 违例拒载</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">激活</div><div class="s">依赖拓扑定序 · 环=错误</div></div>
+        </div>
+        <div class="s" style="margin-top:5px">ctx 给予面 / 拒绝面（特权分隔）· 注册表即 IPC · provenance · 失败隔离舱 · inventory 只读投影</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="box pad duty-guard">
+        <div class="cap">把关（v2 控制平面收编入内核）</div>
+        <div class="regs">
+          <span class="reg">安全棘轮 <span class="c">· 只紧不松 · force-allow 丢弃+warn</span></span>
+          <span class="reg">权限裁决 <span class="c">· 危险永远弹窗 · 远程批准</span></span>
+          <span class="reg">资源闸 <span class="c">· 停止 / 轮次 / 预算底线 · loop 每轮必过</span></span>
+          <span class="reg">团队安全 <span class="c">· 权限继承 · 全队弹窗队列</span></span>
+          <span class="reg">晋升门 <span class="c">· 动态插入的用户确认 + 灰度</span></span>
+        </div>
+        <div class="s" style="margin-top:5px">补偿的是"信任"而非模型能力--模型再强也不松</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="box pad duty-ledger">
+        <div class="cap">记账（账本 = 证据系统）</div>
+        <div class="regs">
+          <span class="reg">append-only 事件账本 <span class="c">· 唯一事实源</span></span>
+          <span class="reg">协议核心 schema <span class="c">· = 账本的外化</span></span>
+          <span class="reg">回放 / 审计 / 归因</span>
+          <span class="reg">决策留痕 <span class="c">· 晋升 · 退场 · 每次插件插入与回滚</span></span>
+        </div>
+        <div class="s" style="margin-top:5px">模型越自主，人类越需要事后可验证--随模型进步变重的一半</div>
+      </div>
+    </div>
+  </div>
+  </div><!-- /tcb -->
+
+  <div class="box loopbox">
+    <div class="t" style="font-size:16px">④ LOOP 核心 -- 第一服务槽（接口形状 = 内核，实现 = 可换）</div>
+    <div class="s">while 未完成: 模型调用 -> 工具分发 -> 结果回喂 · 工具调用必经执行闸 · 每轮必过资源闸<br>今天: harness loop（行为≡现状）　⟷　未来: model-native loop（模型自持循环，内核退为事件中继 + 闸门 + 记账）</div>
+    <div class="parts">
+      <div class="box"><div class="t">Provider</div><div class="s">模型接入 · 重试/退避归内核 · 可换</div></div>
+      <div class="box"><div class="t">Context</div><div class="s">历史 + 组装 · 超限压缩 · 可换</div></div>
+      <div class="box"><div class="t">Executor</div><div class="s">串行审批 -> 并行执行 · 闸门在内核</div></div>
+      <div class="box"><div class="t">Tools</div><div class="s">文件 / shell / 搜索 / git / web / MCP</div></div>
+    </div>
+    <div class="slots">
+      <div class="box open"><span class="tag evo">演进</span><div class="t">执行槽</div><div class="s">两阶段骨架形状 = 内核</div></div>
+      <div class="box open"><span class="tag evo">演进</span><div class="t">协调槽</div><div class="s">Mailbox / TaskBoard / Roster · 默认会话式</div></div>
+      <div class="box shut"><span class="tag pend">灰区</span><div class="t">压缩策略槽</div><div class="s">未开放</div></div>
+      <div class="box shut"><span class="tag pend">灰区</span><div class="t">审计闸门槽</div><div class="s">未开放 · 倾向只紧不松</div></div>
+    </div>
+  </div>
+
+</div><!-- /col -->
+
+<div class="box spine-plug">
+  <div class="title">⑤ 插件层（纵贯四层）</div>
+  <div class="subtitle">大模型配对 · 微内核定位 · 实时插入</div>
+
+  <div class="stage"><div class="t">候选池</div><div class="s">全部预校验 + 签名 + 自描述贡献声明（contributes=[…]）· 第三方 / 用户 / 模型自产同池</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">模型配对</div><div class="s">选插件 + 建议贡献点 · 只能从内核枚举的贡献点里选，不能发明位置</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">内核校验 + 晋升门</div><div class="s">形状 / 越界 / 只紧不松检查 · 非只读贡献过用户确认 · 先灰度到当前会话</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">动态激活 -> 分发到层</div><div class="s">注册表登记 · UI slot 经协议下发到端 · loop 下一轮即消费</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">决策记账</div><div class="s">谁批准 · 依据什么 · 一键回滚 = 卸载</div></div>
+
+  <div class="ports">
+    <div class="cap">各层接入点（同一个注册表）</div>
+    <div class="p"><b>端层</b>：UI slots（面板 / 行 / 主题）-- 端不跑插件，只渲染协议下发的 slot 声明<br>
+    <b>协议层</b>：命名空间事件 x-*.* -- 插件自定义事件多端可消费<br>
+    <b>内核层</b>：hooks / 策略 / 审计闸 -- 只紧不松<br>
+    <b>零件层</b>：tools / prompt 片段 / slash 命令 / providers / 记忆后端 / 协调实现</div>
+  </div>
+
+  <div class="ports" style="margin-top:8px">
+    <div class="cap">热插分级</div>
+    <div class="p">会话内热插：UI slots · prompt 片段 · tools · 命名空间事件<br>
+    会话边界换：providers · 记忆后端 · 协调实现<br>
+    仅 boot 装配：loop 槽 · 执行槽 · 权限闸 · 账本格式（永不热插）</div>
+  </div>
+</div>
+
+</div><!-- /mid -->
+
+<div class="layerlabel">⑥ 脚手架层 -- 全部可拆 · 每个模块声明「补偿什么短板 / 何时退场」</div>
+<div class="scfld">
+  <div class="box"><span class="tag decay">将消融</span><div class="t">harness loop 默认实现</div><div class="why"><b>compensates</b>：模型无自持执行循环<br><b>exit_when</b>：model-native 循环评测通过</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">历史压缩</div><div class="why"><b>compensates</b>：上下文有限<br><b>exit_when</b>：长会话免压缩评测通过 · 预算存在仍由资源闸保障</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">意图路由</div><div class="why"><b>compensates</b>：模型不自知深浅<br><b>exit_when</b>：自规划直连评测通过</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">子代理 / workflow / team</div><div class="why"><b>compensates</b>：单上下文装不下、单线程不够快<br><b>exit_when</b>：原生并行 / 长任务评测通过</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">记忆检索</div><div class="why"><b>compensates</b>：跨会话遗忘<br><b>exit_when</b>：持续记忆评测通过</div></div>
+  <div class="box stay"><span class="tag evo">不消融</span><div class="t">内置工具包 / 适配器</div><div class="why">模型的手，不补偿短板只演进 · MCP / skills / hooks 适配器照旧 · 裁决在把关</div></div>
+</div>
+
+<div class="layerlabel">⑦ 演进方向与双棘轮</div>
+<div class="trend">
+  <div class="box thin-dir"><div class="t">消融方向（变薄）</div><div class="s">一切补偿模型短板的脚手架 · 退场走证据门 · 模型降级自动回挂</div></div>
+  <div class="box grow-dir"><div class="t">增长方向（变重）</div><div class="s">账本 -> 证据系统 · 把关 -> verifier 终局 · 终局身份是人类信任的锚点，不是 executor</div></div>
+</div>
+<div class="box ratchet" style="margin-top:10px">
+  <div class="cap">安全棘轮 × 能力棘轮</div>
+  <div class="chips">
+    <span class="chip">安全棘轮 <span class="c">· 单向 · 只紧不松</span></span>
+    <span class="chip">能力棘轮 <span class="c">· 双向 · 跟随模型实测 · 证据门</span></span>
+    <span class="chip">退场评测 <span class="c">· 摘除后成功率不掉点才准退场</span></span>
+    <span class="chip">回挂 <span class="c">· 模型降级时脚手架自动重新挂上</span></span>
+    <span class="chip">插件插入记账 <span class="c">· 可归因可回滚</span></span>
+  </div>
+</div>
+
+<div class="layerlabel" style="margin-top:16px">演进即重组 -- 一切演进都只是改组合输入，内核零改动</div>
+<table class="evo">
+  <tr><th>演进场景</th><th>改什么</th><th>内核</th></tr>
+  <tr><td>换模型 / 模型升级</td><td>Provider 实现 + 能力档案</td><td class="n">不改</td></tr>
+  <tr><td>模型能自持循环</td><td>loop 槽实现换 model-native</td><td class="n">不改</td></tr>
+  <tr><td>加 skill / MCP / memory</td><td>注册表多一条贡献</td><td class="n">不改</td></tr>
+  <tr><td>脚手架退场（压缩 / 路由摘除）</td><td>组合输入删一行 + 退场评测</td><td class="n">不改</td></tr>
+  <tr><td>加一个端（Desktop / IDE / 移动）</td><td>写一个客户端 attach 协议</td><td class="n">不改</td></tr>
+  <tr><td>远程批准 / 复盘回放</td><td>协议已有事件 + 账本重放</td><td class="n">不改</td></tr>
+  <tr><td>会话中途发现缺能力，装插件补上</td><td>模型配对 + 晋升门</td><td class="n">不改</td></tr>
+  <tr><td>界面随任务生长（调试装可视化 / 排障装监控）</td><td>UI slot 动态下发</td><td class="n">不改</td></tr>
+  <tr><td>模型自己写出的进化产物</td><td>候选插件走同一道门</td><td class="n">不改</td></tr>
+</table>
+
+<div class="layerlabel" style="margin-top:16px">内核不变量带（v2 九项收缩至此 · 全部隶属编排 / 沙箱执行 / 插件维护 / 记账）</div>
+<div class="box invariants">
+  <div class="cap"><span class="tag inv" style="position:static;margin-right:8px">不变量</span>机制层 · 任何贡献不可替换 / 松动</div>
+  <div class="chips">
+    <span class="chip">loader / ctx / 注册表自身</span>
+    <span class="chip">安全底线（含团队安全语义）</span>
+    <span class="chip">账本格式 + 协议核心 schema</span>
+    <span class="chip">槽接口形状（loop / 执行 / 协调）</span>
+    <span class="chip">资源闸（停止 / 预算 / 轮次底线）</span>
+    <span class="chip">贡献点枚举（模型只配对，内核才定位）</span>
+    <span class="chip">TCB 对动态插入关闭</span>
+  </div>
+</div>
+
+<div class="note">
+  <b>读法</b>：自上而下--端只渲染与上送；协议是账本的外化，回放即重放；内核装配一切、把关一切、记录一切；loop 与零件被装配而非自举；插件层纵贯四层，经候选池 -> 配对 -> 晋升门 -> 激活 -> 记账插入任何一层。自下而上看演进--脚手架随模型进步经评测门退场，安全与账本随模型进步变重。<br>
+  <b>五层各答一问</b>：端答"人在哪看"；协议答"事件怎么流"；内核答"什么永远不变"；loop 答"今天怎么干活"；插件层答"明天怎么长出新能力"。<br>
+  <b>与前版的差异</b>：v1（目标架构）定义契约面与服务槽；v3（微内核拆解）定义 TCB 边界；本版把内核收缩为编排 / 沙箱执行 / 插件维护 / 记账四职责（loop / executor / 预算 / 协调四项不变量降级为槽与脚手架），新增模型能力档案与动态 base、脚手架退场机制、纵贯插件层（模型配对 + 内核插入 + 热插分级）。<br>
+  <b>可视化插件走一遍</b>：用户说"画出调用关系" -> 模型从候选池配对 viz 插件（自描述：UI slot + 数据工具 + x-viz.* 事件）-> 内核校验 UI slot 只加面板不动主转录区 -> 用户确认一次 -> 激活并经协议下发 ui_slot_registered -> CLI / Web / Desktop 同时多出图表面板，三端零代码零发版 -> 插入决策落账，可回滚。
+</div>
+
+<div class="gloss">
+<h2>模块详注</h2>
+
+<h3>① 端层</h3>
+<dl>
+  <dt>薄客户端原则<span class="st inv">不变量</span></dt><dd>端只做两件事：渲染事件流、上送意图流。路由、压缩、审批判断等 agent 逻辑出现在任何一端都会导致多端行为分叉。CLI 从"agent 的宿主"降级为"协议的参照实现"，语义最全但无特权。加端 = 写一个客户端，内核零改动。</dd>
+  <dt>CLI / DESKTOP / WEB / IDE·移动<span class="st evo">演进</span></dt><dd>Desktop 的系统级能力（剪贴板、截图、全局热键、通知）经意图流上送、以事件流返回，本身不含逻辑；Web 的价值在会话共享、远程批准、复盘回放；IDE / 移动是开放性的预留位。</dd>
+</dl>
+
+<h3>② 会话协议层</h3>
+<dl>
+  <dt>协议 = 账本的外化<span class="st inv">不变量</span></dt><dd>事件流里下发的每个事件就是内核记账 append 的账本条目，协议层只是把账本实时广播给挂上来的端。因此回放 = 把存储的事件流再发一遍，复盘回放与实时观看共用同一 schema。协议核心 schema 是内核不变量，插件扩展走命名空间。</dd>
+  <dt>openx serve<span class="st new">新增</span></dt><dd>会话长存在 serve 进程，客户端 attach / detach。一次解决三件事：关终端 agent 继续跑（tmux 语义）、多端同看一会话、未来长存队友（team 的队友 = serve 管理的子会话）。</dd>
+  <dt>UI slot 事件<span class="st new">新增</span></dt><dd>协议新增 ui_slot_registered / updated / removed 事件族：插件对界面的修改全部以此为载体。端是哑渲染器，因此 UI 插件对所有端通用，加插件永远不等于客户端发版。布局几何受保护：只加面板 / 行，输入框、主转录区、权限面板是内核领地。</dd>
+</dl>
+
+<h3>③ 微内核四职责</h3>
+<dl>
+  <dt>装配<span class="st inv">照旧</span></dt><dd>v3 的 loader 五阶段、ctx 给予 / 拒绝面、注册表 IPC、逐类型验证器、失败隔离舱、inventory 只读投影，全部保留。两处变化：发现阶段的 base 列表换成动态 base 计算；激活阶段新增"会话内动态插入"路径（走同一校验，仅限热插分级允许的贡献点）。</dd>
+  <dt>把关<span class="st inv">收编</span></dt><dd>v2 右脊控制平面收编入内核。安全棘轮、权限裁决、远程批准照旧；资源闸把原散落在 loop 不变量（轮次、停止语义）与预算机制中的安全部分析出集中，任何 loop 槽实现每轮必过；新增晋升门--动态插入的非只读贡献须用户确认并先灰度到当前会话。</dd>
+  <dt>记账<span class="st inv">升格</span></dt><dd>会话 JSONL 升格为证据系统：唯一事实源、append-only、可回放、可审计、可归因。每次进化晋升、脚手架退场、插件插入与回滚，决策本身也记账--将来追问"为什么这个模块没了 / 这个插件哪来的"，答案在账本里。</dd>
+</dl>
+
+<h3>④ LOOP 核心与零件层</h3>
+<dl>
+  <dt>loop 槽<span class="st new">核心降级</span></dt><dd>接口形状（意图进、事件出、工具调用必经执行闸、每轮必过资源闸）是内核不变量，实现进槽。默认实现 = 现有 harness loop，行为≡现状；预留 model-native 位：模型自持循环，内核退为事件中继 + 闸门 + 记账。协议事件形态从第一天按后者设计，未来切换时多端 / 回放 / 审批语义零改动。装配 loop 的机制必须独立于 loop--这是"换 loop 不换产品"的前提，也是内核在 loop 之上的原因。</dd>
+  <dt>执行槽 / 协调槽 / 灰区双槽<span class="st evo">照旧</span></dt><dd>执行槽两阶段骨架（串行审批 -> 并行执行）的形状不变；"工具必须过闸"由把关层强制，与槽实现无关。协调槽 Mailbox / TaskBoard / Roster 接口照旧，默认会话式实现。压缩策略槽暂不开放，审计闸门槽倾向开放且只紧不松。</dd>
+  <dt>零件层<span class="st evo">全可换</span></dt><dd>Provider（重试 / 退避 / 超时归内核，实现可换）、Context（历史 + 组装 + 超限压缩）、Executor（闸门在内核，执行可换）、Tools（模型的手，内置 + MCP 适配器 + 用户插件聚合视图）。</dd>
+</dl>
+
+<h3>⑤ 插件层（纵贯）</h3>
+<dl>
+  <dt>候选池<span class="st new">新增</span></dt><dd>进入池中的插件一律预校验 + 签名 + 自描述贡献声明（contributes = [ui_slot(…) | tool(…) | event(x-*.*) | hook(…) | prompt(…) …]）。三个来源同池：第三方（市场）、用户（本地目录）、模型自产（进化引擎产物）--同源同门，无后门。</dd>
+  <dt>模型配对，内核定位<span class="st new">新增·标准六</span></dt><dd>模型决定"用哪个插件、建议放哪个贡献点"，但贡献点由内核枚举，模型不能发明位置。位置 = 内核不变量，配对 = 模型可演进。prompt injection 最坏结果是推荐错插件，不能让插件落进内核没开过的口子。</dd>
+  <dt>晋升门与热插分级<span class="st new">新增</span></dt><dd>校验（形状 / 越界 / 只紧不松）通过后，非只读贡献须用户确认，先灰度到当前会话再扩散。热插三档：UI slots / prompt 片段 / tools / 命名空间事件可会话内热插（纯加法，回滚 = 卸载）；providers / 记忆后端 / 协调实现只能会话边界换（有状态）；loop 槽 / 执行槽 / 权限闸 / 账本格式仅 boot 装配，永不热插。</dd>
+  <dt>UI 插件的真实形态<span class="st new">新增</span></dt><dd>"修改前端界面"不需要碰前端：插件贡献的是协议里的一条 slot 声明 + 渲染规格，端只执行渲染。任何 UI 插件对所有端通用，加插件永远不等于客户端发版。布局几何受保护：只加面板 / 行，输入框、主转录区、权限面板是内核领地。</dd>
+</dl>
+
+<h3>⑥⑦ 脚手架与演进</h3>
+<dl>
+  <dt>模型能力档案 / 动态 base<span class="st new">新增</span></dt><dd>档案按模型版本声明能力面（context、native_summarization、native_planning、parallel_tools、self_correction…），与协议层的版本协商对称：一个面向端，一个面向模型。脚手架以 requires / exit_when 声明依赖，loader 据此计算该模型下的组合。换模型、模型升级 -> 组合自动变化，零代码改动。</dd>
+  <dt>脚手架退场<span class="st decay">将消融</span></dt><dd>退场三步：评测门（证据不是声明）-> 决策记账 -> 从动态 base 摘除。摘除不是删除：代码留在仓库，模型降级时经回归评测自动回挂。harness loop 默认实现是最大的脚手架，也是消融收益最大的一块--摘除后 harness 收敛到"中继 + 闸门 + 记账"终局形态。</dd>
+  <dt>双棘轮<span class="st new">新增</span></dt><dd>安全棘轮单向只紧不松；能力棘轮双向跟随模型实测，以退场评测为证据门。两棘轮方向相反、性质对称，共同回答"什么永远不变、什么随时可变"。TCB 对两者都关闭：进化引擎能产出候选插件、提出退场建议，但棘轮与评测门本身不可贡献。</dd>
+</dl>
+</div>
+
+</body>
+</html>

@@ -23,7 +23,11 @@ openx/
 │   │   ├── interactive.py # REPL loop + streaming display
 │   │   ├── single_shot.py # One-shot mode
 │   │   └── setup_wizard.py# First-run configuration wizard
+│   ├── kernel/            # Microkernel: plugin registration catalog, registries, loader, inventory, ledger
+│   │   └── registrations.py etc.
+│   ├── builtin_tools.py   # Base-bundle builtin plugin (tool factories; everything-is-a-plugin)
 │   ├── core/
+│   │   ├── protocol.py    # Session protocol schema + event envelope (ledger = externalized protocol)
 │   │   ├── history.py     # Conversation history + turn-based compaction
 │   │   ├── hooks.py       # User hooks (Claude Code-style schema)
 │   │   ├── sessions.py    # Session persistence (JSONL, --continue / --resume)
@@ -81,7 +85,7 @@ Permission checks and hook invocations happen during serial preparation, inside
 | Layer | Modules | Responsibility |
 |---|---|---|
 | Surface | `cli/`, `ui/` | REPL, single-shot and headless entry; terminal rendering |
-| Kernel | `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display |
+| Kernel | `kernel/`, `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display |
 | Model | `llm/` | OpenAI-compatible async client, streaming, retry with backoff |
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |
 | Context & memory | `instructions.py`, `memory.py`, `core/history.py` | OPENX.md instructions, persistent memory, history + compaction |

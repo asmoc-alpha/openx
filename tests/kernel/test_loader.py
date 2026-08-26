@@ -11,7 +11,6 @@ from openx.kernel import get_kernel
 
 from ._helpers import (
     BAD_SRC,
-    CONFLICT_TOOL_SRC,
     HELLO_SRC,
     NOVALID_SRC,
     write_plugin,
@@ -28,8 +27,7 @@ class TestLoadPhases:
         info = next(i for i in k.inventory() if i.id == "hello")
         assert info.phase == "active"
         assert info.tools == ["hello"] and info.commands == ["hi"]
-        reg = {}
-        k.merge_tools(reg)
+        reg = k.instantiate_tools(None, include_builtin=False)
         assert "hello" in reg
 
     def test_apply_failure_isolated(self, kernel_env):
@@ -50,9 +48,7 @@ class TestLoadPhases:
         info = next(i for i in k.inventory() if i.id == "novalid")
         assert info.phase == "active"  # 插件活着，贡献被拒
         assert any("permission" in w for w in info.warnings)
-        reg = {}
-        k.merge_tools(reg)
-        assert reg == {}
+        assert k.instantiate_tools(None, include_builtin=False) == {}
 
     def test_disabled_via_settings(self, kernel_env):
         ws, settings = kernel_env
@@ -62,31 +58,20 @@ class TestLoadPhases:
         k.ensure_loaded(str(ws))
         info = next(i for i in k.inventory() if i.id == "hello")
         assert info.phase == "disabled"
-        reg = {}
-        k.merge_tools(reg)
-        assert reg == {}
+        assert k.instantiate_tools(None, include_builtin=False) == {}
 
     def test_user_dir_follows_settings_path(self, kernel_env):
         ws, settings = kernel_env
         write_user_plugin(settings, "hello", HELLO_SRC)
         k = get_kernel()
         k.ensure_loaded(str(ws))  # 项目目录为空，用户目录命中
-        assert [i.id for i in k.inventory()] == ["hello"]
+        user_ids = [
+            i.id for i in k.inventory() if i.source != "base-bundle"
+        ]
+        assert user_ids == ["hello"]
 
 
-class TestMergeAndReload:
-    def test_builtin_priority_on_merge(self, kernel_env):
-        ws, _ = kernel_env
-        write_plugin(ws, "impostor", CONFLICT_TOOL_SRC)
-        k = get_kernel()
-        k.ensure_loaded(str(ws))
-        sentinel = object()
-        reg = {"grep": sentinel}
-        k.merge_tools(reg)
-        assert reg["grep"] is sentinel  # 内置不被覆盖
-        info = next(i for i in k.inventory() if i.id == "impostor")
-        assert any("builtin wins" in w for w in info.warnings)
-
+class TestReload:
     def test_reload_when_key_changes(self, kernel_env):
         ws, settings = kernel_env
         write_plugin(ws, "hello", HELLO_SRC)
@@ -94,14 +79,34 @@ class TestMergeAndReload:
         k.ensure_loaded(str(ws))
         assert next(i for i in k.inventory() if i.id == "hello").phase == "active"
         settings.write_text(json.dumps({"plugins": {"disabled": ["hello"]}}))
-        k.ensure_loaded(str(ws))  # 禁用表变 → 重载
+        k.ensure_loaded(str(ws))  # 禁用表变 -> 重载
         assert next(i for i in k.inventory() if i.id == "hello").phase == "disabled"
 
-    def test_no_plugins_no_state(self, kernel_env):
+    def test_no_user_plugins_only_builtin(self, kernel_env):
         ws, _ = kernel_env
         k = get_kernel()
         k.ensure_loaded(str(ws))
-        assert k.inventory() == []
-        reg = {}
-        k.merge_tools(reg)
-        assert reg == {}
+        # 无用户插件时仅剩 base bundle 内置插件（builtin-tools/builtin-providers）
+        assert [i.source for i in k.inventory()] == ["base-bundle", "base-bundle"]
+        assert len(k.registry("tools")) == 1       # core-tools 工厂
+        assert len(k.registry("providers")) == 1   # openai-compat 实现工厂
+        assert k.instantiate_tools(None, include_builtin=False) == {}
+
+    def test_half_loaded_state_retries(self, kernel_env, monkeypatch):
+        """B2 回归：中途致命异常不提交加载键，下次完整重试。"""
+        ws, _ = kernel_env
+        write_plugin(ws, "hello", HELLO_SRC)
+        k = get_kernel()
+
+        def boom(ctx):
+            raise RuntimeError("builtin broken")
+
+        monkeypatch.setattr("openx.builtin_tools.apply", boom)
+        try:
+            k.ensure_loaded(str(ws))
+        except RuntimeError:
+            pass
+        assert k._load_key is None  # 键未提交
+        monkeypatch.undo()
+        k.ensure_loaded(str(ws))  # 同一 key 重试成功
+        assert next(i for i in k.inventory() if i.id == "hello").phase == "active"

@@ -22,7 +22,9 @@ class PluginInfo:
     id: str
     source: str
     phase: str
+    builtin: bool = False  # 内置插件：失败=致命，禁用表对其无效
     error: str = ""
     warnings: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
+    providers: list[str] = field(default_factory=list)

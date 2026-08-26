@@ -84,7 +84,7 @@ from .permissions import PermissionLevel
 from .core.fleet import FleetMonitor
 from .core.history import ConversationHistory, SUMMARY_MARKER
 from .core.sessions import SessionMeta, SessionStore
-from .core.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
+from .core.subagent import CHILD_EXCLUDED_TOOLS
 from .core.tasks import TaskRegistry
 from .memory import MemoryStore
 from .coding_memory import CodingMemoryStore
@@ -92,24 +92,10 @@ from .services.exploration import explore_project as _explore_project
 from .services.tool_executor import ToolExecutor
 from .skills import Skill, load_skills, build_skills_prompt
 from .tools.base import Tool
-from .tools.memory_tool import MemoryTool, MEMORY_INSTRUCTIONS
-from .tools.file_tools import (
-    ReadFileTool, WriteFileTool, EditFileTool, GlobTool, ListDirectoryTool,
-)
-from .tools.shell_tools import ShellTool
-from .tools.search_tools import GrepTool
-from .tools.git_tools import (
-    GitStatusTool, GitDiffTool, GitLogTool, GitBranchTool,
-)
-from .tools.todo_tools import TodoWriteTool
-from .tools.web_tools import WebFetchTool, WebSearchTool
-from .tools.ask_user_tool import AskUserTool
-from .tools.plan_tools import ExitPlanModeTool
-from .tools.mode_tools import ChooseModeTool
-from .tools.subagent_tool import TaskTool
+from .tools.memory_tool import MEMORY_INSTRUCTIONS
 from .tools.structured_output import StructuredOutputTool
-from .tools.task_tools import TaskOutputTool, TaskStopTool
-from .tools.workflow_tool import WorkflowTool
+# 注：具体工具类（file/shell/git/…）已迁至 openx/builtin_tools.py——
+# 内置工具集是 base bundle 内置插件，agent 经内核消费注册表（"一切能力皆插件"）。
 from .ui.console import Console
 
 
@@ -169,13 +155,33 @@ class OpenXAgent:
         structured_schema: dict | None = None,
     ):
         self.config = config
-        self.llm = LLMClient(config)
-        # LLM 重试可见性：每次重试打印一行警告（_notify_retry 内部经弹窗
-        # 钩子暂停流式 Live，避免重绘区夹杂输出；钩子缺省 → 零行为变化）
-        self.llm.on_retry = self._notify_retry
         # console：子代理共享父的 console（同一终端）；顶层自建
         self.console = console if console is not None else Console(config)
         self.workspace = Path(config.workspace).resolve()
+
+        # ── LLM 接入（模型接入层 M2）：经内核 providers 注册表解析 ──
+        # 内置插件注册 openai-compat 实现，LLMClient 门面组合内核重试
+        # （策略来自 config，晚绑定）。扁平配置 -> default 实例，行为≡
+        # 现状；M3 起读 providers 配置表。须在 ensure_loaded 之后取实现，
+        # 故移到 workspace 就绪处（子代理同 workspace，ensure_loaded 幂等）。
+        from .kernel import get_kernel
+
+        kernel = get_kernel()
+        kernel.ensure_loaded(str(self.workspace))
+        self.llm = LLMClient(
+            config,
+            impl=kernel.build_provider({
+                "kind": "openai-compat",
+                "api_key": config.api_key,
+                "api_base": config.api_base,
+                "model": config.model,
+                "temperature": config.temperature,
+                "max_tokens": config.max_tokens,
+            }),
+        )
+        # LLM 重试可见性：每次重试打印一行警告（_notify_retry 内部经弹窗
+        # 钩子暂停流式 Live，避免重绘区夹杂输出；钩子缺省 → 零行为变化）
+        self.llm.on_retry = self._notify_retry
 
         # ── 子代理（child）模式状态（Phase 8，必须在 _build_tools 之前就位）──
         # parent 非 None → 本 agent 是 task 工具派生的子代理：工具集裁剪、
@@ -198,6 +204,17 @@ class OpenXAgent:
         # 会话持久化存储（Phase 6）：None → 不落盘（测试/嵌入式用法）。
         # 子代理恒为 None——委派任务的中间过程不进会话文件。
         self.session_store = session_store
+        # 记账接线（K2b）：内核 emit -> 会话账本。须在 _build_tools 之前
+        # 挂接--组合决议与插件装载事件在首次 ensure_loaded 时产生；seq
+        # 从既有信封条目续起（恢复会话不重号）。子代理不落盘，自然不挂。
+        if session_store is not None:
+            from .kernel import get_kernel
+
+            get_kernel().attach_ledger(
+                session_store.append_event,
+                session=self.session_id,
+                start_seq=session_store.ledger_start_seq(),
+            )
         if parent is not None:
             # 子代理复用父的 HookRunner（同一 settings 合并结果）；绝不覆盖
             # 共享对象上的 session_id——钩子 payload 仍归属父会话。
@@ -421,65 +438,24 @@ class OpenXAgent:
         接收 ``self.console`` 的引用，``ExitPlanModeTool`` 接收 agent 与
         console 的引用——这样工具内部操作直接作用于 agent 状态。
         """
-        ws = str(self.workspace)
-        allow_outside = self.config.allow_write_outside_workspace
-
-        # 子代理规格表（仅顶层 agent 填充；子代理恒为空 → 无 task 工具）
-        self._subagent_specs: dict = {}
-
         # 后台任务注册表（Phase 7）：shell 后台模式与 task_output/task_stop
         # 工具共享同一实例；目录惰性创建，构造本身不触碰磁盘。
         # 子代理复用父的注册表（Phase 8）：子代理派生的后台任务归顶层统一
         # 退出清理，避免孤儿进程。
         self.tasks = self._parent.tasks if self._parent is not None else TaskRegistry()
 
-        tools: list[Tool] = [
-            # 文件工具
-            ReadFileTool(ws),
-            WriteFileTool(ws, allow_outside),
-            EditFileTool(ws, allow_outside),
-            GlobTool(ws),
-            ListDirectoryTool(ws),
-            # 代码搜索
-            GrepTool(ws),
-            # Shell（共享 self.tasks 以支持后台模式，Phase 7）
-            ShellTool(
-                ws,
-                self.config.allowed_commands,
-                self.config.dangerous_commands,
-                task_registry=self.tasks,
-            ),
-            # Git
-            GitStatusTool(ws),
-            GitDiffTool(ws),
-            GitLogTool(ws),
-            GitBranchTool(ws),
-            # 任务追踪（共享 self.todos）
-            TodoWriteTool(self.todos),
-            # 联网
-            WebFetchTool(),
-            WebSearchTool(provider=self.config.web_search_provider),
-            # 主动提问（共享 console）
-            AskUserTool(self.console),
-            # 自主记忆（agent 决定何时存/取）
-            MemoryTool(self.coding_memory),
-            # 后台任务（Phase 7，共享 self.tasks）
-            TaskOutputTool(self.tasks),
-            TaskStopTool(self.tasks),
-        ]
-        # 结构性工具仅顶层 agent 持有（_parent 非 None → 子代理，全部跳过）：
-        # - exit_plan_mode：审批流只属于顶层，子代理不打断用户；
-        # - task（Phase 8）：子代理无 task → 天然无法派生孙代理（禁套娃）；
-        # - workflow（Phase 10）：确定性多代理编排，同样禁止嵌套运行。
-        if getattr(self, "_parent", None) is None:
-            tools.append(ExitPlanModeTool(self, self.console))
-            tools.append(ChooseModeTool(self, self.console))
-            # 子代理规格：内置 + 项目 .openx/agents/*.md（坏文件跳过不报错）
-            self._subagent_specs = load_subagent_specs(str(self.workspace))
-            tools.append(TaskTool(self, self._subagent_specs))
-            tools.append(WorkflowTool(self))
+        # 内置工具集 = base bundle 内置插件（"一切能力皆插件"）：内核按
+        # agent 实例化 tools 注册表（openx/builtin_tools.py），注册序即
+        # 优先级、内置恒首--语义与旧硬编码列表逐条对齐（含结构性工具仅
+        # 顶层、_subagent_specs 副作用）。用户插件工具仅顶层 agent 载入，
+        # 子代理不继承（同 task/exit_plan_mode 等结构性工具待遇）。
+        from .kernel import get_kernel
 
-        registry = {t.name: t for t in tools}
+        kernel = get_kernel()
+        kernel.ensure_loaded(str(self.workspace))
+        registry = kernel.instantiate_tools(
+            self, include_plugins=self._parent is None
+        )
 
         # 已连接的 MCP 工具并入注册表（Phase 9）：__init__ 时尚未连接
         # （self.mcp.tools 为空）；startup() 之后的注册表重建（/workspace）
@@ -487,16 +463,6 @@ class OpenXAgent:
         mcp = getattr(self, "mcp", None)
         if mcp is not None:
             registry.update(mcp.tools)
-
-        # 插件工具（微内核 P1）：仅顶层 agent 载入，子代理不继承
-        # （同 task/exit_plan_mode 等结构性工具待遇）；与内置重名时
-        # 内置优先（merge_tools 跳过并记 inventory 警告）。
-        if self._parent is None:
-            from .kernel import get_kernel
-
-            kernel = get_kernel()
-            kernel.ensure_loaded(str(self.workspace))
-            kernel.merge_tools(registry)
 
         # 子代理工具裁剪（Phase 8）：先结构性排除（task/ask_user/
         # exit_plan_mode），再按规格白名单取交集（None → 保留全部剩余）。

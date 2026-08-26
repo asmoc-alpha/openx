@@ -28,6 +28,8 @@ class PluginSpec:
     source: str                 # 展示用：目录路径 / entry-point 值
     path: Optional[Path] = None          # 文件插件
     entry_point: Optional[object] = None  # importlib.metadata EntryPoint
+    loaded: Optional[object] = None       # 已导入模块（base bundle 内置插件）
+    builtin: bool = False                 # 内置：失败=致命，禁用表对其无效
 
 
 def user_plugins_dir() -> Path:
@@ -74,6 +76,8 @@ def discover(workspace: str) -> list[PluginSpec]:
 
 def load_module(spec: PluginSpec) -> object:
     """解析指定符为模块/apply 可调用；失败抛异常由调用方记 failed。"""
+    if spec.loaded is not None:  # base bundle 内置插件：模块已导入
+        return spec.loaded
     if spec.entry_point is not None:
         loaded = spec.entry_point.load()
         return loaded

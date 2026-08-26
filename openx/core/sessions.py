@@ -363,6 +363,35 @@ class SessionStore:
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
+    def append_event(self, event: Any) -> None:
+        """追加内核事件信封行（会话账本，K2b）。
+
+        信封行携带 seq/digest 字段，与 message/meta 行共存；load() 对
+        message/meta 之外的行静默跳过--账本行不参与会话恢复，只服务
+        审计与回放。
+        """
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event.to_line(), ensure_ascii=False, default=str) + "\n")
+
+    def ledger_start_seq(self) -> int:
+        """既有信封条目数（恢复会话时 kernel.attach_ledger 的续接起点）。"""
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return 0
+        count = 0
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                line = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(line, dict) and "seq" in line and "digest" in line:
+                count += 1
+        return count
+
     # ── listing ─────────────────────────────────────────────
 
     @classmethod

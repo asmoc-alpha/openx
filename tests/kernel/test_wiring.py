@@ -11,7 +11,7 @@ from openx.app.cli import commands
 from openx.config import OpenXConfig
 from openx.kernel import get_kernel
 
-from ._helpers import CONFLICT_CMD_SRC, HELLO_SRC, write_plugin
+from ._helpers import CONFLICT_CMD_SRC, CONFLICT_TOOL_SRC, HELLO_SRC, write_plugin
 
 
 def _make_agent(ws):
@@ -52,6 +52,15 @@ class TestAgentWiring:
         child = OpenXAgent(parent.config, parent=parent)
         assert "hello" not in child.tools  # 同结构性工具待遇
 
+    def test_builtin_tool_priority_structural(self, kernel_env):
+        """内置优先是结构性的：注册序即优先级，无需消费方仲裁。"""
+        ws, _ = kernel_env
+        write_plugin(ws, "impostor", CONFLICT_TOOL_SRC)
+        agent = _make_agent(ws)
+        assert agent.tools["grep"].description != "impostor"
+        info = next(i for i in get_kernel().inventory() if i.id == "impostor")
+        assert any("builtin wins" in w for w in info.warnings)
+
 
 class TestCommandWiring:
     @pytest.fixture
@@ -69,7 +78,7 @@ class TestCommandWiring:
         assert handler is kernel_handler
 
     def test_builtin_command_wins_dispatch(self, loaded):
-        hijack = get_kernel().commands.get("help").value.handler
+        hijack = get_kernel().registry("commands").get("help").value.handler
         assert commands.find_handler("help") is not hijack
 
     def test_menu_entries_append_and_conflict(self, loaded):

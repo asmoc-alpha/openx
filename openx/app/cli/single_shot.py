@@ -28,13 +28,16 @@ if __name__ == "__main__" and not __package__:
     _sys.path.insert(0, str(_root))
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
+import asyncio
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator, Optional
 
 from ...agent import OpenXAgent, ToolResultEvent, ToolStartEvent
+from ...core import protocol
 from ...image import is_image_file, image_to_base64_url, display_image, get_image_metadata
 from ...llm import StreamReasoning
 from ...ui.console import Console
@@ -73,17 +76,94 @@ def _result_event(
     return obj
 
 
+async def _stdin_lines() -> AsyncIterator[str]:
+    """上行默认源：stdin 逐行（线程池读，不阻塞事件循环）；EOF 即停。"""
+    loop = asyncio.get_event_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            return
+        yield line
+
+
+class _NdjsonPermissionBridge:
+    """headless 双向权限（协议 P1）：下行 permission_request，上行
+    permission_response 按 request_id 唤醒等待；EOF/断流/未匹配=拒绝
+    （只紧不松：拿不到批准就当拒绝）。headless 永不落盘规则。
+    """
+
+    def __init__(self, uplink: AsyncIterator[str]):
+        self._uplink = uplink
+        self._pending: dict[str, asyncio.Future] = {}
+        self._task: Optional[asyncio.Task] = None
+
+    def start(self) -> None:
+        self._task = asyncio.ensure_future(self._read_loop())
+
+    def stop(self) -> None:
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    async def _read_loop(self) -> None:
+        try:
+            async for line in self._uplink:
+                msg = protocol.parse_uplink(line)
+                if isinstance(msg, protocol.PermissionResponse):
+                    fut = self._pending.get(msg.request_id)
+                    if fut is not None and not fut.done():
+                        fut.set_result(msg.allowed)
+        except Exception:
+            pass  # 上行源坏 = 下方待决全部拒绝（安全默认）
+        finally:
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_result(False)
+
+    async def ask_permission(
+        self, tool_name, reason, details="", args_summary="",
+        can_remember=True, diff=None,
+    ):
+        request_id = uuid.uuid4().hex
+        _emit(protocol.permission_request(
+            request_id, tool_name, reason, args_summary or details,
+        ))
+        fut = asyncio.get_event_loop().create_future()
+        self._pending[request_id] = fut
+        try:
+            allowed = await fut
+        finally:
+            self._pending.pop(request_id, None)
+        return (allowed, False)
+
+
 async def run_single_shot(
     agent: OpenXAgent,
     console: Console,
     prompt: str,
     image_paths: list[str] | None = None,
     output_format: str = "text",
+    ndjson_permissions: bool = False,
+    uplink: Optional[AsyncIterator[str]] = None,
 ) -> int:
-    """Run a single-shot (non-interactive) query. Returns an exit code."""
+    """Run a single-shot (non-interactive) query. Returns an exit code.
+
+    ``ndjson_permissions``（须 stream-json）：权限改走协议双向——
+    manual 模式下每个 ASK 下行 permission_request、等上行裁决；
+    ``uplink`` 可注入上行行源（测试），默认 stdin。
+    """
     # Headless：权限弹窗在非 TTY stdin 上会阻塞（数字菜单回退读 stdin），
-    # 单次查询强制 auto 模式（仍受 -y/存储规则/危险命令闸门约束）。
-    agent.set_mode("auto")
+    # 默认强制 auto 模式（仍受 -y/存储规则/危险命令闸门约束）；
+    # ndjson 权限模式下改 manual——批准权交给协议对端。
+    bridge: Optional[_NdjsonPermissionBridge] = None
+    if ndjson_permissions and output_format == "stream-json":
+        agent.set_mode("manual")
+        bridge = _NdjsonPermissionBridge(
+            uplink if uplink is not None else _stdin_lines()
+        )
+        console.ask_permission = bridge.ask_permission
+        bridge.start()
+    else:
+        agent.set_mode("auto")
     machine = output_format in ("json", "stream-json")
     if machine:
         # stdout 只走 JSON；人类噪音（警告、信任回退等）一律去 stderr
@@ -111,6 +191,8 @@ async def run_single_shot(
                 console.print_error(f"Error: {e}")
             return 1
     finally:
+        if bridge is not None:
+            bridge.stop()
         # 幂等关闭 MCP 连接——查询成功、失败还是被取消都要收干净
         await agent.shutdown()
 
@@ -149,32 +231,29 @@ async def _run_json(agent: OpenXAgent, console: Console, user_content) -> int:
 
 
 async def _run_stream_json(agent: OpenXAgent, user_content) -> int:
-    """NDJSON 事件流：init → text_delta / tool_use / tool_result → result。"""
-    _emit({
-        "type": "system",
-        "subtype": "init",
-        "session_id": agent.session_id,
-        "model": agent.config.model,
-        "tools": sorted(agent.tools.keys()),
-    })
+    """NDJSON 事件流：init → text_delta / tool_use / tool_result → result。
+
+    事件编码收敛在 ``openx/core/protocol``（线格式单一真源，协议 P1）。
+    """
+    _emit(protocol.init_event(
+        agent.session_id, agent.config.model, sorted(agent.tools.keys()),
+    ))
     started = time.monotonic()
     try:
         async for event in agent.stream_run(user_content):
             if isinstance(event, ToolStartEvent):
-                _emit({"type": "tool_use", "name": event.name})
+                _emit(protocol.tool_use(event.name))
             elif isinstance(event, ToolResultEvent):
-                _emit({
-                    "type": "tool_result",
-                    "name": event.name,
-                    "is_error": event.is_error,
-                    "output": event.output[:_STREAM_TOOL_OUTPUT_LIMIT],
-                })
+                _emit(protocol.tool_result(
+                    event.name, event.is_error,
+                    event.output[:_STREAM_TOOL_OUTPUT_LIMIT],
+                ))
             elif isinstance(event, StreamReasoning):
                 # 推理内容独立事件类型（对标 Claude Code 的 thinking 块），
                 # 消费者按需呈现；不混入 text_delta
-                _emit({"type": "thinking_delta", "text": event.text})
+                _emit(protocol.thinking_delta(event.text))
             elif isinstance(event, str) and event:
-                _emit({"type": "text_delta", "text": event})
+                _emit(protocol.text_delta(event))
     except Exception as e:
         _emit(_result_event(agent, started, None, e))
         return 1

@@ -62,6 +62,10 @@ class MiscMixin:
                 contrib.append("tools: " + ", ".join(escape(t) for t in info.tools))
             if info.commands:
                 contrib.append("commands: " + ", ".join(escape(c) for c in info.commands))
+            if info.providers:
+                contrib.append(
+                    "providers: " + ", ".join(escape(p) for p in info.providers)
+                )
             if contrib:
                 parts.append("[dim]·[/] " + " [dim]·[/] ".join(contrib))
             self._console.print(" ".join(parts))

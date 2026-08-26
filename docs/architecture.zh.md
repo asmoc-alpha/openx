@@ -21,7 +21,11 @@ openx/
 │   │   ├── interactive.py # REPL 循环 + 流式显示
 │   │   ├── single_shot.py # 单次模式
 │   │   └── setup_wizard.py# 首次运行配置向导
+│   ├── kernel/            # 微内核：插件注册目录/注册表/加载器/清单/记账
+│   │   └── registrations.py 等
+│   ├── builtin_tools.py   # base bundle 内置插件（工具工厂，"一切能力皆插件"）
 │   ├── core/
+│   │   ├── protocol.py    # 会话协议 schema + 事件信封（账本 = 协议外化）
 │   │   ├── history.py     # 对话历史 + 基于轮次的压缩（compaction）
 │   │   ├── hooks.py       # 用户 hooks（Claude Code 风格的 schema）
 │   │   ├── sessions.py    # 会话持久化（JSONL，--continue / --resume）
@@ -77,7 +81,7 @@ openx/
 | 层 | 模块 | 职责 |
 |---|---|---|
 | 产品表面 | `cli/`、`ui/` | REPL、单次与 headless 入口；终端渲染 |
-| 内核 | `agent.py`、`services/tool_executor.py`、`services/streaming.py` | turn 循环、工具分发（串行准备 → 并行执行）、流式显示 |
+| 内核 | `kernel/`（微内核）、`agent.py`、`services/tool_executor.py`、`services/streaming.py` | turn 循环、工具分发（串行准备 → 并行执行）、流式显示 |
 | 模型层 | `llm/` | OpenAI 兼容异步客户端、流式、带退避的重试 |
 | 能力层 | `tools/`、`mcp/` | 面向模型的工具（fs、shell、搜索、git、web、todo、plan、task、workflow）与外部 MCP 工具 |
 | 上下文与记忆 | `instructions.py`、`memory.py`、`core/history.py` | OPENX.md 指令、持久记忆、历史 + 压缩 |

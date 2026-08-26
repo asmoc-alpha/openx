@@ -11,6 +11,7 @@ import inspect
 import re
 
 _COMMAND_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_PROVIDER_KIND = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 def validate_tool(name: str, tool: object) -> list[str]:
@@ -49,4 +50,19 @@ def validate_command(name: str, value: object) -> list[str]:
         isinstance(a, str) and _COMMAND_NAME.match(a) for a in aliases
     ):
         problems.append("command aliases must be list of [a-z0-9_-]+ strs")
+    return problems
+
+
+def validate_provider(name: str, value: object) -> list[str]:
+    """providers 注册项校验：实现名小写连字符，值为可调用工厂。
+
+    工厂签名 ``create(settings: dict) -> Provider``；返回 Provider 的
+    接口形状由内核 RetryingProvider 包装时自然暴露（形状错误在使用处
+    炸，符合"注册期只验能验的"原则）。
+    """
+    problems: list[str] = []
+    if not _PROVIDER_KIND.match(name):
+        problems.append(f"provider kind {name!r} not [a-z0-9-]+")
+    if not callable(value):
+        problems.append(f"provider factory not callable")
     return problems
