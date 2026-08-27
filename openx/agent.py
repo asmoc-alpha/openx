@@ -94,7 +94,7 @@ from .skills import Skill, load_skills, build_skills_prompt
 from .tools.base import Tool
 from .tools.memory_tool import MEMORY_INSTRUCTIONS
 from .tools.structured_output import StructuredOutputTool
-# 注：具体工具类（file/shell/git/…）已迁至 openx/builtin_tools.py——
+# 注：具体工具类（file/shell/git/…）已迁至 openx/builtin/tools.py——
 # 内置工具集是 base bundle 内置插件，agent 经内核消费注册表（"一切能力皆插件"）。
 from .ui.console import Console
 
@@ -159,25 +159,36 @@ class OpenXAgent:
         self.console = console if console is not None else Console(config)
         self.workspace = Path(config.workspace).resolve()
 
-        # ── LLM 接入（模型接入层 M2）：经内核 providers 注册表解析 ──
+        # ── LLM 接入（模型接入层 M2/M3）：经内核 providers 注册表解析 ──
         # 内置插件注册 openai-compat 实现，LLMClient 门面组合内核重试
-        # （策略来自 config，晚绑定）。扁平配置 -> default 实例，行为≡
-        # 现状；M3 起读 providers 配置表。须在 ensure_loaded 之后取实现，
-        # 故移到 workspace 就绪处（子代理同 workspace，ensure_loaded 幂等）。
+        # （策略 = config 实时值 + 实例覆盖，晚绑定）。解析激活实例：
+        # 扁平配置 -> 隐式 default 实例（行为≡现状）；providers 配置表 ->
+        # 两级解耦（kind 选实现，外层名字是用户实例名）。须在
+        # ensure_loaded 之后取实现，故移到 workspace 就绪处（子代理同
+        # workspace，ensure_loaded 幂等）。
         from .kernel import get_kernel
 
         kernel = get_kernel()
         kernel.ensure_loaded(str(self.workspace))
+        self._provider_name, self._provider_settings = config.resolve_provider()
+        impl = kernel.build_provider(self._provider_settings)
+        if impl is None:
+            # kind 未注册（如 anthropic SDK 未装）：警告并回落 openai-compat。
+            # LLMClient(impl=None) 自动退到直连实现；product 不带病运行。
+            warn = getattr(self.console, "print_warning", None)
+            if callable(warn):
+                try:
+                    warn(
+                        f"Provider implementation "
+                        f"'{self._provider_settings.get('kind')}' unavailable "
+                        "(missing SDK?); falling back to openai-compat."
+                    )
+                except Exception:
+                    pass
         self.llm = LLMClient(
             config,
-            impl=kernel.build_provider({
-                "kind": "openai-compat",
-                "api_key": config.api_key,
-                "api_base": config.api_base,
-                "model": config.model,
-                "temperature": config.temperature,
-                "max_tokens": config.max_tokens,
-            }),
+            impl=impl,
+            policy_overrides=self._provider_settings,
         )
         # LLM 重试可见性：每次重试打印一行警告（_notify_retry 内部经弹窗
         # 钩子暂停流式 Live，避免重绘区夹杂输出；钩子缺省 → 零行为变化）
@@ -215,6 +226,10 @@ class OpenXAgent:
                 session=self.session_id,
                 start_seq=session_store.ledger_start_seq(),
             )
+        # provider_selected（M5，origin=kernel）：agent 绑定 provider 留痕--
+        # "这次回答用了哪个模型"的答案来源。须在 attach_ledger 之后 emit
+        # 才落账本；emit 本身安全（未挂接 sink 时仅内存计数，绝不炸）。
+        self._emit_provider_selected(origin="kernel")
         if parent is not None:
             # 子代理复用父的 HookRunner（同一 settings 合并结果）；绝不覆盖
             # 共享对象上的 session_id——钩子 payload 仍归属父会话。
@@ -445,7 +460,7 @@ class OpenXAgent:
         self.tasks = self._parent.tasks if self._parent is not None else TaskRegistry()
 
         # 内置工具集 = base bundle 内置插件（"一切能力皆插件"）：内核按
-        # agent 实例化 tools 注册表（openx/builtin_tools.py），注册序即
+        # agent 实例化 tools 注册表（openx/builtin/tools.py），注册序即
         # 优先级、内置恒首--语义与旧硬编码列表逐条对齐（含结构性工具仅
         # 顶层、_subagent_specs 副作用）。用户插件工具仅顶层 agent 载入，
         # 子代理不继承（同 task/exit_plan_mode 等结构性工具待遇）。
@@ -702,6 +717,106 @@ class OpenXAgent:
                     end()
         except Exception:
             pass
+
+    # ── Provider 绑定与切换（模型接入层 M3/M5）──────────────────
+
+    def _emit_provider_selected(self, origin: str) -> None:
+        """记账：provider_selected 事件（agent 绑定 / /provider 切换）。
+
+        payload：实例名、kind、model、origin（kernel=绑定 / user=切换）。
+        切换留痕是将来"为什么这次回答换了模型"的答案来源；emit 只依赖
+        内核出口，任何异常绝不影响绑定/切换本身。
+        """
+        try:
+            from .kernel import get_kernel
+
+            get_kernel().emit(
+                "provider_selected",
+                {
+                    "type": "provider_selected",
+                    "provider": self._provider_name,
+                    "kind": self._provider_settings.get("kind", "openai-compat"),
+                    "model": self._provider_settings.get("model", ""),
+                    "origin": origin,
+                },
+                origin=origin,
+            )
+        except Exception:
+            pass
+
+    def switch_provider(self, name: str) -> bool:
+        """把 agent 的 provider 绑定切到已配置实例 ``name``（/provider）。
+
+        校验存在性（settings.json 的 providers 键）；重建 LLMClient（新
+        实现 + 实例级重试覆盖）并记 ``provider_selected``（origin=user）。
+        持久化 active_provider 由命令层负责（save_provider_settings）。
+        kind 未注册（如 SDK 缺失的 anthropic）时返回 False，agent 状态不变。
+        """
+        from .config import OpenXConfig
+        from .kernel import get_kernel
+
+        providers = OpenXConfig.load_provider_settings()["providers"]
+        if name not in providers:
+            return False
+        settings = dict(providers[name])
+        settings.setdefault("kind", "openai-compat")
+        for key in ("api_key", "api_base", "model", "temperature", "max_tokens"):
+            settings.setdefault(key, getattr(self.config, key))
+        kernel = get_kernel()
+        kernel.ensure_loaded(str(self.workspace))
+        impl = kernel.build_provider(settings)
+        if impl is None:
+            return False
+        self._provider_name = name
+        self._provider_settings = settings
+        # config.model 同步到新实例的 model（/config 展示与会话 meta 随之一致）
+        self.config.model = settings.get("model") or self.config.model
+        self.llm = LLMClient(
+            self.config,
+            impl=impl,
+            policy_overrides=settings,
+        )
+        self.llm.on_retry = self._notify_retry
+        self._emit_provider_selected(origin="user")
+        return True
+
+    def set_active_model(self, model: str) -> None:
+        """只改激活实例的 model（/model）：内存同步 + 持久化。
+
+        providers 配置时持久化到激活实例；扁平迁移路径只改 config.model
+        （存量行为≡现状）。实现侧配置一并同步（M2 工厂复制的缺口），凭据
+        未变则保留已建客户端，仅下次请求用新 model。
+        """
+        from .config import OpenXConfig
+
+        self.config.model = model
+        self._provider_settings["model"] = model
+        self.sync_provider_config()
+        ps = OpenXConfig.load_provider_settings()
+        providers = ps["providers"]
+        if providers:
+            active = ps["active_provider"]
+            if active in providers:
+                providers[active]["model"] = model
+                OpenXConfig.save_provider_settings(providers, active)
+
+    def sync_provider_config(self) -> None:
+        """把 agent.config 的连接字段同步进已建实现（/model、/config 后调用）。
+
+        内核 providers 工厂构造实现时**复制**了 settings（builtin/providers.py
+        的 ``_create_*``），实现与 agent.config 解耦；运行期改配置后必须
+        回写实现侧，否则下次请求仍用旧值。缺实现/异常一律静默。
+        """
+        impl = getattr(self, "llm", None)
+        provider = getattr(impl, "_impl", None)
+        icfg = getattr(provider, "config", None)
+        if icfg is None:
+            return
+        for key in ("api_key", "api_base", "model", "temperature", "max_tokens"):
+            try:
+                setattr(icfg, key, getattr(self.config, key))
+            except Exception:
+                pass
 
     def _accumulate_tokens(self, response: dict[str, Any]) -> None:
         """累计本轮 token 用量（镜像 stream_run 从 StreamDone 取的统计）。

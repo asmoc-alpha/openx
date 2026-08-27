@@ -133,12 +133,26 @@ class OpenXConfig:
 
     @staticmethod
     def is_configured() -> bool:
-        """Check if settings.json exists with all required fields."""
+        """Check if settings.json exists with all required fields.
+
+        两条路径任一满足即视为已配置：扁平 env 三件套（存量），或
+        providers 配置的激活实例带 api_key + model（M3 新增）。
+        """
         env = OpenXConfig.load_settings()
-        return all(
+        if all(
             env.get(k, "").strip()
             for k in ("OPENX_API_KEY", "OPENX_BASE_URL", "OPENX_DEFAULT_MODEL")
-        )
+        ):
+            return True
+        ps = OpenXConfig.load_provider_settings()
+        providers = ps["providers"]
+        active = ps["active_provider"]
+        if active in providers:
+            inst = providers[active]
+            return bool(
+                inst.get("api_key", "").strip() and inst.get("model", "").strip()
+            )
+        return False
 
     # ── Model profiles management ─────────────────────────────────
 
@@ -170,6 +184,30 @@ class OpenXConfig:
             OpenXConfig._save_full_settings(data)
             return True
         return False
+
+    # ── Provider instances management（模型接入层 P3，M3）─────────
+    # settings.json 顶层 ``providers``/``active_provider``：两级解耦--
+    # ``providers`` 存用户配的实例（名字 -> {kind, api_key, ...}），
+    # ``active_provider`` 指名激活哪个实例；``kind`` 才选内核注册表里的
+    # 实现（openai-compat / anthropic...）。缺省时由扁平字段迁移合成
+    # 隐式 default 实例（见 :meth:`resolve_provider`），存量配置零改动。
+
+    @staticmethod
+    def load_provider_settings() -> dict:
+        """读取 providers 配置：``{"providers": {...}, "active_provider": "..."}``。"""
+        data = OpenXConfig._load_full_settings()
+        return {
+            "providers": data.get("providers", {}) or {},
+            "active_provider": data.get("active_provider", "default") or "default",
+        }
+
+    @staticmethod
+    def save_provider_settings(providers: dict, active_provider: str) -> None:
+        """保存 providers 配置（顶层键），保留其他顶层键。"""
+        data = OpenXConfig._load_full_settings()
+        data["providers"] = providers
+        data["active_provider"] = active_provider
+        OpenXConfig._save_full_settings(data)
 
     # ── Plugin management（微内核 P1）─────────────────────────
 
@@ -301,6 +339,42 @@ class OpenXConfig:
                     getattr(self, key).extend(value)
                 else:
                     setattr(self, key, value)
+
+    # ── Provider 实例解析（M3）─────────────────────────────────
+
+    def resolve_provider(self) -> tuple[str, dict]:
+        """解析激活的 provider 实例，返回 ``(实例名, 实例配置 dict)``。
+
+        两级解耦的落点：``kind`` 选实现（内核注册表键），外层名字是用户
+        实例名。迁移规则（行为≡现状）：settings 无 ``providers`` 键时，
+        扁平 ``api_key/api_base/model`` 合成隐式实例 ``default``
+        （kind=openai-compat），``active_provider="default"``。
+
+        实例配置的缺省回落：api_key/api_base/model/temperature/max_tokens
+        缺省取本 config 的全局字段（CLI/环境覆盖随 ``load()`` 已并入）；
+        重试字段（max_retries/retry_base_delay）**只在实例显式声明时**出现
+        --策略对象读 config 实时值，构造后再改 config 依然生效。
+        """
+        ps = OpenXConfig.load_provider_settings()
+        providers = ps["providers"]
+        if not providers:
+            # 迁移：扁平字段合成隐式 default 实例
+            return "default", {
+                "kind": "openai-compat",
+                "api_key": self.api_key,
+                "api_base": self.api_base,
+                "model": self.model,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+            }
+        active = ps["active_provider"]
+        if active not in providers:
+            active = next(iter(providers))  # 激活名失效时回落首个实例
+        resolved = dict(providers[active])
+        resolved.setdefault("kind", "openai-compat")
+        for key in ("api_key", "api_base", "model", "temperature", "max_tokens"):
+            resolved.setdefault(key, getattr(self, key))
+        return active, resolved
 
     def save_global(self) -> None:
         """Save global config."""

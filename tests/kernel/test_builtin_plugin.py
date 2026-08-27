@@ -54,7 +54,7 @@ class TestBuiltinSemantics:
         def boom(ctx):
             raise RuntimeError("builtin broken")
 
-        monkeypatch.setattr("openx.builtin_tools.apply", boom)
+        monkeypatch.setattr("openx.builtin.tools.apply", boom)
         with pytest.raises(RuntimeError):
             get_kernel().ensure_loaded(str(ws))
 

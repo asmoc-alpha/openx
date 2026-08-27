@@ -89,7 +89,15 @@ class TestReload:
         # 无用户插件时仅剩 base bundle 内置插件（builtin-tools/builtin-providers）
         assert [i.source for i in k.inventory()] == ["base-bundle", "base-bundle"]
         assert len(k.registry("tools")) == 1       # core-tools 工厂
-        assert len(k.registry("providers")) == 1   # openai-compat 实现工厂
+        # providers：openai-compat 恒在；anthropic 视 SDK 可选注册（M4）
+        providers = k.registry("providers")
+        assert providers.get("openai-compat") is not None
+        try:
+            import anthropic  # noqa: F401
+        except ImportError:
+            assert len(providers) == 1
+        else:
+            assert len(providers) == 2
         assert k.instantiate_tools(None, include_builtin=False) == {}
 
     def test_half_loaded_state_retries(self, kernel_env, monkeypatch):
@@ -101,7 +109,7 @@ class TestReload:
         def boom(ctx):
             raise RuntimeError("builtin broken")
 
-        monkeypatch.setattr("openx.builtin_tools.apply", boom)
+        monkeypatch.setattr("openx.builtin.tools.apply", boom)
         try:
             k.ensure_loaded(str(ws))
         except RuntimeError:

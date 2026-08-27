@@ -23,7 +23,9 @@ openx/
 │   │   └── setup_wizard.py# 首次运行配置向导
 │   ├── kernel/            # 微内核：插件注册目录/注册表/加载器/清单/记账
 │   │   └── registrations.py 等
-│   ├── builtin_tools.py   # base bundle 内置插件（工具工厂，"一切能力皆插件"）
+│   ├── builtin/           # base bundle 内置插件包（tools/providers，"一切能力皆插件"）
+│   │   ├── tools.py       #   内置工具工厂
+│   │   └── providers.py   #   内置 provider 实现（openai-compat / anthropic）
 │   ├── core/
 │   │   ├── protocol.py    # 会话协议 schema + 事件信封（账本 = 协议外化）
 │   │   ├── history.py     # 对话历史 + 基于轮次的压缩（compaction）

@@ -35,6 +35,7 @@ from .inventory import (
 from .registrations import REGISTRATIONS
 from .registry import PluginRegistry
 from .validate import validate_tool
+from ..builtin import BUILTIN_PROVIDERS_ID, BUILTIN_TOOLS_ID
 
 __all__ = [
     "PluginKernel",
@@ -43,13 +44,12 @@ __all__ = [
     "PluginCommand",
     "get_kernel",
     "reset_kernel",
+    # base bundle 内置插件 id：失败=致命，禁用表对其无效，用户插件不得占用
+    "BUILTIN_TOOLS_ID",
+    "BUILTIN_PROVIDERS_ID",
 ]
 
 _log = logging.getLogger("openx.kernel")
-
-# base bundle 内置插件 id：失败=致命，禁用表对其无效，用户插件不得占用
-BUILTIN_TOOLS_ID = "builtin-tools"
-BUILTIN_PROVIDERS_ID = "builtin-providers"
 
 
 def _disabled_ids() -> list[str]:
@@ -105,22 +105,9 @@ class PluginKernel:
         self.workspace = workspace
         # base bundle 内置插件恒先挂载（列表序即优先级的结构性前提）：
         # builtin-tools 在前--组合决议/首条注册事件的既有次序不变
-        from .. import builtin_providers, builtin_tools
+        from ..builtin import BUILTIN_PLUGINS
 
-        for spec in (
-            loader.PluginSpec(
-                id=BUILTIN_TOOLS_ID,
-                source="base-bundle",
-                loaded=builtin_tools,
-                builtin=True,
-            ),
-            loader.PluginSpec(
-                id=BUILTIN_PROVIDERS_ID,
-                source="base-bundle",
-                loaded=builtin_providers,
-                builtin=True,
-            ),
-        ):
+        for spec in BUILTIN_PLUGINS:
             self._load_one(spec, disabled)
         for spec in loader.discover(workspace):
             self._load_one(spec, disabled)

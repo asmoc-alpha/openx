@@ -75,9 +75,15 @@ class SetupMixin:
         table = Table(show_header=False, box=None, padding=(0, 2), expand=False)
         table.add_column("key", style=DIM, width=16)
         table.add_column("value", style="white")
-        table.add_row("API Base URL:", env.get("OPENX_BASE_URL", ""))
-        table.add_row("API Key:", mask_key(env.get("OPENX_API_KEY", "")))
-        table.add_row("Model:", env.get("OPENX_DEFAULT_MODEL", ""))
+
+        def row(key: str, value: str, always: bool = False) -> None:
+            # Anthropic 分支无 base URL：空行不展示，避免空行误读
+            if always or value:
+                table.add_row(key, value)
+
+        row("API Base URL:", env.get("OPENX_BASE_URL", ""))
+        row("API Key:", mask_key(env.get("OPENX_API_KEY", "")), always=True)
+        row("Model:", env.get("OPENX_DEFAULT_MODEL", ""))
         self._console.print(
             Panel(
                 table,

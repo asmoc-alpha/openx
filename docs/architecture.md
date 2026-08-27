@@ -25,7 +25,9 @@ openx/
 │   │   └── setup_wizard.py# First-run configuration wizard
 │   ├── kernel/            # Microkernel: plugin registration catalog, registries, loader, inventory, ledger
 │   │   └── registrations.py etc.
-│   ├── builtin_tools.py   # Base-bundle builtin plugin (tool factories; everything-is-a-plugin)
+│   ├── builtin/           # Base-bundle builtin plugin package (tools/providers; everything-is-a-plugin)
+│   │   ├── tools.py       #   Builtin tool factory
+│   │   └── providers.py   #   Builtin provider implementations (openai-compat / anthropic)
 │   ├── core/
 │   │   ├── protocol.py    # Session protocol schema + event envelope (ledger = externalized protocol)
 │   │   ├── history.py     # Conversation history + turn-based compaction

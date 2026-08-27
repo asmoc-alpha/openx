@@ -89,7 +89,9 @@ class TestMutationEvents:
         assert sink.events[0].payload["name"] == "core-tools"
         assert types.count("plugin_loaded") == 3  # 两个内置 + hello
         assert sink.events[1].payload["plugin"] == "builtin-tools"
-        assert types.count("registered") == 4  # 工具工厂+provider 工厂+hello 工具+hi 命令
+        # 工具工厂 + 各 provider 工厂（openai-compat 恒在、anthropic 视 SDK）+ hello 工具 + hi 命令
+        n_providers = len(get_kernel().registry("providers"))
+        assert types.count("registered") == 3 + n_providers
         comp = sink.of("composition_resolved")
         assert len(comp) == 1
         assert comp[0].payload["plugins"] == [

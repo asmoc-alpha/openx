@@ -1,4 +1,4 @@
-"""base bundle 内置插件 —— "一切能力皆插件" 的第一批。
+"""base bundle 内置插件之一：内置工具（builtin-tools）。
 
 内置工具集从 ``_build_tools`` 的硬编码列表升格为内置插件：``apply(ctx)``
 注册**工具工厂**（非实例）——内置工具需按 agent 构造（workspace、
@@ -11,24 +11,24 @@ console/tasks/todos 引用、结构性工具看 ``_parent``），内核在
 
 from __future__ import annotations
 
-from .tools.ask_user_tool import AskUserTool
-from .tools.file_tools import (
+from ..core.subagent import load_subagent_specs
+from ..tools.ask_user_tool import AskUserTool
+from ..tools.file_tools import (
     EditFileTool, GlobTool, ListDirectoryTool, ReadFileTool, WriteFileTool,
 )
-from .tools.git_tools import (
+from ..tools.git_tools import (
     GitBranchTool, GitDiffTool, GitLogTool, GitStatusTool,
 )
-from .tools.memory_tool import MemoryTool
-from .tools.mode_tools import ChooseModeTool
-from .tools.plan_tools import ExitPlanModeTool
-from .tools.search_tools import GrepTool
-from .tools.shell_tools import ShellTool
-from .tools.subagent_tool import TaskTool
-from .tools.task_tools import TaskOutputTool, TaskStopTool
-from .tools.todo_tools import TodoWriteTool
-from .tools.web_tools import WebFetchTool, WebSearchTool
-from .tools.workflow_tool import WorkflowTool
-from .core.subagent import load_subagent_specs
+from ..tools.memory_tool import MemoryTool
+from ..tools.mode_tools import ChooseModeTool
+from ..tools.plan_tools import ExitPlanModeTool
+from ..tools.search_tools import GrepTool
+from ..tools.shell_tools import ShellTool
+from ..tools.subagent_tool import TaskTool
+from ..tools.task_tools import TaskOutputTool, TaskStopTool
+from ..tools.todo_tools import TodoWriteTool
+from ..tools.web_tools import WebFetchTool, WebSearchTool
+from ..tools.workflow_tool import WorkflowTool
 
 
 def build_core_tools(agent) -> list:

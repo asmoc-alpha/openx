@@ -322,7 +322,7 @@ Event = {
 | `kernel/registrations.py` + `registry.py`（PluginRegistry/Entry/seq） | §1.1-§1.2 | 已落地（K1）；补作用域、卸载 |
 | `kernel/loader.py` 五阶段 | §1.4 | 补依赖拓扑、作用域、动态插入复用 |
 | `kernel/validate.py` 形状校验 | §1.1 | 已落地（随 K1 目录化） |
-| `builtin_tools.py` base bundle | §1.3 计算组合的内置项 | 已对齐 |
+| `builtin/tools.py` base bundle | §1.3 计算组合的内置项 | 已对齐 |
 | `permissions.py` + executor prepare 闸门 | §2.2 升格入 `kernel/guard.py` | 管线对象化 + 半格折叠 + 决策记账 |
 | `core/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
 | `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；双账本与决策事件族随 K5 |

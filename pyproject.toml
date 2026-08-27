@@ -37,6 +37,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# anthropic 原生 provider（llm/anthropic.py）的可选依赖：缺失时该实现
+# 不注册（builtin-providers 跳过，非失败）--可选依赖不是产品缺陷。
+anthropic = [
+    "anthropic>=0.40.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

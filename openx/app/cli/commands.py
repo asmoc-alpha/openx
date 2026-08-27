@@ -179,9 +179,9 @@ async def _cmd_clear(agent, console, args):
 async def _cmd_model(agent, console, args):
     from ...config import OpenXConfig
 
-    # 带参数：直接切换（兼容旧行为）
+    # 带参数：直接切换（只改激活实例的 model，M3）
     if args:
-        agent.config.model = args[0]
+        agent.set_active_model(args[0])
         console.print_success(f"Model set to: {args[0]}")
         return True
 
@@ -220,26 +220,84 @@ async def _cmd_model(agent, console, args):
     if choice == "__manual__":
         from ...ui._style import PROMPT_STYLE
         console.raw.print()
-        value = paste_aware_input(console.raw, 
+        value = paste_aware_input(console.raw,
             f"  [{PROMPT_STYLE}]Model name[/{PROMPT_STYLE}]: "
         ).strip()
         if value:
-            agent.config.model = value
+            agent.set_active_model(value)
             console.print_success(f"Model set to: {value}")
         return True
 
     if choice and choice in profiles:
         prof = profiles[choice]
-        agent.config.model = prof.get("model", agent.config.model)
+        agent.set_active_model(prof.get("model", agent.config.model))
         if prof.get("api_base"):
             agent.config.api_base = prof["api_base"]
         if prof.get("api_key"):
             agent.config.api_key = prof["api_key"]
+        agent.sync_provider_config()
         # 凭据可能变了 → 丢弃已建客户端
         agent.llm._client = None
         console.print_success(
             f"Switched to profile '{choice}' → model: {agent.config.model}"
         )
+    return True
+
+
+@register("provider", description="List or switch the active LLM provider instance")
+async def _cmd_provider(agent, console, args):
+    from ...config import OpenXConfig
+
+    ps = OpenXConfig.load_provider_settings()
+    providers = ps["providers"]
+
+    # ── 无参：列出实例与激活态 ─────────────────────────────────
+    if not args:
+        if not providers:
+            console.print_info(
+                "No provider instances configured — using flat config "
+                "(implicit 'default' instance, kind=openai-compat).\n\n"
+                "Add instances under \"providers\" in ~/.openx/settings.json:\n"
+                '  {"providers": {"claude": {"kind": "anthropic", '
+                '"api_key": "…", "model": "…"}}, '
+                '"active_provider": "claude"}\n'
+                "Then switch with: /provider <name>"
+            )
+            return True
+        console.raw.print(
+            "\n[bold]Provider Instances[/bold]  "
+            "[dim](~/.openx/settings.json)[/dim]\n"
+        )
+        active = ps["active_provider"]
+        for name, inst in providers.items():
+            kind = inst.get("kind", "openai-compat")
+            model = inst.get("model", "")
+            mark = " [green]← active[/green]" if name == active else ""
+            console.raw.print(
+                f"  [bold cyan]{name}[/bold cyan] "
+                f"[dim]({kind})[/dim] {model}{mark}"
+            )
+        console.raw.print("\n[dim]Switch: /provider <name>[/dim]")
+        return True
+
+    # ── 带参：切换（校验存在性；切换即重建 agent 的 provider 绑定）──
+    name = args[0]
+    if name not in providers:
+        console.print_error(f"Provider '{name}' not configured.")
+        return True
+    if not agent.switch_provider(name):
+        console.print_error(
+            f"Cannot switch to '{name}': implementation "
+            f"'{providers[name].get('kind', 'openai-compat')}' not available "
+            "(missing SDK?)."
+        )
+        return True
+    OpenXConfig.save_provider_settings(providers, name)
+    inst = providers[name]
+    console.print_success(
+        f"Active provider set to: {name}  "
+        f"({inst.get('kind', 'openai-compat')} · {inst.get('model', '')})"
+    )
     return True
 
 
@@ -509,6 +567,7 @@ async def _cmd_config(agent, console, args):
         env[env_key] = value
         OpenXConfig.save_settings(env)
         setattr(c, field, value)
+        agent.sync_provider_config()  # 回写实现侧 config（M2 工厂复制的缺口）
         # api_key / api_base 变了 → 丢弃已建客户端，下次调用按新凭据重建
         agent.llm._client = None
 

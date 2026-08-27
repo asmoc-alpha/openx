@@ -1,8 +1,8 @@
 # 模型接入层设计 · Provider 零件化（P1 全量）
 
-> 状态：**已定稿待实施**（2026-08-24 计划确认）。范围与三个决断由用户
-> 拍板：P-A~P-D 全做；重试/退避**现在就上收内核**；Anthropic 原生
-> **同批实现**。
+> 状态：**已定稿并实施**（2026-08-24 计划确认，2026-08-26 落地 M1~M5）。
+> 范围与三个决断由用户拍板：P-A~P-D 全做；重试/退避**现在就上收内核**；
+> Anthropic 原生**同批实现**。
 >
 > 上位文档：`openx-architecture-design.md`（v4.1 §8.2 零件与槽表：
 > Provider 是零件、重试/退避/超时归内核、实现固定 chat/stream 接口）、
@@ -156,17 +156,23 @@ kind、model、origin=user|kernel）。切换留痕是将来"为什么这次回�
 
 ## 9. 落地切片（每步可独立验收，前三步行为≡现状）
 
-1. **M1 形状与重试上收**：`kernel/provider.py`（形状+错误契约）+
-   `kernel/retry.py`（策略+`RetryingProvider`）；`llm/client.py` 重构为
-   单次实现 + 门面；重试测试迁移至内核层，语义断言逐条不变。
-2. **M2 注册与内置迁移**：providers 注册项；`builtin-providers` 插件；
-   base bundle 插件列表化；`agent.llm` 经内核解析（flat 配置 ->
-   default 实例，行为≡现状）。
-3. **M3 多 provider 配置**：config `providers`/`active_provider` 与迁移；
-   `/provider` 命令；setup wizard 适配。
-4. **M4 Anthropic 适配**：`llm/anthropic.py` + 可选 extra + 离线转换
-   测试。
-5. **M5 记账**：`provider_selected` 事件（两处触发）。
+1. ~~**M1 形状与重试上收**~~ **已完成**（2026-08-26）：`kernel/provider.py`
+   （形状+错误契约）+ `kernel/retry.py`（策略+`RetryingProvider`）；
+   `llm/openai_compat.py` 重构为单次实现 + 门面；`llm/base.py` 收口实现
+   层的共享编排面（chat/stream_chat 骨架 + SDK 异常->契约翻译，openai_compat
+   与 anthropic 共用）；重试测试迁移至内核层，语义断言逐条不变。
+2. ~~**M2 注册与内置迁移**~~ **已完成**（2026-08-26）：providers 注册项；
+   `builtin-providers` 插件；base bundle 插件列表化；`agent.llm` 经内核
+   解析（flat 配置 -> default 实例，行为≡现状）。
+3. ~~**M3 多 provider 配置**~~ **已完成**（2026-08-26）：config
+   `providers`/`active_provider` 与迁移（`resolve_provider` 合成隐式
+   default 实例）；`/provider` 命令（列出/切换即重建绑定）；`/model` 只改
+   激活实例的 model；setup wizard 增加 provider 类型选择。
+4. ~~**M4 Anthropic 适配**~~ **已完成**（2026-08-26）：`llm/anthropic.py`
+   （边界双向转换 + 流事件映射 + 错误契约）+ 可选 extra
+   （`pip install openx[anthropic]`）+ 离线转换测试。
+5. ~~**M5 记账**~~ **已完成**（2026-08-26）：`provider_selected` 事件
+   （agent 绑定 origin=kernel、/provider 切换 origin=user）。
 
 依赖序：M1 -> M2 -> M3 ->（M4、M5 可并行）。
 

@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openx.config import OpenXConfig
 from openx.kernel import get_kernel
-from openx.llm.client import LLMClient, OpenAICompatProvider
+from openx.llm.openai_compat import LLMClient, OpenAICompatProvider
 
 from ._helpers import write_plugin
 
@@ -35,11 +37,26 @@ class TestProviderRegistry:
         k = get_kernel()
         k.ensure_loaded(str(ws))
         reg = k.registry("providers")
-        assert reg is not None and len(reg) == 1
+        assert reg is not None
         entry = reg.get("openai-compat")
         assert entry is not None and entry.plugin == "builtin-providers"
         info = next(i for i in k.inventory() if i.id == "builtin-providers")
-        assert info.providers == ["openai-compat"]
+        assert "openai-compat" in info.providers
+
+    def test_anthropic_registered_when_sdk_present(self, kernel_env):
+        """anthropic 实现随 M4 注册；SDK 缺失时跳过注册（非失败）。"""
+        pytest.importorskip("anthropic")
+        ws, _ = kernel_env
+        k = get_kernel()
+        k.ensure_loaded(str(ws))
+        entry = k.registry("providers").get("anthropic")
+        assert entry is not None and entry.plugin == "builtin-providers"
+        impl = k.build_provider({
+            "kind": "anthropic",
+            "api_key": "sk-x",
+            "model": "claude-3",
+        })
+        assert type(impl).__name__ == "AnthropicProvider"
 
     def test_build_provider_returns_impl(self, kernel_env):
         ws, _ = kernel_env

@@ -12,7 +12,7 @@
 - on_retry 回调：序号 1 起、异常被吞不影响重试。
 
 风格：pytest-asyncio auto、手写 Fake（禁 unittest.mock）、
-monkeypatch 模块常量（client._sleep）实现瞬时重试。
+monkeypatch 模块常量（openai_compat._sleep）实现瞬时重试。
 
 运行：``python -m pytest tests/test_retries.py -q``
 """
@@ -30,8 +30,8 @@ from openai import (
 
 from openx.config import OpenXConfig
 from openx.llm import StreamDone
-from openx.llm import client as client_mod
-from openx.llm.client import (
+from openx.llm import openai_compat as client_mod
+from openx.llm.openai_compat import (
     MAX_RETRY_DELAY,
     LLMClient,
     StreamReasoning,

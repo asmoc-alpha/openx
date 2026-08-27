@@ -272,7 +272,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         print("Error: No API key configured.", file=sys.stderr)
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)
-    if not config.api_base.strip():
+    # api_base 仅 openai-compat 迁移路径必需；providers 配置的激活实例
+    # （如 anthropic 原生）无 base URL 概念。
+    if not config.api_base.strip() and not OpenXConfig.load_provider_settings()["providers"]:
         print("Error: No API base URL configured.", file=sys.stderr)
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)

@@ -253,7 +253,7 @@ class HarnessLoop:                                  # loop 槽默认实现
 |---|---|---|
 | `agent.py`（agentic loop） | loop 槽默认实现 | 移入 `slots/loop.py`，接口形状抽到内核 |
 | `permissions.py` | 把关（收编入内核） | 并入 `kernel/guard.py`，析出资源闸 |
-| `llm/client.py` | Provider 零件 | 经注册表注册，重试归内核 |
+| `llm/openai_compat.py` | Provider 零件 | 经注册表注册，重试归内核 |
 | `tools/*` | Tools 零件 | 迁入统一注册表，工具表改聚合视图 |
 | `ui/console.py` | 端层（协议消费者） | 渲染逻辑与 agent 解耦，等协议层 |
 | `main.py`（REPL） | 端层 + 意图归一 | 拆分：输入归一留下，loop 宿主职责交还内核 |

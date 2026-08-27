@@ -45,7 +45,7 @@
 | ctx | `kernel/context.py` | 给予面三个注册 API |
 | 校验 | `kernel/validate.py` | tools / commands 形状校验 |
 | 清单 | `kernel/inventory.py` | 只读投影 |
-| base bundle | `openx/builtin_tools.py` | 工厂注册，内置=致命、禁用表无效 |
+| base bundle | `openx/builtin/`（tools/providers） | 工厂注册，内置=致命、禁用表无效 |
 | 协议 | `openx/core/protocol.py` | P1 下行构造器 + Event 信封（seq/ts/cause/origin/digest） |
 | 权限桥 | `app/cli/single_shot.py` | NDJSON 双向，fail-closed |
 | 权限裁决 | `permissions.py` + `services/tool_executor.py` | 在 executor 串行准备段，未入内核 |
