@@ -36,15 +36,15 @@ class PluginContext:
         """注册一个工具实例（须自声明 permission，形状校验拒载记警告）。
 
         实例即时校验；入库时包一层工厂--tools 注册项的值统一为
-        ``factory(agent) -> list[Tool]``，消费方只有一种取用形态。
+        ``factory(host) -> list[Tool]``，消费方只有一种取用形态。
         """
         self._kernel.register_tool(tool, self.plugin_id)
 
     def register_tool_factory(self, name: str, factory: Any) -> None:
-        """注册工具工厂：``factory(agent) -> list[Tool]``，按 agent 实例化。
+        """注册工具工厂：``factory(host) -> list[Tool]``，按 host 实例化。
 
-        内置工具需 agent 构造参数（console/tasks/todos 引用），故 base
-        bundle 走工厂而非实例；产出在实例化时逐个形状校验。
+        host 是 ToolHost（kernel/host.py）--实例化期的收窄给予面，
+        插件拿不到 agent 本体；产出在实例化时逐个形状校验。
         """
         self._kernel.register_tool_factory(name, factory, self.plugin_id)
 

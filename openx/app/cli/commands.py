@@ -70,29 +70,43 @@ def register(
     return decorator
 
 
+def _plugin_commands():
+    """插件命令注册表（只读视图；K3a 取用通道收敛后由消费方直查）。"""
+    from ...kernel import get_kernel
+
+    return get_kernel().registry("commands")
+
+
 def find_handler(name: str) -> Optional[Callable[..., Awaitable[bool]]]:
     """Return the handler for *name*, or ``None``.
 
-    内置优先；未命中才查插件命令注册表（微内核 P1）。
+    内置优先；未命中才查插件命令注册表（主名 -> 别名）。
     """
     if name in _commands:
         return _commands[name]
     canonical = _aliases.get(name)
     if canonical:
         return _commands.get(canonical)
-    from ...kernel import get_kernel
-
-    return get_kernel().lookup_command(name)
+    registry = _plugin_commands()
+    if registry is None:
+        return None
+    entry = registry.get(name)
+    if entry is not None:
+        return entry.value.handler
+    for e in registry.entries():
+        if name in e.value.aliases:
+            return e.value.handler
+    return None
 
 
 def all_descriptions() -> dict[str, str]:
     """Return ``{name: description}`` for every registered command."""
     desc = dict(_descriptions)
-    from ...kernel import get_kernel
-
-    # 插件命令并入帮助；内置名优先（setdefault 不覆盖）。
-    for name, d, _ in get_kernel().command_menu_entries():
-        desc.setdefault(name, d)
+    registry = _plugin_commands()
+    if registry is not None:
+        # 插件命令并入帮助；内置名优先（setdefault 不覆盖）。
+        for e in registry.entries():
+            desc.setdefault(e.name, e.value.description)
     return desc
 
 
@@ -110,14 +124,14 @@ def menu_entries() -> list[tuple[str, str, list[str]]]:
         (name, _descriptions.get(name, ""), sorted(by_canonical.get(name, [])))
         for name in sorted(_commands)
     ]
-    from ...kernel import get_kernel
-
-    kernel = get_kernel()
-    for name, desc, aliases in kernel.command_menu_entries():
-        if name in _commands or name in _aliases:
-            kernel.note_command_conflict(name)
-            continue
-        entries.append((name, desc, aliases))
+    registry = _plugin_commands()
+    if registry is not None:
+        for e in registry.entries():
+            if e.name in _commands or e.name in _aliases:
+                # 内置优先跳过；记警告（inventory 投影据此展示）
+                registry.note_conflict(e.name, e.name)
+                continue
+            entries.append((e.name, e.value.description, sorted(e.value.aliases)))
     return entries
 
 

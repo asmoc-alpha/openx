@@ -6,9 +6,15 @@
 不然）。P1 落地的是插件维护 + 编排的装配段；沙箱执行与记账按切片
 （K2 起）逐步就位。
 
-P1 开放两类注册项（目录表驱动，见 registrations.py）：tools 与 slash
-commands。混合内核纪律：loop / executor / 安全底线等内核驻留核心不在
-本包，也不可插拔。
+P1 开放三类注册项（目录表驱动，见 registrations.py）：tools、slash
+commands、providers。混合内核纪律：loop / executor / 安全底线等内核
+驻留核心不在本包，也不可插拔。
+
+内核 API（v2.1 §0 取用通道收敛，K3a）：装配（ensure_loaded）、
+``registry(kind)`` 只读视图、记账（emit/attach_ledger）、清单
+（inventory），外加 ctx 注册回调。消费方装配策略（工具实例化仲裁、
+provider 解析、命令菜单合并）不住内核--见 ``services/assembly.py``
+与 ``app/cli/commands.py``。
 
 组合输入（P1）：用户目录 ~/.openx/plugins、项目 .openx/plugins、
 pip entry-points group ``openx.plugins``；settings.json 顶层
@@ -180,7 +186,7 @@ class PluginKernel:
         info = self._plugins.get(plugin_id)
         problems = validate_tool(name, tool)
         if not problems:
-            factory = lambda agent: [tool]  # noqa: E731 -- 实例包一层工厂
+            factory = lambda host: [tool]  # noqa: E731 -- 实例包一层工厂
             problems = self.registry("tools").register(name, factory, plugin_id)
         self._note_registered("tools", name, plugin_id, problems)
         if problems:
@@ -192,7 +198,7 @@ class PluginKernel:
             info.tools.append(name)
 
     def register_tool_factory(self, name: str, factory: Any, plugin_id: str) -> None:
-        """工具工厂注册（base bundle 内置插件路径）。"""
+        """工具工厂注册：``factory(host) -> list[Tool]``（K3a ToolHost）。"""
         problems = self.registry("tools").register(name, factory, plugin_id)
         info = self._plugins.get(plugin_id)
         self._note_registered("tools", name, plugin_id, problems)
@@ -314,100 +320,6 @@ class PluginKernel:
                 _log.exception("ledger sink failed; event %r dropped", type_)
         return event
 
-    # ── 消费方 API（agent / commands 面对注册表）──────────────
-
-    def build_provider(self, settings: dict) -> Optional[Any]:
-        """按 ``settings["kind"]`` 从注册表实例化 provider 实现。
-
-        返回**单次实现**（无重试包装）--重试由调用方组合内核
-        RetryingProvider（LLMClient 门面）。未注册的 kind -> None，调用
-        方决定回退。缺省 kind = "openai-compat"。
-        """
-        kind = str(settings.get("kind") or "openai-compat")
-        reg = self.registry("providers")
-        entry = reg.get(kind) if reg is not None else None
-        if entry is None:
-            return None
-        return entry.value(settings)
-
-    def instantiate_tools(
-        self, agent: Any, *, include_builtin: bool = True, include_plugins: bool = True
-    ) -> dict:
-        """按 agent 实例化 tools 注册表 -> {name: Tool}。
-
-        注册序即优先级（内置恒首挂载）：先产出的工具名先得，后来者
-        跳过并记警告--"内置优先"由此成为结构性保证，无需消费方仲裁。
-        ``include_plugins=False`` 供子代理使用：只实例化内置，不继承
-        用户插件（同 task/exit_plan_mode 等结构性工具待遇）。
-        """
-        registry: dict = {}
-        produced_by: dict[str, str] = {}  # tool name -> plugin id
-        tools_reg = self.registry("tools")
-        assert tools_reg is not None
-        for entry in tools_reg.entries():
-            if not include_builtin and self._is_builtin(entry.plugin):
-                continue
-            if not include_plugins and not self._is_builtin(entry.plugin):
-                continue
-            for tool in entry.value(agent):
-                tname = getattr(tool, "name", "") or "<unnamed>"
-                problems = validate_tool(tname, tool)
-                if problems:
-                    if self._is_builtin(entry.plugin):
-                        # 内置插件产出畸形 = 产品坏，带病不该运行
-                        raise TypeError(
-                            f"builtin tool {tname!r} malformed: {'; '.join(problems)}"
-                        )
-                    for p in problems:
-                        tools_reg.add_warning(
-                            entry.name, f"rejected tool {tname!r}: {p}"
-                        )
-                    continue
-                if tname in registry:
-                    owner = produced_by[tname]
-                    if self._is_builtin(owner):
-                        warning = (
-                            f"tool {tname!r} conflicts with builtin "
-                            f"{owner!r}; builtin wins"
-                        )
-                    else:
-                        warning = (
-                            f"tool {tname!r} already provided by {owner!r}; "
-                            "first wins"
-                        )
-                    tools_reg.add_warning(entry.name, warning)
-                    continue
-                registry[tname] = tool
-                produced_by[tname] = entry.plugin
-        return registry
-
-    def lookup_command(self, name: str) -> Optional[Any]:
-        """命令分发：主名 -> 别名 -> None（内置先查，调用方保证顺序）。"""
-        commands = self.registry("commands")
-        assert commands is not None
-        entry = commands.get(name)
-        if entry is not None:
-            return entry.value.handler
-        for e in commands.entries():
-            if name in e.value.aliases:
-                return e.value.handler
-        return None
-
-    def command_menu_entries(self) -> list[tuple[str, str, list[str]]]:
-        """补全菜单数据（插件部分）：[(name, description, aliases)]。"""
-        commands = self.registry("commands")
-        assert commands is not None
-        return [
-            (e.name, e.value.description, sorted(e.value.aliases))
-            for e in commands.entries()
-        ]
-
-    def note_command_conflict(self, name: str) -> None:
-        """commands.py 回报内置优先跳过；记入 inventory 警告。"""
-        commands = self.registry("commands")
-        assert commands is not None
-        commands.note_conflict(name, name)
-
     # ── 清单 ────────────────────────────────────────────────
 
     def inventory(self) -> list[PluginInfo]:
@@ -421,10 +333,6 @@ class PluginKernel:
                     if w not in info.warnings:
                         info.warnings.append(w)
         return [copy.copy(p) for p in self._plugins.values()]
-
-    def _is_builtin(self, plugin_id: str) -> bool:
-        info = self._plugins.get(plugin_id)
-        return bool(info and info.builtin)
 
 
 _kernel: Optional[PluginKernel] = None

@@ -40,11 +40,18 @@ from typing import Any, Callable, Optional
 from ..core.hooks import (
     HookRunner,
     build_posttooluse_payload,
-    build_pretooluse_payload,
 )
-from ..permissions import PermissionLevel, PermissionRules
+from ..kernel.guard import Adjudication, GateCall, Guard
+from ..permissions import PermissionRules
 from ..tools.base import Tool, ToolResult
 from ..ui.console import Console
+
+
+def _kernel_emit(*args, **kwargs):
+    """晚绑定内核单例 emit：测试 reset_kernel 后仍指向当下内核。"""
+    from ..kernel import get_kernel
+
+    return get_kernel().emit(*args, **kwargs)
 
 
 @dataclass
@@ -107,6 +114,17 @@ class ToolExecutor:
         # 可为 None；回调异常会被吞掉，绝不影响主流程。
         self.on_prompt_start: Optional[Callable[[], None]] = None
         self.on_prompt_end: Optional[Callable[[], None]] = None
+        # K3 执行闸：裁决管线析出入 kernel/guard.py。mode/auto_approve/
+        # rules 以闭包晚绑定（运行期可变：set_mode、plan 批准开
+        # auto_approve、测试重挂 _rules）；prompter 留在本层——UI 不进内核。
+        self._guard = Guard(
+            emit=_kernel_emit,
+            rules=lambda: self._rules,
+            hooks=hook_runner,
+            prompter=self._prompt_user,
+            mode=lambda: self.mode,
+            auto_approve=lambda: self.auto_approve,
+        )
 
     # ── public API ──────────────────────────────────────────────
 
@@ -135,13 +153,11 @@ class ToolExecutor:
         running the tool.
 
         关卡顺序：未知工具 → JSON 解析 → dict 检查 → ``validate_args`` →
-        plan-mode 拦截 → choose_mode 防线（仅 manual 可用）→ 存储 deny 规则
-        → PreToolUse 钩子（可阻断，即便存储规则已 allow——策略覆盖缓存的
-        用户决定）→ **force_prompt 计算**（manual 下 ASK 工具 / 高风险调用
-        强制弹窗，排在存储 allow 提前返回之前——已存规则永不跳过危险弹窗）
-        → 存储 allow 规则 → 工具级 DENY → ``auto_allowed`` 预批准 → ASK
-        交互式询问（在 ``_prompt_lock`` 下串行，弹窗前后触发
-        ``on_prompt_start``/``on_prompt_end``）。
+        **Guard 七站裁决**（kernel/guard.py：plan/choose_mode 硬拒绝 →
+        自声明 → 高危强制 → PreToolUse hooks 只紧不松 → force_prompt →
+        存储裁决 → 用户裁决，弹窗在 ``_prompt_lock`` 下串行、前后触发
+        ``on_prompt_start``/``on_prompt_end``；每次裁决记
+        ``permission_decision`` 事件）。
 
         任何失败都落成 ``pc.pre_result``（``approved=False``）——**绝不抛
         异常**，因此可以安全地对一批调用依次 prepare 再并行执行。
@@ -188,144 +204,21 @@ class ToolExecutor:
                 pc.approved = False
                 return pc
 
-            # Plan-mode 第二道防线：schema 过滤已让模型"看不见"写入类工具，
-            # 这里再按权限级别硬拦截——即便模型臆造工具名也绝不放行。
-            # exit_plan_mode 是审批出口本身，必须放行。
-            if (
-                self.mode == "plan"
-                and tool.permission.level
-                in (PermissionLevel.ASK, PermissionLevel.DENY)
-                and tool_name != "exit_plan_mode"
-            ):
-                pc.pre_result = ToolResult(
-                    error="Plan mode is active — write tools are disabled. "
-                          "Present your plan and call exit_plan_mode."
-                )
-                pc.approved = False
-                return pc
-
-            # choose_mode 只在 manual 模式有效（第二道防线，镜像 plan 闸门）：
-            # schema 过滤已在非 manual 下隐藏它，这里防模型臆造调用。
-            if tool_name == "choose_mode" and self.mode != "manual":
-                pc.pre_result = ToolResult(
-                    error=f"choose_mode is only available in manual mode "
-                          f"(current mode: {self.mode}). Proceed in the "
-                          f"current mode."
-                )
-                pc.approved = False
-                return pc
-
             # Build a short summary for rule matching
             args_summary = _summarize_args(args, tool_name)
 
-            # Check stored rules first
-            stored = self._rules.check(tool_name, args_summary)
-            if stored == PermissionLevel.DENY:
-                pc.pre_result = ToolResult(
-                    error=f"Tool '{tool_name}' is blocked by a stored deny rule"
-                )
-                pc.approved = False
-                return pc
-
-            # PreToolUse 钩子：外部策略脚本（合规/护栏）的一票否决权。
-            # 必须排在存储 ALLOW 提前返回之前——钩子可以驳回已被缓存批准的
-            # 调用（策略覆盖用户此前的决定）。警告仅提示、不阻断。
-            if self.hooks and self.hooks.has_hooks("PreToolUse", tool_name):
-                outcome = await self.hooks.run(
-                    "PreToolUse",
-                    build_pretooluse_payload(
-                        tool_name,
-                        pc.args or {},
-                        workspace=self.hooks.workspace,
-                        session_id=self.hooks.session_id,
-                    ),
-                )
-                self._report_hook_warnings(outcome.warnings)
-                if outcome.blocked:
-                    pc.pre_result = ToolResult(
-                        error=f"Blocked by PreToolUse hook: {outcome.reason}"
-                    )
-                    pc.approved = False
-                    return pc
-
-            # 提前计算权限级别（无副作用），供强制弹窗判定与后续检查共用。
-            perm = tool.permission
-
-            # 强制弹窗（always-ask）两种来源：
-            # - manual 模式下的一切 ASK 工具——绕过存储规则/白名单/auto_approve，
-            #   逐项授权，且绝不落盘放行规则；
-            # - 高风险调用（如 shell 命中 config.dangerous_commands）——任何
-            #   模式下都弹窗。本计算**必须**排在存储 allow 提前返回之前：
-            #   已存规则因此永远无法跳过危险弹窗，无需额外状态。
-            force_prompt = (
-                (self.mode == "manual" and perm.level == PermissionLevel.ASK)
-                or tool.is_high_risk(args)
+            # 裁决（K3 执行闸）：七站管线在 kernel/guard.py——plan/
+            # choose_mode 硬拒绝、存储规则、PreToolUse hooks（只紧不松）、
+            # force_prompt、自声明、用户裁决全部在 gate() 内完成；每次
+            # 裁决记 permission_decision 事件上账本（记账先于动作）。
+            adj: Adjudication = await self._guard.gate(
+                GateCall(tool_name, tool, args, args_summary)
             )
-
-            if stored == PermissionLevel.ALLOW and not force_prompt:
-                return pc  # auto-allowed by stored rule
-
-            # Fall through to tool-level permission check
-            if perm.level == PermissionLevel.DENY:
-                pc.pre_result = ToolResult(
-                    error=f"Tool '{tool_name}' is blocked: {perm.reason}"
-                )
+            self._report_hook_warnings(adj.hook_warnings)
+            if not adj.approved:
+                pc.pre_result = ToolResult(error=adj.reason)
                 pc.approved = False
                 return pc
-
-            # Tool-specific pre-approval (e.g. shell allowed_commands
-            # whitelist): skip the interactive prompt — unless this call is
-            # force-prompted (manual mode or high-risk).
-            if tool.auto_allowed(args) and not force_prompt:
-                return pc
-
-            if perm.level == PermissionLevel.ASK and (
-                force_prompt or not self.auto_approve
-            ):
-                # 变更预览：write/edit 类工具实现 preview_diff → 弹窗渲染
-                # 彩色 unified diff（manual 模式的审批依据）。预览成功时
-                # JSON 参数已冗余（diff 含全部变更信息）→ 清空 details；
-                # 预览 None（其他工具 / 探测失败）→ 回退 JSON 参数展示。
-                diff = None
-                preview = getattr(tool, "preview_diff", None)
-                if preview is not None:
-                    try:
-                        diff = preview(args)
-                    except Exception:
-                        diff = None  # 预览绝不允许拖垮弹窗
-                details = (
-                    "" if diff
-                    else json.dumps(args, ensure_ascii=False, indent=2)[:500]
-                )
-                # raw-mode stdin 上的弹窗绝不能并发：锁串行化。
-                async with self._prompt_lock:
-                    # 流式期（console 注册了活动流式服务）：权限选择委托
-                    # Live 内嵌面板（框下，不占满屏）——此时**不得**触发
-                    # pause 钩子（捕获线程正是面板热键来源，暂停即面板失
-                    # 灵）。非流式路径走传统全屏弹窗，钩子照旧暂停流式
-                    # 把终端交还弹窗（Bug 10）。
-                    svc = getattr(self.console, "_streaming_service", None)
-                    bridged = svc is not None and svc.is_live_active()
-                    if not bridged:
-                        self._fire_callback(self.on_prompt_start)
-                    try:
-                        approved, remember = await self.console.ask_permission(
-                            tool_name, perm.reason, details,
-                            args_summary=args_summary,
-                            # manual 模式逐项授权：隐藏"不再询问"选项
-                            can_remember=(self.mode != "manual"),
-                            diff=diff,
-                        )
-                    finally:
-                        if not bridged:
-                            self._fire_callback(self.on_prompt_end)
-                if not approved:
-                    pc.pre_result = ToolResult(error="Permission denied by user")
-                    pc.approved = False
-                    return pc
-                # manual 模式绝不落盘规则（can_remember=False 已阻止，双保险）
-                if remember and args_summary and self.mode != "manual":
-                    self._rules.add_allow(f"{tool_name}({args_summary})")
 
             return pc
         except Exception as e:
@@ -383,6 +276,50 @@ class ToolExecutor:
         return result, pc.approved
 
     # ── internals ───────────────────────────────────────────────
+
+    async def _prompt_user(self, call: GateCall, perm) -> tuple:
+        """⑦站 prompter：变更预览 + 锁串行 + 弹窗钩子 + console 询问。
+
+        UI 全部留在本层（内核不 import console）。fail-closed：异常向外
+        传播，prepare 的兜底把它落成错误结果——绝不执行。
+        """
+        # 变更预览：write/edit 类工具实现 preview_diff → 弹窗渲染彩色
+        # unified diff（manual 模式的审批依据）。预览成功时 JSON 参数已
+        # 冗余（diff 含全部变更信息）→ 清空 details；预览 None（其他
+        # 工具 / 探测失败）→ 回退 JSON 参数展示。
+        args = call.args
+        diff = None
+        preview = getattr(call.tool, "preview_diff", None)
+        if preview is not None:
+            try:
+                diff = preview(args)
+            except Exception:
+                diff = None  # 预览绝不允许拖垮弹窗
+        details = (
+            "" if diff
+            else json.dumps(args, ensure_ascii=False, indent=2)[:500]
+        )
+        # raw-mode stdin 上的弹窗绝不能并发：锁串行化。
+        async with self._prompt_lock:
+            # 流式期（console 注册了活动流式服务）：权限选择委托 Live
+            # 内嵌面板（框下，不占满屏）——此时**不得**触发 pause 钩子
+            # （捕获线程正是面板热键来源，暂停即面板失灵）。非流式路径
+            # 走传统全屏弹窗，钩子照旧暂停流式把终端交还弹窗（Bug 10）。
+            svc = getattr(self.console, "_streaming_service", None)
+            bridged = svc is not None and svc.is_live_active()
+            if not bridged:
+                self._fire_callback(self.on_prompt_start)
+            try:
+                return await self.console.ask_permission(
+                    call.tool_name, perm.reason, details,
+                    args_summary=call.args_summary,
+                    # manual 模式逐项授权：隐藏"不再询问"选项
+                    can_remember=(self.mode != "manual"),
+                    diff=diff,
+                )
+            finally:
+                if not bridged:
+                    self._fire_callback(self.on_prompt_end)
 
     @staticmethod
     def _fire_callback(cb: Callable[[], None] | None) -> None:

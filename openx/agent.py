@@ -84,7 +84,14 @@ from .permissions import PermissionLevel
 from .core.fleet import FleetMonitor
 from .core.history import ConversationHistory, SUMMARY_MARKER
 from .core.sessions import SessionMeta, SessionStore
-from .core.subagent import CHILD_EXCLUDED_TOOLS
+from .core.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
+from .kernel.host import ToolHost
+from .services import assembly
+from .tools.ask_user_tool import AskUserTool
+from .tools.mode_tools import ChooseModeTool
+from .tools.plan_tools import ExitPlanModeTool
+from .tools.subagent_tool import TaskTool
+from .tools.workflow_tool import WorkflowTool
 from .core.tasks import TaskRegistry
 from .memory import MemoryStore
 from .coding_memory import CodingMemoryStore
@@ -171,7 +178,7 @@ class OpenXAgent:
         kernel = get_kernel()
         kernel.ensure_loaded(str(self.workspace))
         self._provider_name, self._provider_settings = config.resolve_provider()
-        impl = kernel.build_provider(self._provider_settings)
+        impl = assembly.resolve_provider_impl(kernel, self._provider_settings)
         if impl is None:
             # kind 未注册（如 anthropic SDK 未装）：警告并回落 openai-compat。
             # LLMClient(impl=None) 自动退到直连实现；product 不带病运行。
@@ -447,11 +454,12 @@ class OpenXAgent:
     # ── 工具注册表 ───────────────────────────────────────────────
 
     def _build_tools(self) -> dict[str, Tool]:
-        """创建所有工具实例。
+        """组装工具注册表：结构性工具 + 注册表能力工具 + MCP/子代理裁剪。
 
-        注意：``TodoWriteTool`` 接收 ``self.todos`` 的引用，``AskUserTool``
-        接收 ``self.console`` 的引用，``ExitPlanModeTool`` 接收 agent 与
-        console 的引用——这样工具内部操作直接作用于 agent 状态。
+        注意：``TodoWriteTool`` 经 ToolHost 接收 ``self.todos`` 的引用，
+        ``AskUserTool`` 接收 ``self.console`` 的引用，``ExitPlanModeTool``
+        接收 agent 与 console 的引用——这样工具内部操作直接作用于
+        agent 状态。
         """
         # 后台任务注册表（Phase 7）：shell 后台模式与 task_output/task_stop
         # 工具共享同一实例；目录惰性创建，构造本身不触碰磁盘。
@@ -459,17 +467,51 @@ class OpenXAgent:
         # 退出清理，避免孤儿进程。
         self.tasks = self._parent.tasks if self._parent is not None else TaskRegistry()
 
-        # 内置工具集 = base bundle 内置插件（"一切能力皆插件"）：内核按
-        # agent 实例化 tools 注册表（openx/builtin/tools.py），注册序即
-        # 优先级、内置恒首--语义与旧硬编码列表逐条对齐（含结构性工具仅
-        # 顶层、_subagent_specs 副作用）。用户插件工具仅顶层 agent 载入，
-        # 子代理不继承（同 task/exit_plan_mode 等结构性工具待遇）。
         from .kernel import get_kernel
 
         kernel = get_kernel()
         kernel.ensure_loaded(str(self.workspace))
-        registry = kernel.instantiate_tools(
-            self, include_plugins=self._parent is None
+
+        # 结构性工具（内核驻留编排核心，非插件；仅顶层 agent 持有）——
+        # 恒先占位：插件同名工具在实例化时被拒并记警告（assembly 的
+        # reserved），"内置优先"是结构性保证。子代理规格表副作用保持
+        # 原语义：仅顶层填充（load_subagent_specs 坏文件跳过不报错）。
+        registry: dict[str, Tool] = {}
+        reserved: dict[str, str] = {}
+        self._subagent_specs: dict = {}
+        if self._parent is None:
+            self._subagent_specs = load_subagent_specs(str(self.workspace))
+            for tool in (
+                AskUserTool(self.console),
+                ExitPlanModeTool(self, self.console),
+                ChooseModeTool(self, self.console),
+                TaskTool(self, self._subagent_specs),
+                WorkflowTool(self),
+            ):
+                registry[tool.name] = tool
+                reserved[tool.name] = "builtin-structural"
+
+        # 能力工具 = base bundle 内置插件 + 用户插件（"一切能力皆插件"）：
+        # 工厂按 ToolHost 实例化（K3a）——插件拿不到 agent 本体；注册序
+        # 即优先级、内置恒首。用户插件工具仅顶层 agent 载入，子代理不
+        # 继承（能力继承 = 父集的子集，内核详设 §2.5）。
+        host = ToolHost(
+            workspace=str(self.workspace),
+            todos=self.todos,
+            tasks=self.tasks,
+            coding_memory=self.coding_memory,
+            allow_write_outside_workspace=self.config.allow_write_outside_workspace,
+            allowed_commands=self.config.allowed_commands,
+            dangerous_commands=self.config.dangerous_commands,
+            web_search_provider=self.config.web_search_provider,
+        )
+        registry.update(
+            assembly.instantiate_tools(
+                kernel,
+                host,
+                include_plugins=self._parent is None,
+                reserved=reserved,
+            )
         )
 
         # 已连接的 MCP 工具并入注册表（Phase 9）：__init__ 时尚未连接
@@ -764,7 +806,7 @@ class OpenXAgent:
             settings.setdefault(key, getattr(self.config, key))
         kernel = get_kernel()
         kernel.ensure_loaded(str(self.workspace))
-        impl = kernel.build_provider(settings)
+        impl = assembly.resolve_provider_impl(kernel, settings)
         if impl is None:
             return False
         self._provider_name = name

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 from openx.kernel import get_kernel
+from openx.services.assembly import instantiate_tools
 
 from ._helpers import (
     BAD_SRC,
@@ -27,7 +28,7 @@ class TestLoadPhases:
         info = next(i for i in k.inventory() if i.id == "hello")
         assert info.phase == "active"
         assert info.tools == ["hello"] and info.commands == ["hi"]
-        reg = k.instantiate_tools(None, include_builtin=False)
+        reg = instantiate_tools(k, None, include_builtin=False)
         assert "hello" in reg
 
     def test_apply_failure_isolated(self, kernel_env):
@@ -48,7 +49,7 @@ class TestLoadPhases:
         info = next(i for i in k.inventory() if i.id == "novalid")
         assert info.phase == "active"  # 插件活着，贡献被拒
         assert any("permission" in w for w in info.warnings)
-        assert k.instantiate_tools(None, include_builtin=False) == {}
+        assert instantiate_tools(k, None, include_builtin=False) == {}
 
     def test_disabled_via_settings(self, kernel_env):
         ws, settings = kernel_env
@@ -58,7 +59,7 @@ class TestLoadPhases:
         k.ensure_loaded(str(ws))
         info = next(i for i in k.inventory() if i.id == "hello")
         assert info.phase == "disabled"
-        assert k.instantiate_tools(None, include_builtin=False) == {}
+        assert instantiate_tools(k, None, include_builtin=False) == {}
 
     def test_user_dir_follows_settings_path(self, kernel_env):
         ws, settings = kernel_env
@@ -98,7 +99,7 @@ class TestReload:
             assert len(providers) == 1
         else:
             assert len(providers) == 2
-        assert k.instantiate_tools(None, include_builtin=False) == {}
+        assert instantiate_tools(k, None, include_builtin=False) == {}
 
     def test_half_loaded_state_retries(self, kernel_env, monkeypatch):
         """B2 回归：中途致命异常不提交加载键，下次完整重试。"""

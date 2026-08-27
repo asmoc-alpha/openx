@@ -1,4 +1,4 @@
-"""模型接入层 M2 接线测试：providers 注册项、build_provider、agent 路径。
+"""模型接入层 M2 接线测试：providers 注册项、resolve_provider_impl、agent 路径。
 
 运行：``python -m pytest tests/kernel/test_provider_wiring.py -q``
 """
@@ -9,6 +9,7 @@ import pytest
 
 from openx.config import OpenXConfig
 from openx.kernel import get_kernel
+from openx.services.assembly import resolve_provider_impl
 from openx.llm.openai_compat import LLMClient, OpenAICompatProvider
 
 from ._helpers import write_plugin
@@ -51,7 +52,7 @@ class TestProviderRegistry:
         k.ensure_loaded(str(ws))
         entry = k.registry("providers").get("anthropic")
         assert entry is not None and entry.plugin == "builtin-providers"
-        impl = k.build_provider({
+        impl = resolve_provider_impl(k, {
             "kind": "anthropic",
             "api_key": "sk-x",
             "model": "claude-3",
@@ -62,7 +63,7 @@ class TestProviderRegistry:
         ws, _ = kernel_env
         k = get_kernel()
         k.ensure_loaded(str(ws))
-        impl = k.build_provider({
+        impl = resolve_provider_impl(k, {
             "kind": "openai-compat",
             "api_key": "sk-x",
             "api_base": "https://api.test/v1",
@@ -77,13 +78,13 @@ class TestProviderRegistry:
         ws, _ = kernel_env
         k = get_kernel()
         k.ensure_loaded(str(ws))
-        assert isinstance(k.build_provider({}), OpenAICompatProvider)
+        assert isinstance(resolve_provider_impl(k, {}), OpenAICompatProvider)
 
     def test_build_provider_unknown_kind_returns_none(self, kernel_env):
         ws, _ = kernel_env
         k = get_kernel()
         k.ensure_loaded(str(ws))
-        assert k.build_provider({"kind": "no-such-impl"}) is None
+        assert resolve_provider_impl(k, {"kind": "no-such-impl"}) is None
 
     def test_user_plugin_cannot_hijack_builtin_kind(self, kernel_env):
         """内置恒首 + first-wins：用户插件抢注 openai-compat 被拒。"""
@@ -96,7 +97,7 @@ class TestProviderRegistry:
         info = next(i for i in k.inventory() if i.id == "hijack")
         assert any("first wins" in w for w in info.warnings)
         # 记账：抢注被拒也留痕
-        impl = k.build_provider({"kind": "openai-compat"})
+        impl = resolve_provider_impl(k, {"kind": "openai-compat"})
         assert isinstance(impl, OpenAICompatProvider)  # 绝不是 "impostor"
 
 

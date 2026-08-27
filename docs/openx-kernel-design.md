@@ -1,5 +1,14 @@
-# OpenX 内核详设 v2 · 编排 / 沙箱执行 / 插件维护 / 记账
+# OpenX 内核详设 v2.1 · 编排 / 沙箱执行 / 插件维护 / 记账
 
+> v2.1（2026-08-27）修订，均来自对 K1/K2 落地代码的审视：
+> ① **实例化期给予面 ToolHost**（§1.4）——注册期拒绝面延伸到工具
+> 实例化，插件任何阶段拿不到 agent 本体；② **内核 API 收敛**回四件 +
+> 注册表只读视图，消费方装配策略迁出内核（§0，新切片 K3a）；
+> ③ **hooks→Verdict 映射**定稿（§2.2），K3 落地依据；④ **boot 信任门**
+> （§1.4）：项目级插件发现 ∩ workspace trust；⑤ 切片序补 **K3a / K7 /
+> K8**（§4）——机制切片之外补能力迁移主线；⑥ 子会话**能力继承**写入
+> §2.5；⑦ overlay 与 `plugins.disabled` 的迁移语义（§1.3）。
+>
 > 上位文档：`openx-architecture-design.md`（v4.1 总架构）。责任模型
 > 2026-08-24 定稿：内核四职责（定稿讨论见 `design/microkernel-design.md`）。
 > 与本文机制章节的对应：**编排** = §1 装配 + 绑定为可执行单元；
@@ -42,6 +51,15 @@ class Kernel:
     # ③ 记账
     def emit(self, event) -> None              # 唯一事件出口；append-only
 ```
+
+**取用通道收敛**：四件之外，内核只暴露 `registry(kind)` **只读视图**。
+消费方装配策略——工具实例化与冲突仲裁、provider 解析与回退、命令
+菜单合并——住在消费方，不住内核；否则每加一类注册项内核就要长一个
+新方法，与"目录加一行不改内核主体"自相矛盾。现状内核上的
+`build_provider / instantiate_tools / lookup_command /
+command_menu_entries / note_command_conflict` 是 K1 过渡形态，K3a
+迁出（§4 切片序）。`agent.py` 里 provider 不可用时警告并回退
+openai-compat 的策略同属装配策略，一并迁出。
 
 ---
 
@@ -109,6 +127,9 @@ model_profile（按模型版本的能力面）
   今天逐字节等价。
 - P1 落地形态：档案与 overlay 尚未引入，应载清单退化为"全集"--但
   决议记账从第一天就有（空组合也记），账本格式不因功能分期而改。
+- **迁移语义**：settings.json 顶层 `plugins.disabled`（P1 开关）在
+  overlay 落地时升格为用户级 overlay 的 `disable` 原语语法糖--迁移期
+  双读（两处并集生效），写只走 overlay；不出现两个并存的写真相源。
 
 ### 1.4 加载编排：五阶段
 
@@ -117,11 +138,28 @@ model_profile（按模型版本的能力面）
 ```
 
 - **发现**：应载清单 ∩（用户目录 + 项目目录 + entry-points + base bundle）。
-  同 id 先见者赢，用户级先于项目级。
+  同 id 先见者赢，用户级先于项目级。**boot 信任门**：发现 ∩ trust--
+  项目级目录（`.openx/plugins`）仅当 workspace 已信任才进应载清单；
+  未信任 = 整目录跳过并记 `plugin_skipped`（组合族事件，含目录与
+  trust 状态），不是静默忽略。用户级目录与 entry-points 默认可信
+  （用户自己安装即是授权动作）。trust 判定是 CLI 层职责，内核只消费
+  判定结果--它作为组合输入的一项进 boot，决议记账自然留痕。
 - **解析**：importlib；失败跳过不炸。
 - **apply(ctx)**：ctx 给予面 = 注册 API + logger + 只读 workspace/配置；
   拒绝面 = 不暴露 loop、权限闸门、裸 console、他插件状态（靠不暴露引用，
   不靠自律）。
+- **实例化期给予面（ToolHost）**：拒绝面必须延伸到工具实例化期，否则
+  注册期成立、实例化期破功。工具工厂签名为
+  ``factory(host) -> list[Tool]``，host 是 agent 的只读数据投影
+  （`kernel/host.py`）：只读 workspace/配置字段 + 共享状态句柄
+  （todos/tasks/coding_memory）。**插件在任何阶段都拿不到 agent
+  本体**--loop、权限闸门、llm、hooks、完整 config 皆不可达。面上
+  字段按"首个真实消费方出现才加入"最小化（受限 console、emit 等
+  窄方法待有消费方再补）。**结构性工具**（task/workflow/
+  exit_plan_mode/choose_mode/ask_user/structured_output）属内核驻留
+  编排核心，由消费方直接装配、恒先占位（插件同名被拒记警告），不
+  经 host 也不经插件注册--StructuredOutputTool 既有先例。K1 的
+  `factory(agent)` 形态由 K3a 迁移。
 - **校验**：逐注册跑形状校验器（形状/命名空间/越界）；违例拒载记入
   inventory。
 - **激活**：依赖拓扑定序。插件声明 `provides` / `requires`（对注册项或
@@ -200,6 +238,20 @@ tool_call
 每一站的输入、输出、依据全部进 `permission_decision` 事件的 payload
 （§3.2 控制族）--裁决可审计不是口号，是管线的数据形状。
 
+**hooks → Verdict 映射（K3 落地依据，行为 ≡ 现状）**：
+
+| hook 产出（现状语义） | 折叠入管线的 Verdict |
+|---|---|
+| exit 0，stdout 无 `decision:block` | 无意见--不参与折叠 |
+| exit 0，stdout `{"decision":"block","reason":...}` | DENY（reason 入 payload） |
+| exit 2 | DENY（reason 取 stderr） |
+| 其余非零 / 超时 / 启动失败 | 无意见 + warning 附入 `permission_decision` payload 展示 |
+
+现状"hook 故障只警告不阻断"是有意保留的行为（每步行为 ≡ 现状）；
+未来要收紧应做成可配项（`hook_failure_mode=ask`），不在这个映射里
+改默认。注册时声明产出方向（决断点 #4）落地后，声明了产出方向的
+hook 在此表基础上再受静态校验约束。
+
 ### 2.3 资源闸：可执行性来自"内核持有执行闸"
 
 资源闸管的是**信任的底线**而非模型能力：停止语义、轮次上限、预算底线
@@ -230,6 +282,11 @@ tool_call
 
 - **权限继承**：子会话（task/workflow/serve 管理的队友）权限集 = 父的
   子集，裁决在半格上单调映射；父被收紧，子同轮收紧。
+- **能力继承**：与权限继承同向单调--子会话能力集 = 父的子集。默认
+  不继承用户插件工具与结构性工具（task/workflow/exit_plan_mode/
+  ask_user 恒排除）；子代理规格的工具白名单可显式纳入 `mcp__*` 与
+  插件工具。K1 的 `instantiate_tools(include_plugins=False)` 参数是
+  此策略的临时编码，K3a 迁出内核时落为消费方的显式规则。
 - **全队弹窗队列**：裁决串行化于父会话的 Guard--子会话请求汇入同一
   队列，永不并行弹窗（复用既有 prompt_lock 传播语义，升格为内核保证）。
 
@@ -273,7 +330,7 @@ Event = {
 |---|---|---|
 | 转录 | text / thinking / tool_use / tool_result | 会话账本 |
 | 控制 | permission_request / permission_decision / resource_gate_tripped / interrupt | 会话账本 |
-| 组合 | composition_resolved / plugin_loaded / plugin_failed / registered / rejected / unregistered | 会话账本（引用全局条目） |
+| 组合 | composition_resolved / plugin_loaded / plugin_failed / plugin_skipped / registered / rejected / unregistered | 会话账本（引用全局条目） |
 | 决策 | plugin_promoted / plugin_rolled_back / scaffold_retired / scaffold_restored / ratchet_tightened | **全局账本** |
 
 **双账本**：
@@ -326,6 +383,16 @@ Event = {
 | `permissions.py` + executor prepare 闸门 | §2.2 升格入 `kernel/guard.py` | 管线对象化 + 半格折叠 + 决策记账 |
 | `core/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
 | `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；双账本与决策事件族随 K5 |
+| `app/cli/commands.py` 内置命令 dict | §1.1 commands | 半插件化：插件命令已走注册表，27 个内置命令仍硬编码、消费方双源合并；升格 builtin-commands 插件随 K8 |
+| `mcp/`（`mcp__*` 工具直并入 agent.tools） | §1.1 tools + §1.6 | 绕过注册表：无校验/仲裁/provenance/记账；K8 收口，兼作 K6 admit() 的 pilot |
+| `instructions.py` / `skills.py` / 记忆提示常量 | §1.1 prompt_fragments | 硬连线 prompt 源；K7 收口 |
+| `core/hooks.py` | §2.2 第④站 | 独立机制（exit 2 阻断），未入半格；K3 按 §2.2 映射表折叠 |
+| `memory.py` / `coding_memory.py` | §1.1 memory_backends | 硬连线；P2+ |
+| `core/sessions/history/subagent/workflow/tasks` | §1.1 coordination | 硬连线；P2+ |
+| `agent.py` 直 import 具体工具（`git_status`、`MEMORY_INSTRUCTIONS`、`StructuredOutputTool`） | §1.5 零引用 | 破洞：loop 认识具体插件；随 K7/K8 修 |
+| `tools/base.py`（Tool/ToolResult 形状） | §1.1 校验器 | 形状应上移内核（`kernel/provider.py` 先例）；随 K8 |
+| ~~内核上消费方助手（`instantiate_tools`/`build_provider`/`lookup_command` 等）~~ | §0 取用通道收敛 | 已落地（K3a）：迁往 `services/assembly.py` 与 `commands.py` |
+| ~~工具工厂签名 `factory(agent)`~~ | §1.4 ToolHost | 已落地（K3a）：`factory(host)`，`kernel/host.py` |
 
 **切片序（每步行为≡现状）**：
 
@@ -334,12 +401,27 @@ Event = {
 2. ~~**K2 信封 + 突变记账**~~ **已完成**：protocol.py Event 信封
    （seq/ts/cause/origin/digest）+ 下行投影；注册表突变、组合决议
    上账本（attach_ledger 挂接会话存储，seq 续起）。
-3. **K3 Guard 升格**：裁决管线从 executor 析出入 `kernel/guard.py`，
-   半格折叠，固定序钉死（force_prompt 序）+ 决策事件。
-4. **K4 资源闸析出**：轮次/停止/预算从 loop 不变量析出，为 loop 槽化
+3. ~~**K3a ToolHost 收窄 + 内核 API 收敛**~~ **已完成**（2026-08-27）：
+   `kernel/host.py` ToolHost 数据投影，工厂签名 `factory(agent)` →
+   `factory(host)`；装配策略迁出内核（`services/assembly.py` 工具
+   实例化仲裁 + provider 解析，`commands.py` 命令分发/菜单），内核
+   API 回归 ensure_loaded / registry(kind) / emit / inventory + ctx
+   回调；结构性工具消费方直接装配、恒先占位（reserved 仲裁）。
+4. **K3 Guard 升格**：裁决管线从 executor 析出入 `kernel/guard.py`，
+   半格折叠，固定序钉死（force_prompt 序）+ 决策事件；hooks 按 §2.2
+   映射表折入第④站。
+5. **K4 资源闸析出**：轮次/停止/预算从 loop 不变量析出，为 loop 槽化
    （P2）清场。
-5. **K5 全局账本**：决策事件族 + 双账本引用。
-6. **K6 晋升门 + 动态插入**：admit() 会话内热插路径（只读先行）。
+6. **K5 全局账本**：决策事件族 + 双账本引用。
+7. **K6 晋升门 + 动态插入**：admit() 会话内热插路径（只读先行）。
+   **以 MCP 为 pilot**：connect 即 session 作用域动态插入，复用同一
+   五阶段校验，不另造测试场景。
+8. **K7 prompt_fragments**：instructions（OPENX.md）/ skills / 记忆
+   提示统一收口为 prompt 片段注册项；agent 不再 import 具体插件的
+   提示常量（`MEMORY_INSTRUCTIONS` 等零引用破洞随修）。
+9. **K8 能力注册表化**：内置命令升格 builtin-commands 插件
+   （commands.py 只剩分发）；MCP 工具走 tools 注册表
+   （provenance=`mcp:<server>`）；Tool/ToolResult 形状上移内核。
 
 ---
 
@@ -354,6 +436,9 @@ Event = {
 4. **hooks 的只紧不松过滤在运行时判定**（折叠时丢弃降宽意见）还是在
    注册时判定（声明产出方向，静态可审计）？（建议注册时声明 + 运行时
    校验双保险）
+5. **boot 信任门的默认档位**：entry-points（pip 安装）默认可信与否？
+   建议可信--`pip install` 本身是用户的显式授权动作，与 clone 即得的
+   项目级目录性质不同；项目级目录恒过 workspace trust（§1.4）。
 
 ---
 

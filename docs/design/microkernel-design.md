@@ -63,8 +63,8 @@
 | B5 | ~~Entry 无 inserted_at_seq~~ **已修**：`Entry.seq` 回填 registered 事件序号（scope 字段仍缺，随作用域机制补） | `kernel/registry.py` |
 | B6 | ~~注册/拒载无事件~~ **已修**：registered/rejected/plugin_loaded/plugin_failed/composition_resolved 上账本 | `kernel.emit` |
 | B7 | ~~协议事件无信封~~ **已修**：Event + envelope 投影；转录事件的信封化（cause 链）随 K3 接线 | `core/protocol.py` |
-| B8 | 消费方 API 仍以定制方法为主（`registry(kind)` 为统一通道雏形）；`service()` 收敛推迟到 K3 Guard 动工时一并做 | `kernel/__init__.py` |
-| B9 | **插件 `apply(ctx)` 在主进程内执行任意 Python**--ctx 拒绝面靠不暴露引用，是约定不是隔离 | `kernel/loader.py:77-92` |
+| B8 | 消费方 API 仍以定制方法为主（`registry(kind)` 为统一通道雏形）；`service()` 收敛已定切片 **K3a**（K3 前置，见内核详设 v2.1 §0/§4） | `kernel/__init__.py` |
+| B9 | **插件 `apply(ctx)` 在主进程内执行任意 Python**--ctx 拒绝面靠不暴露引用，是约定不是隔离。v2.1 补 **ToolHost**（§1.4）：拒绝面延伸到实例化期，工厂签名 `factory(agent)` → `factory(host)`，随 K3a；进程级隔离仍是开放问题 | `kernel/loader.py:77-92` |
 | B10 | fs/网络/命令边界由各工具自持（构造参数），内核不供给、不可审计 | `tools/*.py` 各处 |
 | B11 | 子代理的权限收缩（`CHILD_EXCLUDED_TOOLS`）靠工具表静态排除，非 scope 派生 | `core/subagent.py` |
 

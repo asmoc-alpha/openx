@@ -35,9 +35,10 @@ class PluginRegistration:
     hotplug: str = HOTPLUG_SESSION
 
 
-# 注册目录。tools 的值统一为工厂 ``factory(agent) -> list[Tool]``：
-# 内置工具需 agent 构造参数（workspace/console/tasks 引用），用户插件
-# 裸传的实例由 ctx 包一层工厂入库--消费方只有一种取用形态。
+# 注册目录。tools 的值统一为工厂 ``factory(host) -> list[Tool]``（K3a
+# ToolHost，见 kernel/host.py）：内置工具需 host 上的共享句柄
+# （workspace/tasks/todos 引用），用户插件裸传的实例由 ctx 包一层工厂
+# 入库--消费方只有一种取用形态。
 # providers 的值是实现工厂 ``create(settings: dict) -> Provider``：注册表
 # 存"有哪几种实现"（键 = kind，如 openai-compat），settings 存"用户配了
 # 哪几个实例"--注册与配置两级解耦。热插档 boundary：仅 boot 装配。

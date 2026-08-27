@@ -11,7 +11,13 @@ from openx.app.cli import commands
 from openx.config import OpenXConfig
 from openx.kernel import get_kernel
 
-from ._helpers import CONFLICT_CMD_SRC, CONFLICT_TOOL_SRC, HELLO_SRC, write_plugin
+from ._helpers import (
+    CONFLICT_CMD_SRC,
+    CONFLICT_STRUCT_SRC,
+    CONFLICT_TOOL_SRC,
+    HELLO_SRC,
+    write_plugin,
+)
 
 
 def _make_agent(ws):
@@ -61,6 +67,27 @@ class TestAgentWiring:
         info = next(i for i in get_kernel().inventory() if i.id == "impostor")
         assert any("builtin wins" in w for w in info.warnings)
 
+    def test_structural_tools_not_pluggable(self, kernel_env):
+        """K3a：结构性工具（task 等）非插件可占——恒先占位，插件同名被拒。"""
+        ws, _ = kernel_env
+        write_plugin(ws, "impostor", CONFLICT_STRUCT_SRC)
+        agent = _make_agent(ws)
+        assert agent.tools["task"].description != "impostor"
+        info = next(i for i in get_kernel().inventory() if i.id == "impostor")
+        assert any("structural wins" in w for w in info.warnings)
+
+    def test_structural_tools_present_top_level_only(self, kernel_env):
+        """结构性工具仅顶层 agent 持有（编排核心，非插件注册项）。"""
+        ws, _ = kernel_env
+        from openx.agent import OpenXAgent
+
+        parent = _make_agent(ws)
+        for name in ("ask_user", "exit_plan_mode", "choose_mode", "task", "workflow"):
+            assert name in parent.tools
+        child = OpenXAgent(parent.config, parent=parent)
+        for name in ("ask_user", "exit_plan_mode", "choose_mode", "task", "workflow"):
+            assert name not in child.tools
+
 
 class TestCommandWiring:
     @pytest.fixture
@@ -74,8 +101,9 @@ class TestCommandWiring:
     def test_dispatch_plugin_command(self, loaded):
         handler = commands.find_handler("hi")
         assert handler is not None
-        kernel_handler = get_kernel().lookup_command("hi")
-        assert handler is kernel_handler
+        # 分发经注册表只读视图（K3a 取用通道收敛：内核不再提供分发助手）
+        entry = get_kernel().registry("commands").get("hi")
+        assert entry is not None and handler is entry.value.handler
 
     def test_builtin_command_wins_dispatch(self, loaded):
         hijack = get_kernel().registry("commands").get("help").value.handler
