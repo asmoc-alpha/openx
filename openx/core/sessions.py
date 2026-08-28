@@ -314,6 +314,47 @@ class SessionStore:
             meta.path = path
         return meta
 
+    @classmethod
+    def iter_events(cls, path: Path) -> list[dict[str, Any]]:
+        """按文件序产出统一回放事件列表（消息行 + 账本行投影）。
+
+        append-only 即时序：行序即时间序。判别：**账本行**带 ``seq`` /
+        ``payload`` 键（``Event.to_line()`` 信封），投影为
+        ``{**payload, "seq", "ts", "cause", "origin"}`` 供前端排序/展示；
+        **消息行**原样 ``{"type":"message","ts":...,"message":{...}}``。
+        meta / meta_update 行不参与回放（元信息由列表端点承载）。损坏行
+        跳过并告警，永不抛异常。
+
+        供 serve 复盘端点使用：``SessionStore.load`` 只回 message 行、静默
+        跳过账本行（审计/回放语义不同），复盘须两者都读——本方法补足。
+        """
+        path = Path(path)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        events: list[dict[str, Any]] = []
+        for lineno, raw in enumerate(lines, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                line = json.loads(raw)
+            except json.JSONDecodeError:
+                print(f"warning: skipping corrupt session line {path.name}:{lineno}")
+                continue
+            if not isinstance(line, dict):
+                continue
+            if "seq" in line and "payload" in line:
+                payload = dict(line.get("payload") or {})
+                for key in ("seq", "ts", "cause", "origin"):
+                    if line.get(key) is not None:
+                        payload.setdefault(key, line.get(key))
+                events.append(payload)
+            elif line.get("type") == "message":
+                events.append(line)
+        return events
+
     @staticmethod
     def _apply_meta_update(meta: SessionMeta, line: dict[str, Any]) -> None:
         """把一行 meta_update 前向合并进 meta（仅白名单字段）。"""
@@ -473,6 +514,25 @@ if __name__ == "__main__":
             assert resolve_latest(str(Path(_td) / "empty")) is None
             assert resolve_by_id(ws, "no-such-id") is None
             del other
+
+            # iter_events 回放：message 行 + 账本行按文件序统一产出。
+            # 模拟一次 permission_decision 账本事件落盘（真实路径由内核
+            # emit → append_event 写入），断言两种行都出现且序正确。
+            from openx.core.protocol import Event
+            store.append_event(Event(
+                seq=1, ts=1.0, session="selftest01", type="permission_decision",
+                payload={"type": "permission_decision", "tool": "shell",
+                         "approved": True, "verdict": "ALLOW"},
+                origin="kernel", digest="d1",
+            ))
+            evs = SessionStore.iter_events(store.path)
+            kinds = [e.get("type") for e in evs]
+            assert "message" in kinds and "permission_decision" in kinds, kinds
+            # 账本行投影合并了 seq/ts，可供前端排序
+            perm = next(e for e in evs if e["type"] == "permission_decision")
+            assert perm["seq"] == 1 and perm["tool"] == "shell"
+            # 顺序 = 文件序：三条 message 在前、账本事件在后
+            assert kinds.index("permission_decision") > kinds.index("message")
         finally:
             SESSIONS_DIR = _saved
 

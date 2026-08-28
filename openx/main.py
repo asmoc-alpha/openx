@@ -39,6 +39,18 @@ from .app.cli.single_shot import run_single_shot
 _PICK_SENTINEL = "__pick__"
 
 
+def _rewrite_serve_argv(argv: Optional[list[str]]) -> list[str]:
+    """把 ``openx serve [...]`` 改写成 ``openx --serve [...]``。
+
+    "serve" 是子命令名（文档 UX），但 argparse 的 ``prompt`` 位置参数会把它
+    当成提示词吃掉。纯函数，便于单测。字面提示词 "serve" 用 ``openx -- serve``
+    显式结束选项（B12）。
+    """
+    if argv and argv[0] == "serve":
+        return ["--serve", *argv[1:]]
+    return list(argv) if argv else []
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -143,6 +155,22 @@ Environment:
         action="store_true",
         help="Show version and exit",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Start a long-lived web server (Web 端) instead of the REPL",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Serve bind host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8787,
+        help="Serve bind port (default: 8787)",
+    )
 
     return parser.parse_args(argv)
 
@@ -225,9 +253,33 @@ def _cleanup_background_tasks(agent: OpenXAgent) -> None:
         pass
 
 
+def _import_serve() -> tuple:
+    """惰性导入 serve 模块；aiohttp 缺失时给出安装指引并退出。
+
+    aiohttp 是 ``web`` optional extra——普通 CLI 路径绝不因缺失而受影响，
+    serve 路径给出清晰报错（web extra 缺失不是产品缺陷）。
+    """
+    try:
+        from .app.serve.bridge import ServeConsole
+        from .app.serve.server import run_serve
+    except ImportError as e:
+        print(
+            "Error: openx serve requires the 'web' extra.\n"
+            "  Install with:  pip install 'openx[web]'\n"
+            f"  ({e})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return ServeConsole, run_serve
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     """CLI entry point."""
-    args = parse_args(argv)
+    # argv=None（console 入口）→ 取 sys.argv[1:]；再经 serve 子命令改写。
+    # 注意：改写前必须保留 None→sys.argv 语义——直接喂 [] 会让 parse_args
+    # 忽略真实参数、CLI 完全失效（B12 回归）。
+    raw = sys.argv[1:] if argv is None else argv
+    args = parse_args(_rewrite_serve_argv(raw))
 
     if args.version:
         from . import __version__
@@ -243,6 +295,22 @@ def main(argv: Optional[list[str]] = None) -> None:
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # serve 模式守卫：不吞单次提示词；交互式会话选择器换用新鲜会话（B12）
+    if args.serve and args.prompt:
+        print(
+            "Error: openx serve does not accept a prompt; it starts a web "
+            "server. Omit the prompt (use '--' before a literal 'serve').",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.serve and args.resume == _PICK_SENTINEL:
+        print(
+            "Warning: --resume with no id (interactive picker) is not "
+            "available in serve mode; starting a fresh session.",
+            file=sys.stderr,
+        )
+        args.resume = None
 
     # ── First-run check: settings.json ──────────────────────────
     # If any required field is missing (no settings, no env, no CLI),
@@ -321,12 +389,21 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     # Create agent（session_id 与会话文件保持一致；console 传入同一实例——
-    # 工具弹窗/模式状态与 REPL 状态行共用一个 console，弹窗钩子不再落空）
+    # 工具弹窗/模式状态与 REPL 状态行共用一个 console，弹窗钩子不再落空）。
+    # serve 模式：agent 用无 TUI 的 ServeConsole（浏览器是端层，终端不渲染
+    # 转录；权限批准经 Web 权限桥）——双 console 流：信任/会话选择仍走
+    # 终端 console，agent 运行走 ServeConsole（B3）。
+    serve_entry = None
+    agent_console = console
+    if args.serve:
+        ServeConsole, serve_entry = _import_serve()
+        agent_console = ServeConsole()
+
     agent = OpenXAgent(
         config,
         session_store=store,
         session_id=store.meta.session_id,
-        console=console,
+        console=agent_console,
     )
     if resumed_meta is not None:
         agent.load_session(resumed_meta, resumed_messages)
@@ -335,7 +412,17 @@ def main(argv: Optional[list[str]] = None) -> None:
     # best-effort 清理所有后台任务——绝不因清理失败影响退出）
     exit_code = 0
     try:
-        if args.prompt:
+        if serve_entry is not None:
+            # serve 默认 manual（写工具逐项经 web 批准）；--auto-approve
+            # 显式切 auto，跳过批准（仍受危险命令闸门约束）
+            if args.auto_approve:
+                agent.set_mode("auto")
+            exit_code = asyncio.run(
+                serve_entry(
+                    agent, agent_console, args.host, args.port, workspace_abs
+                )
+            )
+        elif args.prompt:
             # 单次查询返回退出码：机器格式（json/stream-json）下 0=成功、
             # 1=失败，供 CI 与脚本管道判断；text 格式失败同样落 1
             exit_code = asyncio.run(

@@ -72,6 +72,7 @@ All flags and slash commands: [docs/user/guide/commands.md](docs/user/guide/comm
 |---|---|
 | [User guides](docs/user/index.md) | commands, modes & permissions, configuration, sessions |
 | [Subsystem reference](docs/subsystems/README.md) | subagents, workflows, background tasks, hooks, MCP |
+| [Web 端（openx serve）](docs/openx-serve.md) | browser chat, remote approval, session replay |
 | [Architecture](docs/architecture.md) | module tree and runtime loop |
 | [Development](docs/development.md) | contributor setup, tests, lint |
 | [Cookbook](docs/cookbook/extending.md) | extending OpenX with custom tools |

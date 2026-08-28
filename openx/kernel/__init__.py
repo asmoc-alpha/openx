@@ -3,8 +3,8 @@
 四职责（2026-08-24 定稿，详见 docs/design/microkernel-design.md）：
 **编排 / 沙箱执行 / 插件维护 / 记账**。本包是 TCB 的一部分，保持小到
 可审计：不 import agent / cli / ui，依赖方向单向（核心消费内核，反之
-不然）。P1 落地的是插件维护 + 编排的装配段；沙箱执行与记账按切片
-（K2 起）逐步就位。
+不然）。已就位：插件维护 + 编排装配（K1）、信封与突变记账（K2）、
+ToolHost 与取用通道收敛（K3a）、执行闸裁决管线（K3，`guard.py`）。
 
 P1 开放三类注册项（目录表驱动，见 registrations.py）：tools、slash
 commands、providers。混合内核纪律：loop / executor / 安全底线等内核

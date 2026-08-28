@@ -153,3 +153,64 @@ class TestErrorHandling:
         with pytest.raises(SystemExit) as exc_info:
             parse_args(["--help"])
         assert exc_info.value.code == 0
+
+class TestServeArgs:
+    """openx serve（P4）：--serve/--host/--port 解析 + serve 子命令改写。"""
+
+    def test_serve_flag_defaults(self):
+        args = parse_args(["--serve"])
+        assert args.serve is True
+        assert args.host == "127.0.0.1"
+        assert args.port == 8787
+
+    def test_serve_host_port(self):
+        args = parse_args(["--serve", "--host", "0.0.0.0", "--port", "9000"])
+        assert args.serve is True
+        assert args.host == "0.0.0.0"
+        assert args.port == 9000
+
+    def test_serve_not_set_by_default(self):
+        assert parse_args([]).serve is False
+
+    def test_serve_port_requires_int(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--serve", "--port", "not-a-number"])
+
+    def test_rewrite_serve_subcommand(self):
+        """`openx serve [--port 9000]` → `openx --serve [--port 9000]`。"""
+        from openx.main import _rewrite_serve_argv
+
+        assert _rewrite_serve_argv(["serve", "--port", "9000"]) == ["--serve", "--port", "9000"]
+        assert _rewrite_serve_argv(["serve"]) == ["--serve"]
+        # 非 serve 子命令：原样返回
+        assert _rewrite_serve_argv(["--model", "gpt-4o", "fix it"]) == ["--model", "gpt-4o", "fix it"]
+        assert _rewrite_serve_argv(None) == []
+        assert _rewrite_serve_argv([]) == []
+
+
+class TestMainArgvPassthrough:
+    """main() 入口的 argv 语义：无参调用（console 入口）取 sys.argv[1:]。"""
+
+    def test_main_version_from_sys_argv(self, monkeypatch, capsys):
+        """回归：main(None) 必须透传 sys.argv——否则 CLI 完全失效。"""
+        import sys
+
+        from openx.main import main
+
+        monkeypatch.setattr(sys, "argv", ["openx", "--version"])
+        main()
+        out = capsys.readouterr().out
+        assert out.startswith("OpenX v"), out
+
+    def test_main_rewrites_serve_subcommand(self, monkeypatch, capsys):
+        """openx serve --help → 帮助输出含 serve 专属选项（子命令改写生效）。"""
+        import sys
+
+        from openx.main import main
+
+        monkeypatch.setattr(sys, "argv", ["openx", "serve", "--help"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "--serve" in out and "--host" in out and "--port" in out

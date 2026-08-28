@@ -66,7 +66,7 @@ class Adjudication:
 
 
 # prompter 签名：async (call, permission) -> (approved, remember)
-Prompter = Callable[[GateCall, Any], Awaitable tuple]
+Prompter = Callable[[GateCall, Any], Awaitable[tuple]]
 
 
 class Guard:

@@ -5,6 +5,11 @@
 上行 P1 只收 ``permission_response``；未知类型容忍（前向兼容，回报
 ``UplinkUnknown``），畸形行返回 ``None`` 由调用方记日志。
 
+serve 扩展（P4，additive、版本不变）：下行新增 ``history`` 会话快照与
+``result`` 终局事件；``permission_request`` 增 ``can_remember`` 可选字段
+（Web 弹窗显示"记住"选项）；上行新增 ``message`` / ``interrupt`` 意图。
+headless 的 ``_NdjsonPermissionBridge`` 按 isinstance 忽略新类型，向后兼容。
+
 事件信封（``Event``）：协议 = 账本的外化--内核 ``emit()`` 记账的信封
 条目去掉簿记字段就是下行事件；回放 = 把存储的事件再发一遍，复盘回放
 与实时观看共用同一 schema。
@@ -116,15 +121,66 @@ def tool_result(name: str, is_error: bool, output: str) -> dict[str, Any]:
 
 
 def permission_request(
-    request_id: str, tool: str, reason: str, details: str = ""
+    request_id: str,
+    tool: str,
+    reason: str,
+    details: str = "",
+    can_remember: bool = True,
 ) -> dict[str, Any]:
-    """权限请求下行：上行以同 request_id 的 permission_response 应答。"""
+    """权限请求下行：上行以同 request_id 的 permission_response 应答。
+
+    ``can_remember`` 是 serve 扩展字段（Web 弹窗据此显示"记住"选项）：
+    手动模式逐项授权时 False。可选、默认 True——既有 NDJSON 消费者零改动。
+    """
     return {
         "type": "permission_request",
         "request_id": request_id,
         "tool": tool,
         "reason": reason,
         "details": details,
+        "can_remember": can_remember,
+    }
+
+
+# ── serve 扩展（P4）：会话快照与终局事件（协议 = 账本外化的服务端应用）─
+
+def user_message(text: str) -> dict[str, Any]:
+    """serve 下行：一条用户消息（live 广播 / attach 快照共用）。"""
+    return {"type": "user_message", "text": text}
+
+
+def serve_history(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """attach 会话快照下行：新客户端连上时补发既有对话。
+
+    ``messages`` 为渲染段列表 ``[{role, content, ...}]``（agent.history 或
+    会话文件回放的行）；端是哑渲染器，只按序渲染，不持会话状态语义。
+    """
+    return {"type": "history", "messages": messages}
+
+
+def result_event(
+    result: str | None,
+    is_error: bool,
+    duration_ms: int,
+    num_turns: int,
+    session_id: str,
+    usage: dict[str, Any],
+    error: str = "",
+) -> dict[str, Any]:
+    """单轮终局事件：镜像 single_shot 的 result 形状（同 schema）。
+
+    供 serve 广播与回放共用；``error`` 非空时对应 ``subtype="error"``。
+    """
+    return {
+        "type": "result",
+        "subtype": "error" if is_error else "success",
+        "is_error": is_error,
+        "duration_ms": duration_ms,
+        "num_turns": num_turns,
+        "result": result,
+        "session_id": session_id,
+        "usage": usage,
+        **({"error": error} if error else {}),
     }
 
 
@@ -132,10 +188,27 @@ def permission_request(
 
 @dataclass
 class PermissionResponse:
-    """对 permission_request 的裁决：allowed=False 等同弹窗里拒绝。"""
+    """对 permission_request 的裁决：allowed=False 等同弹窗里拒绝。
+
+    ``remember``：serve 扩展字段——"允许并记住"（落盘存储规则）；headless
+    的 ``_NdjsonPermissionBridge`` 只读 ``allowed``，增量兼容。
+    """
 
     request_id: str
     allowed: bool
+    remember: bool = False
+
+
+@dataclass
+class UserMessage:
+    """用户发送的聊天消息（serve 上行意图：message）。"""
+
+    text: str
+
+
+@dataclass
+class Interrupt:
+    """打断当前回合（serve 上行意图：interrupt；Esc 的 Web 等价物）。"""
 
 
 @dataclass
@@ -145,7 +218,7 @@ class UplinkUnknown:
     type: str
 
 
-UplinkMessage = Union[PermissionResponse, UplinkUnknown]
+UplinkMessage = Union[PermissionResponse, UserMessage, Interrupt, UplinkUnknown]
 
 
 def parse_uplink(line: str) -> Optional[UplinkMessage]:
@@ -164,7 +237,18 @@ def parse_uplink(line: str) -> Optional[UplinkMessage]:
         request_id = obj.get("request_id")
         if not isinstance(request_id, str):
             return None
-        return PermissionResponse(request_id, bool(obj.get("allowed", False)))
+        return PermissionResponse(
+            request_id,
+            bool(obj.get("allowed", False)),
+            bool(obj.get("remember", False)),
+        )
+    if kind == "message":
+        text = obj.get("text")
+        if not isinstance(text, str):
+            return None
+        return UserMessage(text)
+    if kind == "interrupt":
+        return Interrupt()
     if isinstance(kind, str):
         return UplinkUnknown(kind)
     return None
@@ -173,3 +257,33 @@ def parse_uplink(line: str) -> Optional[UplinkMessage]:
 def negotiate(client_version: int) -> bool:
     """能力协商 P1：严格相等；演进规则改这一处。"""
     return client_version == PROTOCOL_VERSION
+
+
+if __name__ == "__main__":
+    # 上行解析：message / interrupt / permission_response / 未知 / 畸形
+    _m = parse_uplink('{"type": "message", "text": "hello"}')
+    assert isinstance(_m, UserMessage) and _m.text == "hello"
+    assert isinstance(parse_uplink('{"type": "interrupt"}'), Interrupt)
+    _p = parse_uplink('{"type": "permission_response", "request_id": "r1", "allowed": true, "remember": true}')
+    assert isinstance(_p, PermissionResponse) and _p.allowed and _p.remember
+    assert isinstance(parse_uplink('{"type": "nope"}'), UplinkUnknown)
+    assert parse_uplink("not json") is None
+    assert parse_uplink('{"type": "message"}') is None  # 缺 text
+    # 缺 allowed 字段仍容忍：request_id 合法 → 视为拒绝（fail-closed 默认）
+    _pr = parse_uplink('{"type": "permission_response", "request_id": "x"}')
+    assert isinstance(_pr, PermissionResponse) and _pr.allowed is False
+    assert parse_uplink("") is None
+
+    # serve 下行扩展：用户消息 / 历史快照 / 终局事件 / permission_request 带 can_remember
+    _um = user_message("hi")
+    assert _um["type"] == "user_message" and _um["text"] == "hi"
+    _h = serve_history([{"role": "user", "content": "hi"}])
+    assert _h["type"] == "history" and _h["messages"][0]["content"] == "hi"
+    _r = result_event("done", False, 10, 2, "s1", {"input_tokens": 1, "output_tokens": 2})
+    assert _r["type"] == "result" and _r["subtype"] == "success" and _r["num_turns"] == 2
+    _e = result_event(None, True, 10, 0, "s1", {}, error="boom")
+    assert _e["subtype"] == "error" and _e["error"] == "boom"
+    _pr = permission_request("r2", "shell", "run", can_remember=False)
+    assert _pr["can_remember"] is False and _pr["type"] == "permission_request"
+
+    print("openx/core/protocol.py OK ✓")

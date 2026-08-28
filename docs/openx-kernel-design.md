@@ -252,6 +252,12 @@ tool_call
 改默认。注册时声明产出方向（决断点 #4）落地后，声明了产出方向的
 hook 在此表基础上再受静态校验约束。
 
+**存储 allow 与工具级 DENY 的先后**（K3 落地时钉死的现状语义）：
+②自声明的 DENY 在管线内**挂起**，⑥存储 allow 可越过它放行--用户
+显式落盘的授权规则优先于工具自声明（现行 executor 的顺序如此，
+行为 ≡ 现状）。这与半格"DENY 恒有效"的纯度有张力，纯化（DENY
+终局化）留给评审决断，改动即行为变更，须单独切片。
+
 ### 2.3 资源闸：可执行性来自"内核持有执行闸"
 
 资源闸管的是**信任的底线**而非模型能力：停止语义、轮次上限、预算底线
@@ -380,7 +386,7 @@ Event = {
 | `kernel/loader.py` 五阶段 | §1.4 | 补依赖拓扑、作用域、动态插入复用 |
 | `kernel/validate.py` 形状校验 | §1.1 | 已落地（随 K1 目录化） |
 | `builtin/tools.py` base bundle | §1.3 计算组合的内置项 | 已对齐 |
-| `permissions.py` + executor prepare 闸门 | §2.2 升格入 `kernel/guard.py` | 管线对象化 + 半格折叠 + 决策记账 |
+| ~~`permissions.py` + executor prepare 闸门~~ | §2.2 升格入 `kernel/guard.py` | 已落地（K3）：七站管线 + 半格折叠 + `permission_decision` 记账；prompter/rules/mode 闭包注入，UI 不进内核 |
 | `core/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
 | `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；双账本与决策事件族随 K5 |
 | `app/cli/commands.py` 内置命令 dict | §1.1 commands | 半插件化：插件命令已走注册表，27 个内置命令仍硬编码、消费方双源合并；升格 builtin-commands 插件随 K8 |
@@ -407,9 +413,14 @@ Event = {
    实例化仲裁 + provider 解析，`commands.py` 命令分发/菜单），内核
    API 回归 ensure_loaded / registry(kind) / emit / inventory + ctx
    回调；结构性工具消费方直接装配、恒先占位（reserved 仲裁）。
-4. **K3 Guard 升格**：裁决管线从 executor 析出入 `kernel/guard.py`，
-   半格折叠，固定序钉死（force_prompt 序）+ 决策事件；hooks 按 §2.2
-   映射表折入第④站。
+4. ~~**K3 Guard 升格**~~ **已完成**（2026-08-28）：裁决管线析出入
+   `kernel/guard.py`——Verdict 半格（IntEnum，min 即抬严）、七站
+   固定序、hooks 按 §2.2 映射表折入第④站、每次裁决记
+   `permission_decision`（含逐站 trace）。executor 只留 prompter
+   （UI）与并行扇出。落地形态：Guard 由 executor 持有、每会话状态
+   闭包注入；`kernel.gate()` 单例形态待会话上下文对象化（K1c）。
+   两处现状语义保留并注释：存储 allow 可越过工具级 DENY；hook 故障
+   只警告不阻断（收紧做成 `hook_failure_mode` 可配项，留评审）。
 5. **K4 资源闸析出**：轮次/停止/预算从 loop 不变量析出，为 loop 槽化
    （P2）清场。
 6. **K5 全局账本**：决策事件族 + 双账本引用。

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenX Serve</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">OpenX</div>
+  <div id="meta" class="meta"></div>
+  <div id="conn" class="conn" data-state="connecting">connecting…</div>
+</header>
+
+<div id="layout">
+  <aside id="sidebar">
+    <div class="sidebar-head">
+      <button id="live-btn" class="btn" hidden>← Live</button>
+      <span class="sidebar-title">Sessions</span>
+      <button id="refresh-sessions" class="btn small" title="refresh">↻</button>
+    </div>
+    <ul id="session-list"></ul>
+  </aside>
+
+  <main id="chat">
+    <div id="messages"></div>
+    <div id="composer">
+      <div id="turn-bar" hidden>
+        <button id="interrupt-btn" class="btn small danger" title="interrupt current turn">■ Stop</button>
+        <span id="turn-status">working…</span>
+      </div>
+      <textarea id="input" rows="2"
+        placeholder="Message OpenX…  (Enter to send · Shift+Enter for newline)"></textarea>
+    </div>
+  </main>
+</div>
+
+<div id="perm-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-title">Allow this tool?</div>
+    <div class="modal-tool" id="perm-tool"></div>
+    <div class="modal-reason" id="perm-reason"></div>
+    <pre class="modal-details" id="perm-details"></pre>
+    <div class="modal-actions">
+      <button class="btn" data-perm="allow-once">Allow once</button>
+      <button class="btn" data-perm="allow-remember" hidden>Allow &amp; remember</button>
+      <button class="btn danger" data-perm="deny">Deny</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
