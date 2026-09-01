@@ -71,7 +71,8 @@ class TestEmit:
         event = k.emit("probe", {"type": "probe"})
         assert event.seq == 1
         k.ensure_loaded(str(ws))  # 未挂接：emit 不炸，事件落空
-        assert k._seq >= 2
+        # seq 仍在计数（Ledger 内部状态，经公共 emit 观察）
+        assert k.emit("probe2", {"type": "probe"}).seq >= 2
 
 
 class TestMutationEvents:

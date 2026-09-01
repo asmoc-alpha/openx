@@ -12,6 +12,14 @@ providers 注册项的内置挂载（见 docs/design/provider-access-design.md�
 
 from __future__ import annotations
 
+# P-A/P-B 自描述。providers 是会话边界的基础设施（非任务级能力），不设
+# type/mount（模型不按任务组装它）；trust=builtin。
+__openx_meta__ = {
+    "trust": "builtin",
+    "summary": "内置模型 provider：openai-compat（恒在）+ anthropic（可选 SDK）",
+    "cost": {"schemaTokens": 0},
+}
+
 
 def _create_openai_compat(settings: dict):
     """openai-compat 实现工厂：settings dict -> OpenAICompatProvider。

@@ -211,6 +211,7 @@ async def _stream_response(
         display = StreamingService(
             console, agent.total_input_tokens,
             todos_provider=lambda: agent.todos, fleet=agent.fleet,
+            panels=getattr(agent, "ui_panels", None),
         )
         display.start()
         # Bug 10: during streaming the InputCapture thread owns stdin

@@ -11,7 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from .validate import validate_command, validate_provider
+from .validate import (
+    validate_command,
+    validate_context,
+    validate_lifecycle,
+    validate_provider,
+    validate_ui_slot,
+)
 
 # 冲突规则：同名先注册者赢（加载序 = 优先级，内置恒首）
 CONFLICT_FIRST_WINS = "first-wins"
@@ -45,5 +51,12 @@ class PluginRegistration:
 REGISTRATIONS: tuple[PluginRegistration, ...] = (
     PluginRegistration("tools", _validate_factory),
     PluginRegistration("commands", validate_command),
+    # P-D 协议分类的新装配层（protocols.py 目录对应）：contexts 是
+    # context/v1 的片段征集面（值 = ContextContribution），lifecycle 是
+    # lifecycle/v1 的会话钩子面（值 = LifecycleHooks），ui_slots 是
+    # ui/v1 的状态层面板（值 = UISlot，deck 行）。多例、可热插。
+    PluginRegistration("contexts", validate_context),
+    PluginRegistration("lifecycle", validate_lifecycle),
+    PluginRegistration("ui_slots", validate_ui_slot),
     PluginRegistration("providers", validate_provider, hotplug=HOTPLUG_BOUNDARY),
 )

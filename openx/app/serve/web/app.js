@@ -16,6 +16,7 @@ const sessionListEl = $("session-list");
 const turnBarEl = $("turn-bar");
 const turnStatusEl = $("turn-status");
 const liveBtn = $("live-btn");
+const panelsEl = $("panels");
 
 function el(tag, cls) {
   const n = document.createElement(tag);
@@ -242,6 +243,11 @@ function applyEvent(ev) {
     case "permission_request":
       showPermission(ev);
       break;
+    case "panels":
+      // 插件 UI 面板（ui/v1）：服务端已剥 rich 标签、变化才广播——
+      // 端只做整区重绘（面板小、整绘成本可忽略，天然幂等）
+      renderPanels(ev.panels || []);
+      break;
     case "plan_request":
       appendMeta("📋 Agent requested plan approval — interactive approval is not on the web yet (P4.1); treated as rejected.");
       break;
@@ -270,6 +276,26 @@ function renderHistory(messages) {
     else if (m.role === "assistant") appendAssistant(textOf(m.content));
     else if (m.role === "tool") appendToolResult(m.name || "tool", false, textOf(m.content));
   }
+}
+
+// ── 插件 UI 面板（ui/v1）────────────────────────────────────────
+function renderPanels(panels) {
+  panelsEl.innerHTML = "";
+  if (!panels.length) {
+    panelsEl.hidden = true;
+    return;
+  }
+  for (const p of panels) {
+    if (!p || typeof p !== "object") continue;
+    const node = el("div", "panel");
+    for (const line of (p.lines || [])) {
+      const row = el("div", "panel-line");
+      row.textContent = String(line); // 纯文本（服务端已剥 rich 标签）
+      node.appendChild(row);
+    }
+    panelsEl.appendChild(node);
+  }
+  panelsEl.hidden = false;
 }
 
 // ── turn bar / interrupt ───────────────────────────────────────

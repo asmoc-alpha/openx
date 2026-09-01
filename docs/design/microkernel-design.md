@@ -1,283 +1,481 @@
-# 微内核设计定稿 · 编排 / 沙箱执行 / 插件维护 / 记账
+# 微内核 Agent 架构设计 · 对齐 2026-08 架构图
 
-> 状态：**责任模型已定稿**（2026-08-24）：内核维护四职责。其余决断点
-> （D9-D11 等）仍开放，逐项定稿后回写 `openx-kernel-design.md` 的对应
-> 机制章节。
+> 状态：本文对齐**《微内核Agent架构》**（2026-08，架构图）——内核五件套 +
+> 模型驱动的动态装配 + 插件自描述/故障隔离 + 插件分类与接入协议。前身为
+> "四职责"责任模型（2026-08-24 定稿，映射见 §0.2），沿用其已落地的实现
+> 基线（§5）。
 >
 > 上位文档：`openx-architecture-design.md`（v4.1）、`openx-kernel-design.md`
-> （详设，机制章节在新责任模型下全部有效，对应关系见 §0.2）。
+> （详设，机制章节在新架构下对齐本文件）。实施中机制变更须先改本文再改代码。
+>
+> 一句话：**内核 = 推理 + 装配 + 安全 + 轨迹 + 沙箱，五者构成信任基座；
+> 插件 = 一切能力（包括记忆与规划）；模型经元工具在运行时组装自己**——
+> Agent 从"出厂固定的产品"变成"按需自组装的系统"。
 
 ---
 
-## 0. 责任模型（已定稿）
+## 0. 内核五件套（信任基座，不可卸载）
 
-### 0.1 四职责定义
+### 0.1 五件套定义
 
-| 职责 | 定义 | 不做什么 |
+| 内核模块 | 定义 | 不能插件化的原因 |
 |---|---|---|
-| ① 编排 | 把执行所需的插件装配成**可执行单元**（组合输入 -> 应载清单 -> 注册表 -> 绑定） | 不实现 loop 本身（loop 是被装配进单元的零件） |
-| ② 沙箱执行 | agent 的执行与编排所创建的一切，运行在内核构造的**安全环境**里：边界（fs/网络/资源）+ 闸门（裁决） | 不做 UI、不做策略内容（策略是插件贡献） |
-| ③ 插件维护 | 一切外部插件**注册进内核才可被编排**：单一门（发现/校验/provenance/清单/晋升） | 不评判插件好坏（形状校验 + 用户裁决） |
-| ④ 记账 | 一切执行与决策的**唯一事件出口**：append-only、可回放、可归因、决策留痕 | 不做展示（协议层是账本的外化）、不做存储工具（核外） |
+| ① 推理核心 | 模型调用抽象（多 Provider）；路由 / fallback / 重试 / 限流；流式 / 结构化输出约束 | 没有它模型根本不会思考，"由模型决定装配"这句话本身就不成立 |
+| ② 插件装配器 | Manifest 解析（能力 / schema / 权限 / token 成本）；生命周期 `discover → load → activate → deactivate → unload`；依赖解析 / 热插拔 / 插件目录索引 | 自举问题——装配器如果是插件，谁来装配它 |
+| ③ 安全审计 | 插件调用 + 装配请求的权限闸门；Hook 链（Pre / Post）；审计日志 / injection 防护 | 安全闸门若可被卸载，模型（或被注入的 prompt）就能 `unload_plugin("security")` 绕过一切管控——安全必须不可卸载 |
+| ④ 轨迹跟踪 | 全量记录：推理 / 插件调用 / 装配事件 / 成本；Trace 回放 / 导出（eval 数据源） | 审计追踪若可卸载，恶意行为可以"先卸载记录仪再作案"；挂事件总线上天然全量记录，放插件层反而做不到 |
+| ⑤ 沙箱执行器 | 进程 / 文件 / 网络隔离；资源限额 / 结果回传 | 插件是"能力"，沙箱是"能力的执行环境"——环境本身不能被环境里的东西替换 |
 
-### 0.2 与 v1 详设（装配/把关/记账）的映射
+### 0.2 与四职责（2026-08-24 定稿）的映射
 
-| v1 | 定稿 | 备注 |
+| 四职责 | 五件套 | 变化 |
 |---|---|---|
-| 装配 | ① 编排 + ③ 插件维护 | 编排是装配的延伸：不止装载注册，还要**绑定成可执行单元**（loop、scope、闸门、记录的组装）；插件维护是装配的入口面（单一门） |
-| 把关 | ② 沙箱执行（闸门部分） | 裁决管线成为执行环境的**动态边界**，语义不变：工具调用必经闸、只紧不松、资源闸 |
-| 记账 | ④ 记账 | **定稿（2026-08-24）：维持 v1 地位，显式为第四职责**。信封 schema 与 emit 出口是内核不变量；文件写入经 attach 注入的 sink（实现选择，不改变职责归属） |
-| （无） | ② 沙箱（边界部分） | **新增**：执行环境的静态边界。对现状最大的补强方向（见 §4） |
+| ① 编排（装配成可执行单元） | ② 插件装配器（装配部分） | 装配显式化为内核模块 |
+| ② 沙箱执行 | ③ 安全审计（动态闸门）+ ⑤ 沙箱执行器（静态边界） | 闸门与边界拆成两个模块，职责同构 |
+| ③ 插件维护（单一门） | ② 插件装配器（注册门部分） | 并入装配器 |
+| ④ 记账（唯一事件出口） | ④ 轨迹跟踪 | **记账升级为轨迹**：在事件账本之上加成本、Trace 回放、eval 导出——"发生过什么"与"为什么这么设计"（离线 eval、装配策略优化）共用同一数据源 |
+| （无） | ① 推理核心 | **新增**：模型接入/推理管线入核（重试/限流/路由已在 `kernel/reasoning/retry.py`、provider 形状在 `kernel/reasoning/provider.py`，装配口在 `services/assembly.py`） |
 
-一句话：v1 说"内核做什么"（装配、把关、记账），定稿说"内核提供什么"
-（单元、环境、入口、证据）。机制同构，增量有二：**沙箱边界显式化**与
-**记账职责显式化**。
+### 0.3 与现状实现的关系：boot 组合 → 运行时装配
+
+现状（已实现）：插件在 **boot 时静态组合**（`ensure_loaded` 装载 base bundle +
+用户/项目插件，一次性进注册表）。五件套架构的核心变化是**装配权交给模型**：
+插件不再"装了就在"，而是模型按任务经元工具**运行时装配/卸载**（§1）。
+boot 组合退化为"出厂默认组合"，运行时装配在其之上增量。
+
+### 0.4 package 与架构模块映射（P-D 落地，2026-08-31）
+
+五件套 → package、协议 → 装配层 → 消费点的实现映射（对齐架构图 ①/④）：
+
+| 架构模块 | package / 文件 | 状态 |
+|---|---|---|
+| ① 推理核心 | `kernel/reasoning/`（provider / retry） | 路由 / fallback / 限流随 N2 |
+| ② 插件装配器 | `kernel/assembly/`（loader / registry / registrations / context / validate / manifest / protocols / plugin_spec） | `protocols.py` 是类别 → 协议 → 装配层路由的唯一真源 |
+| ③ 安全审计 | `kernel/audit/guard.py` + 元工具 ASK 闸 | 装配请求闸门 = load/unload/write/promote 的 ASK 弹窗 |
+| ④ 轨迹跟踪 | `kernel/ledger.py`（emit / attach_ledger 委托） | 成本字段 / eval 导出随 P-E |
+| ⑤ 沙箱执行器 | `kernel/sandbox/`（host / protect） | protect = 调用防护；进程隔离随 D9 |
+| 装配层（各协议 Registry） | `registrations.py` 目录：`tools` / `commands` / `contexts` / `lifecycle` / `providers` | P-D 新增 `contexts` / `lifecycle` |
+| 上下文组装管线（context/v1） | `services/assembly.py::collect_context_fragments` + `agent._build_system_prompt` | pre-inference 征集（注册序 + 字符预算 + 崩溃隔离） |
+| 会话生命周期（lifecycle/v1） | `kernel.trigger_lifecycle` + `agent.startup`（session_start） | checkpoint / resume 接线随 P-E |
+| UI 面板管线（ui/v1） | `services/assembly.py::UiPanelCollector` + `streaming.py::_plugin_deck_renderable`（CLI）/ `app/serve/session.py` ticker（web） | deck 每帧征集（崩溃跳过/熔断/行数限额/节流）；web 经 `panels` 协议事件广播（变化才发） |
+| 元工具（模型驱动装配） | `tools/plugin_tools.py` + `tools/write_plugin_tools.py` | 结构性工具恒先占位，子代理不继承 |
 
 ---
 
-## 1. 现状基线（2026-08-24）
+## 1. 模型驱动的动态装配（核心机制）
+
+内核把插件管理本身暴露为**元工具**——永远常驻上下文、体积极小：
+
+```
+list_plugins(filter)  — 查询插件目录（只返回名称 + 一句话描述 + token 成本，不返回 schema）
+load_plugin(name)     — 装配：注入该插件的工具 schema
+unload_plugin(name)   — 卸载：从上下文移除，释放预算
+plugin_help(name)     — 查看某插件详细用法（按需展开）
+```
+
+### 1.1 一次任务的装配流
+
+```
+任务进入
+→ 模型看插件目录（轻量索引，~几百 token）
+→ "这个任务要查库 + 画图" → load_plugin("dataquery"), load_plugin("dataviz")
+→ 内核安全审计：权限够吗？是危险插件吗？ → 放行 / 拒绝 / 问人
+→ 插件 schema 注入上下文 → 模型正常调用
+→ 任务阶段切换 → unload_plugin("dataquery") 释放上下文预算
+→ 全程 Tracer 记录：谁在什么时候装了什么、调了什么、花了多少
+```
+
+### 1.2 需要提前想清楚的坑
+
+| 问题 | 缓解思路 |
+|---|---|
+| 装配决策可靠性 | 模型可能漏装（不知道查目录）或滥装（全装上、上下文爆炸）。按任务类型做粗粒度预推荐；内核设装配数量 / 总 token 上限 |
+| 卸载的有状态性 | Memory、会话持久化这类插件有状态，unload 不是简单删 schema——要定义 `deactivate` 时的状态落盘契约。**已兑现**（P-D，2026-08-31）：unload_plugin 先回调 `on_unload` 落盘再清注册 |
+| 插件间依赖 | Sub-Agent 编排插件可能依赖沙箱和 Tracer——内核能力暴露成稳定 SPI，插件面向接口编程，不互相直接调用 |
+| 安全分级 | 插件分可信级（内置签名）/ 第三方 / 用户自定义，不同级别走不同审批强度 |
+| Tracer 与 eval 闭环 | 轨迹统一记录后，离线 eval、bad case 回放、装配策略优化（"哪类任务该预装哪些插件"本身可以学出来）都有了统一数据源——本架构的隐性红利 |
+
+---
+
+## 2. 插件自描述：Manifest 与双视角
+
+### 2.1 两个视角分离
+
+- **内核视角：挂载点（Extension Points）**——内核预定义固定挂点，插件声明
+  自己挂在哪，内核在 Loop 各阶段自动调用，**模型不感知**：
+
+```
+ingress ──▶ pre-inference ──▶ planning ──▶ tool-call ──▶ post-inference
+(入口适配)   (上下文组装: Memory/RAG/Prompt) (规划策略)  (能力工具)   (输出后处理)
+                 │                              │
+             compaction                      orchestration
+             (压缩策略)                       (子Agent编排)
+
+lifecycle: 调度 / 持久化（挂在会话生命周期上，而非 Loop 上）
+```
+
+- **模型视角：按类型分组的插件目录**——每个插件只暴露一句话语义，schema
+  按需展开：
+
+| 类型 | 语义 | 例 |
+|---|---|---|
+| `capability.tool` | 能力工具类 | dataquery(查数) · dataviz(画图) · file-ops(文件) |
+| `context.memory` | 上下文类 | long-term-memory(长期记忆) · code-rag(代码检索) |
+| `strategy.planning` | 策略类 | todo-planner · react-planner |
+| `orchestration` | 编排类 | sub-agent-pool · agent-team |
+| `lifecycle` | 生命周期类 | cron-scheduler · checkpoint |
+
+### 2.2 插件 Manifest（自描述）
+
+```json
+{
+  "type": "capability.tool",          // 类型: 模型在目录里按它分组浏览
+  "mount": "loop.tool-call",          // 挂载点: 只给内核用,决定何时调用,模型不感知
+  "trust": "user",                    // 信任级: builtin / third-party / user
+  "summary": "一句话描述,进目录索引",   // 模型的第一认知入口
+  "schema": { },                      // 按需展开,不进索引
+  "permissions": ["network", "fs:read"],  // 安全审计据此审批
+  "cost": { "schemaTokens": 800 },    // 装配预算控制
+  "isolation": "process",             // 隔离级别(user 级强制 process,不可降级)
+  "timeout": "30s",
+  "dependencies": ["kernel.spi.tracer"]
+}
+```
+
+---
+
+## 3. 故障隔离：三层防护
+
+核心原则：**对主 Loop 而言，插件异常和插件正常返回"没查到"是同构的**——
+都只是一次观察结果（observation）。Loop 的收敛性永远不依赖任何单个插件。
+
+### 3.1 执行隔离（崩溃不传染）
+
+| 信任级 | 运行方式 | 崩溃影响面 |
+|---|---|---|
+| builtin（签名内置） | 可 in-proc，换性能 | 内核可控，默认可信 |
+| third-party | 独立进程 | 进程死掉，内核收信号，主 Loop 无感 |
+| user（用户自定义） | 独立进程 + 沙箱（**强制，不可降级**） | 崩溃、死循环、内存泄漏都被关在自己的笼子里 |
+
+### 3.2 调用防护（异常可收敛）
+
+每次插件调用都经过内核的**调用包装器**：
+
+| 机制 | 语义 |
+|---|---|
+| timeout | 超时即杀；返回结构化超时错误 |
+| 熔断器 | 连续 N 次失败 → 自动 `deactivate`，从上下文摘掉 schema，防止模型反复调用坏插件 |
+| 资源限额 | CPU / 内存硬顶；输出大小上限 |
+| 输出校验 | 返回值过 schema 校验；非法输出视为异常 |
+
+### 3.3 错误语义化（异常变成模型的决策输入）
+
+插件抛异常 ≠ Loop 抛异常。结构化错误让模型自行决策：
+
+```json
+{
+  "tool": "dataquery",
+  "status": "plugin_error",
+  "error": "Plugin crashed (exit 137, OOM). Circuit breaker: 2/3 failures.",
+  "suggestion": "retry | unload | use alternative: [arkai-dataquery]"
+}
+```
+
+模型拿到后自行决策：重试 / 换插件 / 降级到内置能力 / 如实告知用户——
+主流量继续走，只是少了一个能力。同时 Tracer 记录、审计可查，熔断触发时
+通知用户"插件 X 不稳定，已自动卸载"。
+
+---
+
+## 4. 插件分类与接入协议
+
+从"插件自己声明挂哪"升级为**类别 → 接入协议 → 装配层**三级映射——与操作系统
+驱动模型同构：字符设备、块设备、网络设备各有驱动接口，内核按设备类型走不同
+的注册路径。**插件面向协议编程，而不是面向内核实现编程。**
+
+### 4.1 类别 ↔ 协议 ↔ 装配层映射
+
+```
+                      内核装配器 (按 manifest.type 路由)
+                                  │
+ ┌──────────┬──────────┬─────────┼─────────┬──────────┬──────────┐
+ ▼          ▼          ▼         ▼         ▼          ▼          ▼
+Tool     Context  Planner  Orchestr. Ingress  Lifecycle EventListener
+Protocol Protocol Protocol Protocol Protocol Protocol  Protocol
+ │          │          │         │         │          │          │
+ ▼          ▼          ▼         ▼         ▼          ▼          ▼
+能力层     上下文     Loop      编排层    入口层    会话生命   事件总线
+Tool      组装管线   规划槽位   SubAgent  外部输入  周期钩子   (只读订阅)
+Registry  Registry  (单例)    Registry  Registry  Registry
+ └──────────┴──────────┴─── Loop 各阶段消费 ──┴──────────┴─────────┘
+```
+
+### 4.2 每类协议的接口契约（SPI）
+
+协议即契约——插件只要实现对应协议的接口，内核就知道怎么用它：
+
+| 协议 | 核心接口 | 装配到哪 | Loop 如何消费 |
+|---|---|---|---|
+| ToolProtocol | `invoke(input) → output` | 能力层 Tool Registry | schema 注入上下文，模型发起调用，内核路由到插件 |
+| ContextProtocol | `contribute(budget) → fragments[]` | 上下文组装管线 | pre-inference 阶段，内核按优先级 + 预算向各 provider 征集上下文片段（Memory / RAG / Prompt 都走这个） |
+| PlannerProtocol | `plan(goal, state) → tasks` | Loop 规划槽位（单例） | 规划阶段调用；同时只激活一个，多装需仲裁或替换 |
+| OrchestratorProtocol | `spawn(spec) → handle`、`send / receive` | 编排层 | 模型调用编排工具时，由它管理子 Agent 生命周期 |
+| IngressProtocol | `start() → 事件流` | 入口层 | 不挂在 Loop 上，把外部输入（CLI / Webhook / IM）转成内核事件 |
+| LifecycleProtocol | `onSessionStart / onCheckpoint / onResume` | 会话生命周期钩子 | 会话状态迁移时按序回调（调度、持久化插件走这个） |
+| EventListenerProtocol | `subscribe(types) + onEvent(e)` | 事件总线 | 只读订阅，不能阻断主流程（监控、自定义埋点用） |
+
+### 4.3 装配时的内核路由流程
+
+```
+load_plugin("dataquery")
+│
+├─ 1. 读 manifest.type → "capability.tool"
+├─ 2. 路由到 ToolProtocolHandler
+├─ 3. 校验: 插件是否实现了 ToolProtocol 接口?
+│        protocol version 与内核兼容?
+│        permissions 是否过安全审计?
+├─ 4. 注册到能力层 Tool Registry（不是注册到"内核"这个笼统的地方）
+├─ 5. 副作用: schema 注入上下文, token 预算扣减
+└─ 6. Tracer 记录装配事件
+```
+
+### 4.4 这个抽象带来的性质
+
+| 性质 | 说明 |
+|---|---|
+| 内核可扩展但不改核心 | 新增一个插件类别 = 定义一个新协议 + 一个新挂点 + 一个 Registry，内核五件套一行不动 |
+| 协议版本化 | manifest 里声明 `protocol: "tool/v1"`，内核同时支持 v1 / v2 即可平滑升级，插件生态不因内核升级而断裂 |
+| 层与层解耦 | 装配器只是"路由器"，每层自己维护 Registry 和消费时机。上下文管线不知道 Memory 插件是进程还是线程，它只认 `contribute()` 的返回 |
+
+> **特例：单例协议 vs 多例协议。** 工具类插件天然"多装多得"；规划器、
+> compaction 策略这类是"同一时刻只能有一个生效"——协议设计里要区分
+> **多例协议**（注册即累加）和**单例协议**（装配即替换，或需显式仲裁）。
+
+### 4.5 落地状态（P-D，2026-08-31）
+
+三协议先行落地（决断 N4），其余占位：
+
+| 协议 | 状态 | 落点 |
+|---|---|---|
+| `tool/v1`（capability.tool） | 已落地 | `tools` 注册表（P1 起就有）；多例 |
+| `context/v1`（context.memory） | 已落地 | `contexts` 注册表；`ctx.register_context`，消费 = `collect_context_fragments`（注册序 + 字符预算 + 单插件崩溃隔离），片段并入系统提示（pre-inference） |
+| `lifecycle/v1`（lifecycle） | 已落地 | `lifecycle` 注册表；`ctx.register_lifecycle`（on_session_start / on_checkpoint / on_resume / on_unload），消费 = `kernel.trigger_lifecycle`（故障隔离 + `plugin_error` 记账） |
+| `ui/v1`（ui.panel，2026-09-01 增补） | 已落地 | `ui_slots` 注册表；`ctx.register_ui_slot(name, render, refresh_hz)`，`render() -> deck 行`（str/list，Rich markup）；消费 = `UiPanelCollector`（崩溃跳过 + 连续 3 次失败熔断 unregister + 单面板 8 行限额 + 节流），双客户端消费：CLI deck（输入框之下）每帧征集；web 经 `panels` 协议事件（`serve_panels`）由 ServeSession 常驻 ticker ~4Hz 广播（变化才发，行剥 rich 标签，端哑渲染纯文本）。**渲染路径强制故障隔离：渲染帧绝不能被插件拖死**。同一插件两个客户端零改动生效（协议即契约，客户端只是消费方） |
+| Planner / Orchestrator / Ingress / EventListener | 占位 | `cardinality`（multi / singleton）结构已进 ProtocolSpec；单例协议"装配即替换"的仲裁待落地 |
+
+路由规则：`manifest.type` → `protocols.PROTOCOLS` 目录；未知 / 缺失 type 默认路由
+`tool/v1`（向后兼容 P-D 之前的插件；未知 type 的 warning 由 P-B 照记）。协议
+一致性：声明 type 与实际注册面不符 → `manifest_warnings`（不拒载，沿用 P-B
+容忍哲学）；write_plugin 生成侧强校验拒绝（注册面 AST 契约检查）。mount 由
+协议表派生，模型与生成工具都不手填。
+
+---
+
+## 5. 现状基线（已实现）与迁移
+
+### 5.1 四职责实现基线（2026-08-24 起陆续落地）
 
 | 部件 | 文件 | 状态 |
 |---|---|---|
 | 内核本体 | `openx/kernel/__init__.py` | 注册目录驱动；base bundle 恒首挂载 |
-| 注册表 | `kernel/registry.py`（PluginRegistry） | Entry 带 provenance（含 seq）；无 unregister |
-| 加载器 | `kernel/loader.py` | 发现/解析/apply 完整；无依赖拓扑、无作用域 |
-| ctx | `kernel/context.py` | 给予面三个注册 API |
-| 校验 | `kernel/validate.py` | tools / commands 形状校验 |
-| 清单 | `kernel/inventory.py` | 只读投影 |
-| base bundle | `openx/builtin/`（tools/providers） | 工厂注册，内置=致命、禁用表无效 |
-| 协议 | `openx/core/protocol.py` | P1 下行构造器 + Event 信封（seq/ts/cause/origin/digest） |
-| 权限桥 | `app/cli/single_shot.py` | NDJSON 双向，fail-closed |
-| 权限裁决 | `permissions.py` + `services/tool_executor.py` | 在 executor 串行准备段，未入内核 |
-| 资源上限 | `agent.py` loop | 轮次上限在 loop 里 |
-| fs 边界 | 各 Tool 构造参数（`ws`、`allow_outside`） | **散落在工具层**，非内核供给 |
+| 注册表 | `kernel/assembly/registry.py`（PluginRegistry） | Entry 带 provenance（含 seq） |
+| 加载器 | `kernel/assembly/loader.py` | 发现/解析/apply 完整；无依赖拓扑、无运行时装配 |
+| 校验 | `kernel/assembly/validate.py` | tools / commands 形状校验 |
+| 执行闸 | `kernel/audit/guard.py` | 七站裁决管线（K3，2026-08-28） |
+| 装配策略 | `services/assembly.py` | 工具实例化仲裁 + provider 解析（K3a） |
+| 协议 | `openx/core/protocol.py` | P1 事件信封（seq/ts/cause/origin/digest）+ serve 扩展 |
+| 重试/形状 | `kernel/reasoning/retry.py` / `kernel/reasoning/provider.py` | 推理核心的先声：重试归内核、形状进内核（M1） |
+| 记账 | `kernel.emit` / `sessions/*.jsonl` | 事件账本（K2）；**轨迹跟踪的底座** |
+| 元工具 | `kernel`（list/load/unload/help）+ `tools/plugin_tools.py` | 模型驱动装配（P-A，2026-08-29）：会话级动态装载、轻量自描述、unregister |
+| Manifest | `kernel/assembly/manifest.py` + `PluginInfo.manifest` | 插件自描述（P-B，2026-08-29）：schema 校验、目录暴露 type/mount/trust |
+| 调用防护 | `kernel/sandbox/protect.py` + `assembly` | 故障隔离（P-C，2026-08-29）：插件工具包 timeout/输出上限/熔断/结构化错误 |
+| 自产插件 | `tools/write_plugin_tools.py` + `kernel/assembly/plugin_spec.py` | 模型自产（P-F，2026-08-29）：write/test/promote 元工具 + admit 管线 + 决策记账 |
+| 协议分类 | `kernel/assembly/protocols.py` + `registrations.py`（contexts/lifecycle） | 类别→协议→装配层路由（P-D，2026-08-31）：三协议目录 + 注册面扩展 |
+| 上下文/生命周期消费 | `services/assembly.py::collect_context_fragments` + `agent` 接线 | P-D 消费面：片段并入系统提示、session_start / unload 钩子触发 |
+| UI 面板协议 | `protocols.py`（ui/v1）+ `UiPanelCollector` + `streaming` deck 接线 | ui.panel 类插件（ui/v1，2026-09-01）：状态层面板 + 渲染故障隔离/熔断 |
 
-### 1.1 已知问题清单
+### 5.2 新架构对现状的改动面
 
-| # | 问题 | 位置 |
+| 现状 | 新架构（五件套） | 改动性质 |
 |---|---|---|
-| B1 | ~~贡献点注册表双处手写~~ **已修**：`kernel/registrations.py` 目录驱动 | `kernel/__init__.py` |
-| B2 | ~~`_load_key` 加载完成前赋值~~ **已修**：全部处理完才提交键 | `kernel/__init__.py` `_reload` |
-| B3 | ~~工厂产出重名工具静默覆盖~~ **已修**：实例化时先产出者赢 + 记警告 | `instantiate_tools` |
-| B4 | ~~"内置优先"靠消费方回报~~ **已修**：注册序即优先级（结构性），`merge_tools`/工具侧 `note_conflict` 已删（命令侧保留：内置命令尚非插件） | `instantiate_tools` |
-| B5 | ~~Entry 无 inserted_at_seq~~ **已修**：`Entry.seq` 回填 registered 事件序号（scope 字段仍缺，随作用域机制补） | `kernel/registry.py` |
-| B6 | ~~注册/拒载无事件~~ **已修**：registered/rejected/plugin_loaded/plugin_failed/composition_resolved 上账本 | `kernel.emit` |
-| B7 | ~~协议事件无信封~~ **已修**：Event + envelope 投影；转录事件的信封化（cause 链）随 K3 接线 | `core/protocol.py` |
-| B8 | 消费方 API 仍以定制方法为主（`registry(kind)` 为统一通道雏形）；`service()` 收敛已定切片 **K3a**（K3 前置，见内核详设 v2.1 §0/§4） | `kernel/__init__.py` |
-| B9 | **插件 `apply(ctx)` 在主进程内执行任意 Python**--ctx 拒绝面靠不暴露引用，是约定不是隔离。v2.1 补 **ToolHost**（§1.4）：拒绝面延伸到实例化期，工厂签名 `factory(agent)` → `factory(host)`，随 K3a；进程级隔离仍是开放问题 | `kernel/loader.py:77-92` |
-| B10 | fs/网络/命令边界由各工具自持（构造参数），内核不供给、不可审计 | `tools/*.py` 各处 |
-| B11 | 子代理的权限收缩（`CHILD_EXCLUDED_TOOLS`）靠工具表静态排除，非 scope 派生 | `core/subagent.py` |
+| boot 静态组合（`ensure_loaded`） | 模型驱动运行时装配（元工具） | **核心机制变化**：装配权从 boot 交给模型；boot 组合退化为出厂默认组合 |
+| 装配器内嵌于 kernel `__init__.py` | ② 插件装配器显式模块：Manifest 解析、生命周期、依赖解析、目录索引 | 结构析出 |
+| `guard.py` 裁决管线 | ③ 安全审计：装配请求 + 插件调用的闸门、Hook 链、审计日志、injection 防护 | 扩展：闸门从工具调用延伸到装配请求 |
+| 事件账本（K2） | ④ 轨迹跟踪：推理/插件调用/装配事件/成本全量 + Trace 回放 + eval 导出 | 记账升级为轨迹 |
+| 工具运行期 L1（同进程） | 执行隔离按 trust 分级（builtin in-proc / third-party 进程 / user 沙箱强制） | 与 D9 进程隔离决断对接 |
+| 插件无自描述 | Manifest（type/mount/trust/summary/permissions/cost/isolation/timeout/dependencies） | **新增** |
+| 插件无协议分类 | 7 类协议 SPI + 类别→协议→装配层三级映射 | **已落地**（P-D，2026-08-31 + ui/v1 增补 2026-09-01）：tool/context/lifecycle/ui 四类，其余占位（§4.5） |
 
----
-
-## 2. 插件维护（③ 单一门）
-
-外部插件进系统的**唯一通道**：发现 -> 校验 -> 注册（带 provenance）->
-清单 -> （K6 起）晋升门。未注册 = 不可编排 = 不可执行，不存在旁路。
-
-### 2.1 插件注册目录（修 B1，已实施）
-
-```python
-# kernel/registrations.py（已实施）
-@dataclass(frozen=True)
-class PluginRegistration:
-    """一类插件注册项的元数据。"""
-    kind: str                # "tools" / "commands" / ...
-    validator: Callable[[str, object], list[str]]
-    conflict: str = "first-wins"
-    hotplug: str = "session"
-
-REGISTRATIONS: tuple[PluginRegistration, ...] = (
-    PluginRegistration("tools", _validate_factory),
-    PluginRegistration("commands", validate_command),
-)
-```
-
-内核持有 `self.registries = {r.kind: PluginRegistry(r.kind, r.validator)
-for r in REGISTRATIONS}`；重载的重置变成一行重建 dict。**新增一类注册项
-= REGISTRATIONS 加一行**，内核主体不动（B1 消除）。`conflict`/`hotplug`
-字段现在只声明、K3/K6 才消费，但结构一次定形。
-
-### 2.2 tool_factories 并入 tools（D1 已定，已实施）
-
-值统一为工厂 `factory(agent) -> list[Tool]`（裸实例由 ctx 包一层适配，
-形状即时校验）。收益：内置恒首挂载 + 注册序即优先级 = **内置优先成为
-结构性保证**（B3、B4 同消，`merge_tools` 与工具侧 `note_conflict` 已删）；
-消费方只剩一个取用形态 `instantiate_tools(agent, ...)`。
-
-### 2.3 Entry 补 provenance（B5 已部分实施）
-
-`Entry.seq`（inserted_at_seq）已回填 registered 事件序号；`source`/
-`scope` 字段随作用域机制（session/persistent）补齐：
-
-```python
-@dataclass
-class Entry:
-    name: str
-    value: object
-    plugin: str          # provenance：来源插件 id（source 在 PluginInfo 上）
-    warnings: list[str]
-    seq: int | None      # registered 事件的账本序号（已实施）
-    # scope: str         # "session" | "persistent"（待作用域机制）
-```
-
-### 2.4 加载时序修复（B2 已实施）
-
-`_load_key` 在**全部插件处理完成后**才赋值；中途异常（含内置致命）保持
-旧键，下次 `ensure_loaded` 完整重试（回归测试 `test_half_loaded_state_retries`）。
-
----
-
-## 3. 编排（① 装配成可执行单元）
-
-### 3.1 可执行单元（ExecutionContext）
-
-v1 的装配止于"注册表填充"；编排要再进一步--**绑定**：
-
-```python
-@dataclass
-class ExecutionContext:
-    """一次 agent 执行所需的全部绑定。"""
-    tools: dict[str, Tool]        # 注册表实例化（工厂以 agent 为参）
-    scope: ExecutionScope         # 沙箱边界（见 §4），内核供给
-    ledger_tap: Callable          # 记录出口（见 §5），内核供给
-    unit_id: str                  # 单元标识（顶层会话 / subagent / workflow run）
-    parent: str | None            # 派生关系：子单元 scope 必为父的子集
-```
-
-- `kernel.assemble(spec) -> ExecutionContext`：组合输入（P1：workspace +
-  禁用表）-> 应载清单 -> 注册表 -> 以 agent 为参绑定。
-- **派生即沙箱语义**：subagent / workflow / team 队友 = `kernel.spawn(
-  child_spec, parent=unit)`，子单元的 ExecutionScope 由内核做**子集运算**
-  派生（修 B11：`CHILD_EXCLUDED_TOOLS` 静态排除表退位为 scope 的一条
-  派生规则）。权限继承（v1 §2.5）由此免费获得。
-- loop 是单元内的零件，不是内核--"换 loop 不换产品"不变。
-
-### 3.2 消费方 API 收敛（修 B8）
-
-| 目标 API | 现状 | 动作 |
-|---|---|---|
-| `assemble(spec)` | `ensure_loaded` + `instantiate_tools` + `merge_tools` | 三步并为一步，agent 只拿 ExecutionContext |
-| `service(kind)` | `lookup_command` / `command_menu_entries` / ... | 注册表统一取用通道；定制方法先并存后删 |
-| `spawn(child, parent)` | subagent/workflow 自行构造 | K3+ 再接线，P1 只定签名 |
-
----
-
-## 4. 沙箱执行（② 安全环境）
-
-### 4.1 沙箱的三个面
-
-执行环境的边界由三部分构成，全部**由内核供给、工具只消费**（修 B10）：
-
-```
-ExecutionContext
-├── 静态边界  ExecutionScope：fs 根（workspace）· 只读豁免 · 网络开关 ·
-│             命令白/黑名单 · 危险命令表      <- 现散落在 Tool 构造参数
-├── 动态闸门  裁决管线（v1 §2.2 七站固定序）：工具调用必经，只紧不松
-│             <- 现在 executor 串行准备段，K3 析出
-└── 资源底线  资源闸：轮次 / 预算 / 停止语义   <- 现在 agent loop 里，K4 析出
-```
-
-P1 动作：`ExecutionScope` 对象化，工具构造参数（`ws`、`allow_outside`、
-`allowed_commands`、`dangerous_commands`）改由 scope 供给。行为≡现状，
-但边界从"每个工具自觉"变为"内核发放"。
-
-### 4.2 进程隔离：真正的决断点（D9）
-
-**现状最大的洞是 B9**：插件 `apply(ctx)` 在主进程跑任意 Python--ctx
-拒绝面只是不暴露引用，`import os; os.system(...)` 拦不住。沙箱若要当真，
-必须回答插件代码怎么跑：
-
-| 路线 | 形态 | 代价 |
-|---|---|---|
-| L1 语言级（现状延伸） | 同进程；能力面收窄 + 资源闸 + 全量记账 | B9 依旧是洞；信任模型 = "装了插件就信任其代码"（pip 同款） |
-| L2 进程隔离 | 插件/工具跑子进程（macOS sandbox-exec / Linux seccomp+ns），IPC 回内核 | **与现有工具设计正面冲突**：TodoWriteTool 共享 `agent.todos`、AskUserTool 共享 console、ShellTool 共享 tasks 注册表--共享引用跨不了进程。builtin 工具须改写为 broker 模式（工具=RPC，状态内核持有） |
-| L3 容器/microVM | 每单元一沙 | 部署重；远期 |
-
-**诚实结论**：L2 是真沙箱，但它推翻"工具=同进程 Python 对象"的地基，
-builtin 十九个工具全部重写为状态服务。这不是一个切片，是一次地基更换。
-**建议分层定价**：对用户插件 apply（加载期，代码来源不可信）优先上 L2--
-加载期只需要 ctx 的注册 API，面窄，IPC 代价小；对工具执行（运行期，
-builtin+已注册插件）P1 维持 L1，broker 化作为远期路线图。加载期与运行期
-分开定价，是本节的核心提案。
-
-### 4.3 沙箱与把关的关系
-
-裁决（弹窗、危险命令、存储规则）是**交互语义**，沙箱（fs 根、网络）是
-**结构语义**。两者都挂在 ExecutionContext 上：闸门在每次工具调用前问
-"这个调用允许吗"，边界在每次执行时限定"能在哪落子"。v1 的"只紧不松"
-半格同时覆盖两者（scope 子集派生 = 半格单调映射的静态面）。
-
----
-
-## 5. 记账（④ 第四职责，已定稿）
-
-2026-08-24 定稿：记账为内核第四职责，与编排 / 沙箱执行 / 插件维护并列。
-**记账是让"自主"可以被委托的证据系统**：沙箱回答"在哪跑、跑没跑过闸"，
-记账回答"发生过什么、为什么、谁批准的"。环境有边界、有闸门、有记录，
-三面齐全才叫安全环境。
-
-**职责在核内的含义**（什么是内核不变量）：
-
-- **事件信封 schema**（seq/ts/session/type/payload/cause/origin/digest）--
-  v1 不变量 #3 原样保留；
-- **`emit()` 唯一事件出口**：一切执行经内核，一切事件经 emit，没有旁路
-  写协议的口子；
-- **记账纪律**：append-only（内核无 update/delete API）、记账先于动作
-  （宁可记了没执行，不可执行了没记）、决策留痕覆盖自身。
-
-**实现选择（不改变职责归属）**：文件写入经 attach 注入的 sink
-（SessionStore 挂接）--内核定义格式与纪律，不亲自做 IO；账本文件的损坏
-恢复、轮转、审计工具皆在核外。分界线一句话：**格式与出口在核内，存储
-与工具在核外**。
-
-**P1 已实施**（K2a/K2b，2026-08-24）：`Event` 信封 + `project` 下行投影
-+ `digest_of` 哈希链在 `core/protocol.py`；`kernel.attach_ledger(sink,
-session, start_seq)` + `kernel.emit()` + 组合族事件
-（composition_resolved / plugin_loaded / plugin_failed / registered /
-rejected）在 `kernel/__init__.py`；agent `__init__` 挂接
-`SessionStore.append_event`，seq 经 `ledger_start_seq()` 续起（恢复会话
-不重号）。转录事件（text/tool_use/…）的信封化与 cause 链随 K3 接线。
-
----
-
-## 6. 决断点（讨论清单）
+### 5.3 决断点（更新）
 
 | # | 问题 | 倾向 |
 |---|---|---|
-| ~~D1~~ | ~~tool_factories 并入 tools~~ | **已定并实施**：tools 单一注册项，工厂形态统一 |
-| ~~D3~~ | ~~K1/K2 交错落地~~ | **已定并实施**：K1a/K1b/K2a/K2b 一次落地，Entry.seq 一步到位 |
-| ~~D6~~ | ~~空组合的 composition_resolved 是否每载必记~~ | **已定并实施**：幂等跳过不记（键变化才记） |
-| ~~D8~~ | ~~记账地位~~ | **已定稿（2026-08-24）：第四职责**，见 §5 |
-| D9 | 进程隔离分层：插件加载期先上 L2、工具运行期维持 L1？ | 是；broker 化列远期路线图 |
-| D10 | ExecutionScope 的 P1 范围：只收编现有参数（ws/allow_outside/allowed/dangerous）还是连网络开关也一并声明 | 只收编现有，网络开关占位 |
-| D11 | 子单元 scope 派生（B11）何时接线：P1 只定 ExecutionContext.parent 字段，K3 spawn 时实现 | P1 只定字段 |
+| N1 | 模型驱动装配的落地形态：元工具先以"会话内注册/卸载"实现（K6 晋升门的运行时面），还是等 boot 组合稳定后并行 | 先做会话内热插（复用五阶段校验），boot 组合退化为默认组合；元工具是薄壳包注册 API |
+| N2 | 推理核心的边界：`kernel/reasoning/provider.py` + `kernel/reasoning/retry.py` 已落地，路由/fallback/限流何时入核 | 随多 provider 多实例成熟度；现状 `resolve_provider` 装配策略在消费方（K3a 已迁） |
+| N3 | 轨迹跟踪与记账的关系：事件账本（K2）作为轨迹底座，成本与 eval 导出是增量——Tracer 是否独立模块 | 记账接口不动，Tracer 以消费者身份订阅事件流 + 补成本字段（协议扩展） |
+| N4 | 插件协议分类是否一步到位：7 类全建，还是先 Tool/Context/Lifecycle 三类 | 先 Tool（现状工具注册表）/ Context（instructions/memory/skills 收口）/ Lifecycle（调度/持久化），其余占位。**已落地**（2026-08-31，§4.5）；Context 现为插件片段并入系统提示，instructions/memory/skills 整体收口列后续 |
+| N5 | 执行隔离的推进节奏 | 延续 D9 分层定价：用户插件加载期先上进程隔离，工具运行期维持 L1 |
+| N6 | 生成插件的自测是否强制（不自测的提交直接拒绝？） | **强制**：`self_test` 是沙箱放行的前提（§6.4 ③），宁缺勿滥 |
+| N7 | 声明式插件是否进 P-F | 占位不做（代码插件优先），避免分心 |
+| N8 | 生成插件的信任级归属：`auto` 独立一档还是并入 `user` | 独立 `auto` 档（可批量回滚、可整体禁用），不并入 user |
+
+### 5.4 前向落地切片
+
+1. ~~**P-A 模型驱动装配的元工具面**~~ **已完成**（2026-08-29）：
+   `kernel` 的 list/load/unload/help 管理 API + `tools/plugin_tools.py` 四个元工具
+   （list/help 只读、load/unload ASK）+ 会话级动态装载（复用五阶段校验，同源
+   同门）+ 轻量自描述（`__openx_meta__`）。装配请求的安全审计（只读/非只读
+   分级）留 P-C 前后接线。
+2. ~~**P-B Manifest**~~ **已完成**（2026-08-29）：`kernel/assembly/manifest.py` schema 校验
+   （形状错拒载、未知 type/mount/permission 只警告）+ `PluginInfo.manifest` 全量
+   + `list_plugins` 暴露 type/mount/trust + `plugin_help` 暴露 manifest 全量与
+   校验警告。
+3. ~~**P-C 故障隔离（调用防护）**~~ **已完成**（2026-08-29）：`kernel/sandbox/protect.py`
+   `ProtectPluginTool`（timeout/输出上限/熔断/结构化错误，全量委托 Tool 表面），
+   `assembly.instantiate_tools` 只包插件工具（timeout 取 manifest 声明），熔断触发
+   `kernel.unregister_tool` 自动摘除。**执行隔离（进程沙箱，D9）明确不做**——本
+   切片只做"异常可收敛 + 错误语义化"。
+4. ~~**P-D 协议分类**~~ **已完成**（2026-08-31）：`kernel/assembly/protocols.py`
+   协议目录（tool/v1 · context/v1 · lifecycle/v1；未知/缺失 type 默认路由
+   tool/v1）+ 注册面（`ctx.register_context` / `ctx.register_lifecycle`，
+   registrations 目录加 contexts/lifecycle 两行）+ 消费面
+   （`collect_context_fragments` 并入系统提示、`trigger_lifecycle` 故障
+   隔离回调、agent.startup 接 session_start）+ unload 的 **on_unload 状态
+   落盘契约**（§1.2 卸载有状态性的兑现）+ 协议一致性 warning + write_plugin
+   按 type 生成三协议插件（PLUGIN_SPEC v2 常驻 + 注册面 AST 契约检查，类型
+   错配即拒）。单例协议（planner/compaction）与 checkpoint/resume 接线列后续。
+5. **P-E 轨迹升级**：事件账本补成本字段，Tracer 订阅 + eval 导出。
+6. ~~**P-F 模型自产插件**~~ **已完成**（2026-08-29）：`kernel/assembly/plugin_spec.py`
+   PluginSpec（常驻系统提示）+ `tools/write_plugin_tools.py` 三元工具（write ASK
+   / test ALLOW / promote ASK）+ admit 管线（manifest 校验 → 语法/契约存在性 →
+   **进程内 self_test** → 落盘 → load_plugin → 重建）+ `plugin_promoted` 决策事件。
+   自测在进程内跑（D9 进程隔离为后续加固，write 的 ASK 闸是当前信任锚点）；
+   promote 的 boot 持久化（进组合/overlay）列后续。
+
+> **搁置决定（2026-08-24，延续）**：沙箱执行（K1c/K3/K4）与记账深化整体暂缓，
+> 已落地 K2a/K2b 行为中性保留不回退；当前活跃方向为插件维护补全（卸载/
+> unregister）与编排（ExecutionContext）。五件套架构在此基础上演进。
 
 ---
 
-## 7. 落地切片修订
+## 6. 模型自产插件（Self-Extension）：让 Agent 自己开发插件
 
-1. ~~**K1a 目录表驱动**~~ **已完成**（2026-08-24）：`kernel/registrations.py`
-   目录驱动注册表生成 + `_load_key` 时序修复（B1、B2）。行为≡现状。
-2. ~~**K1b 工厂归一**~~ **已完成**：tools 单一注册项，工厂形态统一，
-   结构性内置优先，删 `merge_tools`（B3、B4）。行为≡现状。
-3. **K1c ExecutionScope**：边界对象化，工具参数改内核发放（B10）。
-   行为≡现状。
-4. ~~**K2a 信封**~~ **已完成**：Event + project 投影 + digest 哈希链，
-   下行逐字段等价（B7）。
-5. ~~**K2b 突变记账**~~ **已完成**：attach_ledger + 组合族事件（B6）；
-   Entry.seq 回填（B5 部分）。
-6. **K3 闸门入核**：裁决管线析出 `kernel/guard.py`，七站固定序 +
-   permission_decision 事件；ExecutionContext 动态闸门面就位。
-7. **K4 资源闸**：轮次/预算/停止从 loop 析出，scope 资源底线就位。
-8. **K5 全局账本 / K6 晋升门 / 插件加载期进程隔离（D9）**：后议。
+> 前提：插件系统上线（P-A~P-E）后，agent 可经元工具自行开发插件——识别能力
+> 缺口 → 读协议 → 生成 → 沙箱自测 → 会话热插 → 用户晋升 → 记账。这是架构的
+> **自举引擎**：agent 补自己的能力短板；Trace-eval 闭环让"哪类任务该预装哪些
+> 插件"也能学出来。
+>
+> 衔接：生成侧落地是架构图"候选池 → 模型配对 → 晋升门 → 激活 → 记账"
+> （`openx-architecture-design.md` §9）的运行时实现；模型自产插件 id 恒带
+> `auto-*` 前缀（不占用用户命名域，可一键批量回滚）。
 
-> **搁置决定（2026-08-24）**：沙箱执行（K1c/K3/K4）与记账的后续推进
-> （转录事件信封化、K5 全局账本）**整体暂缓**，待责任模型想清楚后再启。
-> 已落地的 K2a/K2b 记账切片行为中性，保留不回退；四职责的责任定义不变，
-> 搁置的是实施节奏而非架构结论。当前活跃方向：插件维护补全
-> （卸载/unregister）与编排（ExecutionContext）。
+### 6.1 三条核心原则
+
+| 原则 | 含义 |
+|---|---|
+| 协议是给模型的契约 | agent 只读一份 PluginSpec 就知道怎么写插件，不逆向内核实现 |
+| 沙箱是考场 | 信任锚点 = "沙箱里自测跑绿"，不是"模型说它能用" |
+| 用户是审批 | 写类/常驻插件的晋升必须用户确认；只读可热插（K6 分级） |
+
+**同源同门**：生成插件走同一五阶段校验，**无第二条加载路径**——生成的文件落进
+插件目录后就是普通插件，可被 list / unload / 回滚一视同仁。
+
+### 6.2 PluginSpec：模型可读的协议自描述
+
+"快速生成"的前提是**只读一份东西就够**。PluginSpec 是插件协议的唯一真源，
+版本化（`protocol: "plugin/v1"`），作为 prompt_fragment 常驻（或经
+`plugin_help("kernel.plugin-spec")` 按需展开）：
+
+```
+PluginSpec（plugin/v1）
+├── manifest 字段定义   type / trust / permissions / cost / dependencies / test
+│                       （mount 由协议表派生，不手填）
+├── 四协议代码契约      按 type 各取其一：tool = apply + factory(host)；
+│                       context = apply + contribute()；lifecycle = apply +
+│                       register_lifecycle；ui.panel = apply + register_ui_slot
+│                       （render() -> deck 行；各协议最小示例见 plugin_spec.py）
+├── 自测契约            self_test() 怎么写、跑在什么环境
+├── 命名规则            auto-* 前缀（批量回滚的抓手）
+└── 完整示例            最小工具 / 只读工具 / 有状态工具（Memory 类）
+```
+
+最小单文件形态（manifest 头 + 代码 + 自测，提交单元最小）：
+
+```python
+# ===== manifest（JSON 头，机器可读；亦可 sidecar）=====
+# {"type": "capability.tool", "mount": "loop.tool-call", "trust": "auto",
+#  "permissions": ["fs:read"], "cost": {"schemaTokens": 400}, "protocol": "plugin/v1"}
+from openx.tools.base import Tool
+
+class VizTool(Tool):
+    name = "viz"
+    description = "画调用关系图"
+    async def execute(self, **kw):
+        return ToolResult(output="...")
+
+def factory(host):          # ToolHost 受限面：只读投影 + 共享状态句柄
+    return [VizTool()]
+
+def self_test():            # 沙箱内跑：绿了才放行
+    assert factory(None)[0].name == "viz"
+```
+
+### 6.3 生成工具（模型侧 meta-tools）
+
+| 工具 | 作用 |
+|---|---|
+| `write_plugin(manifest, code, test)` | **结构化输出**：schema 即契约，模型按 schema 填，形状上难出错（StructuredOutputTool 同款机制） |
+| `test_plugin(name)` | 沙箱跑自测，返回 pass / fail + Trace |
+| `promote_plugin(name)` | 用户确认后晋升 persistent（走 ② 插件装配器 + 账本决策事件） |
+| `unload_plugin(name)` / `list_plugins` | 现状元工具；回滚即卸载 |
+
+### 6.4 admit 验收管线（生成侧）
+
+```
+write_plugin 提交
+  → ① 形状校验   manifest 字段齐全、permissions 在词汇表内、auto-* 前缀、代码可解析
+  → ② 静态扫描   AST 粗查（声明权限 vs 实际调用、命名空间越界）
+  → ③ 沙箱自测   沙箱跑 self_test → 绿了才放行        ← 信任锚点
+             （2026-09-01 加固：模块代码+self_test 在 daemon 线程执行，
+              join 超时（10s）即拒"死循环/挂死"，主进程不卡死）
+  → ④ 会话热插   scope=session，当前会话立即可用
+  → ⑤ 用户晋升   写类/常驻 → 用户确认 → persistent + 记账
+  全程记账: plugin_created / validated / tested / promoted / rejected
+```
+
+### 6.5 安全边界
+
+| 威胁 | 缓解 |
+|---|---|
+| 模型被 prompt injection 写出恶意插件 | 生成插件 `trust=auto` → **强制沙箱进程隔离**（同用户级，§3.1）；最坏 = 沙箱里的一个坏工具 |
+| 插件拿到 agent 本体 | **ToolHost 拒绝面不变**：只拿只读投影，拿不到 loop/闸门/console |
+| "模型说它安全"不可信 | 信任锚点是沙箱自测 + 用户晋升门，不是模型意图 |
+| 批量回滚 | `auto-*` 命名空间一键整体回滚 |
+
+### 6.6 闭环：自测 → Trace → eval → 更会生成
+
+每次生成插件的自测结果、装配事件、成本全进 ④ 轨迹跟踪——Tracer-eval 闭环
+（§1.2）："哪些自产插件真有用"有统一数据源；装配策略优化（哪类任务预装哪些
+插件）本身可以学出来。**这个功能是让微内核架构从第一天就自我进化的引擎。**
+
+### 6.7 取舍：代码插件 vs 声明式插件
+
+| 形态 | 表达力 | 安全 | 定位 |
+|---|---|---|---|
+| 代码插件（Python 单文件） | 强——agent 本来就是编码 agent | 沙箱兜底 | **主路径** |
+| 声明式插件（manifest + 配置） | 弱——只够拼装已有能力 | 天然最安全 | 快速原型入口 |
+
+建议主路径走代码插件（agent 是编码 agent，写 Python 是强项）；声明式只做
+轻量原型入口，不进 P-F 范围。
+
+### 6.8 落地切片
+
+**P-F 模型自产插件**（依赖 P-A 元工具面 / P-B Manifest / P-C 故障隔离沙箱 /
+P-D 协议分类）：PluginSpec（§6.2）+ `write_plugin` / `test_plugin` /
+`promote_plugin` 结构化输出元工具（§6.3）+ admit 生成侧管线（§6.4，复用五阶段
+校验 + 沙箱自测 + 晋升门）。决断点见 §5.3 N6-N8。
 
 ---
 
-*本文与 `openx-kernel-design.md` 冲突时，以讨论结论为准并立即回写彼文。*
+*本文与 `openx-architecture-design.md` / `openx-kernel-design.md` 冲突时，
+以本文（对齐 2026-08 架构图）为准并立即回写彼文。*

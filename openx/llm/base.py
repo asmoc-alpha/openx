@@ -26,7 +26,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Optional
 
-from ..kernel.provider import ProviderTransientError, StreamEvent
+from ..kernel.reasoning.provider import ProviderTransientError, StreamEvent
 
 # 可重试的 HTTP 状态码（openai/anthropic 共用集合，对齐各自 SDK 的默认
 # 可重试集）：408 请求超时 / 409 冲突（部分网关瞬态）/ 429 限流 / 5xx。

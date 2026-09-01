@@ -158,6 +158,16 @@ def serve_history(messages: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "history", "messages": messages}
 
 
+def serve_panels(panels: list[dict[str, Any]]) -> dict[str, Any]:
+    """serve 下行：插件 UI 面板快照（ui/v1，web 常驻面板）。
+
+    ``panels = [{"name": str, "lines": [str, ...]}]``——行已剥 rich 标签
+    （与 text_delta 同款），端是哑渲染器只按行渲染纯文本；空列表 = 面板
+    全部消失（端清空面板区）。ticker 变化才广播（动画帧即天然变化源）。
+    """
+    return {"type": "panels", "panels": panels}
+
+
 def result_event(
     result: str | None,
     is_error: bool,

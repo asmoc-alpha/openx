@@ -59,6 +59,11 @@ _RICH_TAG = re.compile(
 # stream-json 同款：单条 tool_result 输出字符上限（防单事件撑爆传输）
 _STREAM_TOOL_OUTPUT_LIMIT = 2000
 
+# 面板广播节拍（秒）：ui/v1 插件面板（如桌面宠物）不是回合产物——空闲
+# 时也要动，走独立于 _worker 的常驻 ticker。征集器自带 refresh_hz 节流，
+# 这里变化才广播（动画帧即天然变化源）。
+_PANEL_TICK = 0.25
+
 
 @dataclass
 class Client:
@@ -71,6 +76,11 @@ class Client:
     ws: web.WebSocketResponse
     queue: "asyncio.Queue[dict]" = field(default_factory=asyncio.Queue)
     send_task: Optional[asyncio.Task] = None
+
+
+def _panels_sig(panels: list[dict]) -> tuple:
+    """面板快照指纹（变化才广播的比较键）。"""
+    return tuple((p["name"], tuple(p["lines"])) for p in panels)
 
 
 class ServeSession:
@@ -95,6 +105,10 @@ class ServeSession:
         self.bridge = bridge if bridge is not None else WebPermissionBridge(self)
         if console is not None:
             console.bridge = self.bridge
+        # 插件 UI 面板（ui/v1）常驻广播：有客户端才跑；_panel_sig 是上帧
+        # 指纹（变化才广播，attach 快照与 ticker 共用）
+        self._panel_task: Optional[asyncio.Task] = None
+        self._panel_sig: Optional[tuple] = None
 
     # ── 生命周期 ─────────────────────────────────────────────────
 
@@ -104,11 +118,14 @@ class ServeSession:
             self._worker_task = asyncio.ensure_future(self._worker())
 
     def stop(self) -> None:
-        """停止：先打断当前回合，再停 worker。幂等。"""
+        """停止：先打断当前回合，再停 worker 与面板 ticker。幂等。"""
         if self._turn_task is not None:
             self._turn_task.cancel()
         if self._worker_task is not None:
             self._worker_task.cancel()
+        if self._panel_task is not None:
+            self._panel_task.cancel()
+            self._panel_task = None
 
     def has_clients(self) -> bool:
         """是否有已 attach 的客户端（权限桥据此判定 fail-closed）。"""
@@ -163,8 +180,15 @@ class ServeSession:
             self._enqueue(client, protocol.user_message(self._live_user))
         for ev in list(self._live_events):
             self._enqueue(client, ev)
+        # 面板快照（ui/v1）：宠物等常驻面板 attach 即可见（不等下一拍）。
+        # 空面板不入快照——端默认无面板，多余空事件只扰动既有事件序。
+        panels = self._current_panels()
+        self._panel_sig = _panels_sig(panels)
+        if panels:
+            self._enqueue(client, protocol.serve_panels(panels))
         self._clients[id(ws)] = client
         client.send_task = asyncio.ensure_future(self._downlink(client))
+        self._ensure_panel_ticker()
         return client
 
     def detach(self, client: Client) -> None:
@@ -175,6 +199,55 @@ class ServeSession:
             client.send_task.cancel()
         if not self._clients:
             self.bridge.deny_all()
+            # 面板广播随客户端清零停止（空转无意义）；指纹复位，重连时
+            # attach 快照重发全量面板
+            if self._panel_task is not None:
+                self._panel_task.cancel()
+                self._panel_task = None
+            self._panel_sig = None
+
+    # ── 插件 UI 面板广播（ui/v1，web 常驻面板）────────────────────
+
+    def _ensure_panel_ticker(self) -> None:
+        """有客户端时启动面板 ticker（幂等；attach 处调用）。"""
+        if self._panel_task is None or self._panel_task.done():
+            self._panel_task = asyncio.ensure_future(self._panel_ticker())
+
+    async def _panel_ticker(self) -> None:
+        """常驻面板广播：每拍征集一次，变化才广播。
+
+        面板不是回合产物（宠物空闲时也要动）——独立于 _worker 的通道；
+        征集器的故障隔离（崩溃跳过/熔断/限额）保证坏面板不拖死广播，
+        征集本身再包一层兜底（collector 异常 → 本拍空面板）。
+        """
+        while True:
+            await asyncio.sleep(_PANEL_TICK)
+            if not self._clients:
+                break
+            panels = self._current_panels()
+            sig = _panels_sig(panels)
+            if sig == self._panel_sig:
+                continue  # 无变化不广播（省带宽）
+            self._panel_sig = sig
+            self.broadcast(protocol.serve_panels(panels))
+
+    def _current_panels(self) -> list[dict]:
+        """征集当前面板快照（行剥 rich 标签——与 text_delta 同款，端哑渲染）。"""
+        collector = getattr(self.agent, "ui_panels", None)
+        if collector is None:
+            return []
+        try:
+            raw = collector.panels()
+        except Exception:
+            _log.exception("ui panel collection failed; broadcasting none")
+            return []
+        return [
+            {
+                "name": name,
+                "lines": [_RICH_TAG.sub("", ln) for ln in lines],
+            }
+            for name, lines in raw
+        ]
 
     # ── 广播 / 入队 ──────────────────────────────────────────────
 

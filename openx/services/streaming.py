@@ -230,6 +230,7 @@ class StreamingService:
         input_tokens: int = 0,
         todos_provider: Optional[Any] = None,
         fleet: Optional[Any] = None,
+        panels: Optional[Any] = None,
     ) -> None:
         self._console = console
         self._rich = console._console
@@ -240,6 +241,9 @@ class StreamingService:
         # 两者皆 None（旧调用方 / 测试 Harness）→ 整组与旧版逐字节一致。
         self._todos_provider = todos_provider
         self._fleet = fleet
+        # 插件 UI 面板（ui/v1，P-D）：panels → UiPanelCollector（每帧征集
+        # + 崩溃跳过 + 熔断，见 services/assembly.py）。None → 零变化。
+        self._panels = panels
         # 状态层焦点：0 = 主视图；1..n = 第 n 个子代理详情（Ctrl-O 循环）
         self._focus = 0
         # 权限选择桥接（流式期 ask_permission 委托至此）：面板渲染在
@@ -881,11 +885,13 @@ class StreamingService:
             deck, deck_h = self._deck_renderable(snap)
             perm_deck, perm_h = self._permission_renderable()
             fleet_deck, fleet_deck_h = self._fleet_deck_renderable(snap)
+            plugin_deck, plugin_h = self._plugin_deck_renderable()
         else:
             deck, deck_h = None, 0
             perm_deck, perm_h = None, 0
             fleet_deck, fleet_deck_h = None, 0
-        extra = deck_h + perm_h + fleet_deck_h  # 额外行 → 视口预算
+            plugin_deck, plugin_h = None, 0
+        extra = deck_h + perm_h + fleet_deck_h + plugin_h  # 额外行 → 视口预算
 
         if self._focus > 0 and snap:
             parts.append(self._detail_view(snap[self._focus - 1], extra))
@@ -903,7 +909,9 @@ class StreamingService:
             parts.append(perm_deck)
         if fleet_deck is not None:
             parts.append(fleet_deck)
-        self._last_deck_h = perm_h + fleet_deck_h  # 框下总行数
+        if plugin_deck is not None:
+            parts.append(plugin_deck)
+        self._last_deck_h = perm_h + fleet_deck_h + plugin_h  # 框下总行数
         return Group(*parts)
 
     def _thinking_block(self) -> list:
@@ -1390,6 +1398,49 @@ class StreamingService:
         if len(snap) > fleet_allow:
             rows.append(self._deck_line(
                 f"  +{len(snap) - fleet_allow} more", "dim"))
+        return Group(*rows), len(rows)
+
+    def _plugin_deck_renderable(self) -> tuple:
+        """插件 UI 面板（ui/v1，P-D）→ ``(Group | None, 行数)``。
+
+        渲染在输入框之下、舰队列表之后。征集与故障隔离（崩溃跳过 /
+        熔断摘除 / 行数限额 / refresh_hz 节流）全在 UiPanelCollector
+        （services/assembly.py）——渲染帧绝不能被插件拖死；这里只做
+        markup 行化（deck 行不变量：no_wrap + ellipsis ≡ 1 终端行）与
+        单面板兜底（坏 markup → 该面板本帧缺席）。视口预算内超出行
+        折叠成 "+N more"。None（无面板 / 无收集器）→ 零行为变化。
+        """
+        if self._panels is None:
+            return None, 0
+        try:
+            panel_list = self._panels.panels()
+        except Exception:
+            return None, 0
+        if not panel_list:
+            return None, 0
+        try:
+            height = self._rich.height
+        except Exception:
+            height = 24
+        budget = max(0, height - _VIEWPORT_RESERVE - 5)
+        if budget == 0:
+            return None, 0
+        rows: list = []
+        dropped = 0
+        for _name, lines in panel_list:
+            try:
+                panel_rows = [self._deck_markup(ln) for ln in lines]
+            except Exception:
+                continue  # 坏 markup（未闭合标签等）→ 该面板本帧缺席
+            for row in panel_rows:
+                if len(rows) >= budget:
+                    dropped += 1
+                else:
+                    rows.append(row)
+        if not rows:
+            return None, 0
+        if dropped:
+            rows.append(self._deck_line(f"  +{dropped} more", "dim"))
         return Group(*rows), len(rows)
 
     def _detail_view(self, view: dict, deck_h: int):

@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from openx.kernel.context import PluginCommand
-from openx.kernel.registry import PluginRegistry
-from openx.kernel.validate import validate_command, validate_tool
+from openx.kernel.assembly.context import PluginCommand
+from openx.kernel.assembly.registry import PluginRegistry
+from openx.kernel.assembly.validate import validate_command, validate_tool
 from openx.permissions import Permission, PermissionLevel
 from openx.tools.base import Tool, ToolResult
 

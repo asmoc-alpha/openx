@@ -11,14 +11,14 @@ from __future__ import annotations
 import pytest
 
 from openx.config import OpenXConfig
-from openx.kernel.retry import RetryingProvider
+from openx.kernel.reasoning.retry import RetryingProvider
 from openx.llm.anthropic import (
     AnthropicProvider,
     messages_to_anthropic,
     response_to_openai,
     tools_to_anthropic,
 )
-from openx.kernel.provider import ProviderTransientError, StreamDone, StreamReasoning
+from openx.kernel.reasoning.provider import ProviderTransientError, StreamDone, StreamReasoning
 
 
 # ── 转换单测（纯函数）──────────────────────────────────────────

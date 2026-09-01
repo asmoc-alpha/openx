@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from openx.kernel.provider import (
+from openx.kernel.reasoning.provider import (
     ProviderTransientError,
     StreamDone,
     StreamReasoning,
 )
-from openx.kernel.retry import MAX_RETRY_DELAY, RetryingProvider, compute_delay
+from openx.kernel.reasoning.retry import MAX_RETRY_DELAY, RetryingProvider, compute_delay
 
-import openx.kernel.retry as retry_mod
+import openx.kernel.reasoning.retry as retry_mod
 
 
 class FlakyProvider:

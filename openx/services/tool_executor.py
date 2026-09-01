@@ -41,7 +41,7 @@ from ..core.hooks import (
     HookRunner,
     build_posttooluse_payload,
 )
-from ..kernel.guard import Adjudication, GateCall, Guard
+from ..kernel.audit.guard import Adjudication, GateCall, Guard
 from ..permissions import PermissionRules
 from ..tools.base import Tool, ToolResult
 from ..ui.console import Console

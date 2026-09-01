@@ -85,11 +85,23 @@ from .core.fleet import FleetMonitor
 from .core.history import ConversationHistory, SUMMARY_MARKER
 from .core.sessions import SessionMeta, SessionStore
 from .core.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
-from .kernel.host import ToolHost
+from .kernel.sandbox.host import ToolHost
+from .kernel.assembly.plugin_spec import PLUGIN_SPEC
 from .services import assembly
 from .tools.ask_user_tool import AskUserTool
 from .tools.mode_tools import ChooseModeTool
 from .tools.plan_tools import ExitPlanModeTool
+from .tools.plugin_tools import (
+    ListPluginsTool,
+    LoadPluginTool,
+    PluginHelpTool,
+    UnloadPluginTool,
+)
+from .tools.write_plugin_tools import (
+    PromotePluginTool,
+    TestPluginTool,
+    WritePluginTool,
+)
 from .tools.subagent_tool import TaskTool
 from .tools.workflow_tool import WorkflowTool
 from .core.tasks import TaskRegistry
@@ -306,6 +318,13 @@ class OpenXAgent:
         self.tools: dict[str, Tool] = self._build_tools()
         self.tool_schemas = self._compute_tool_schemas()
 
+        # 插件 UI 面板征集器（ui/v1，P-D）：交互层把它传给 StreamingService，
+        # deck 每帧征集插件面板（崩溃跳过/熔断在收集器内，渲染帧不被插件
+        # 拖死）。子代理不消费（面板只进顶层渲染），接线方 getattr 兜底。
+        from .kernel import get_kernel
+
+        self.ui_panels = assembly.UiPanelCollector(get_kernel())
+
         # 已安装的 skills（全局 + 项目级）
         self.skills: dict[str, Skill] = load_skills(self.workspace)
 
@@ -361,6 +380,22 @@ class OpenXAgent:
         if skills_prompt:
             prompt += skills_prompt
 
+        # P-D 上下文协议（context/v1）：征集插件上下文片段（pre-inference
+        # 组装点）。子代理不继承用户插件贡献（能力继承 = 父集的子集，
+        # 与工具实例化同款口径）；单插件崩溃由征集侧隔离，不炸提示组装。
+        try:
+            from .kernel import get_kernel
+
+            fragments = assembly.collect_context_fragments(
+                get_kernel(),
+                assembly.CONTEXT_BUDGET,
+                include_plugins=self._parent is None,
+            )
+        except Exception:
+            fragments = []
+        for fragment in fragments:
+            prompt += "\n\n" + fragment
+
         # 若存在任务清单，注入进度摘要，让模型感知当前状态
         if self.todos:
             lines = ["", "## Current Task List", ""]
@@ -382,6 +417,9 @@ class OpenXAgent:
                 prompt += PLAN_MODE_INSTRUCTIONS
             elif self._mode == "manual":
                 prompt += MANUAL_MODE_INSTRUCTIONS
+            # P-F 模型自产插件：write_plugin 的编写契约常驻（体积极小，
+            # 只读这一份就能生成合规插件）。
+            prompt += "\n\n" + PLUGIN_SPEC
 
         # 子代理模式（Phase 8）：规格 .md 正文的角色指令 + 子代理行为契约
         # （最终文本即返回值、不得提问、结果自包含）
@@ -487,6 +525,17 @@ class OpenXAgent:
                 ChooseModeTool(self, self.console),
                 TaskTool(self, self._subagent_specs),
                 WorkflowTool(self),
+                # 模型驱动装配元工具（P-A）：插件管理暴露给模型。list/help
+                # 只读；load/unload 为 ASK，成功后经 _rebuild_tools 重建工具集。
+                ListPluginsTool(kernel),
+                PluginHelpTool(kernel),
+                LoadPluginTool(kernel, self),
+                UnloadPluginTool(kernel, self),
+                # 模型自产插件（P-F）：write（ASK，admit 管线）/ test /
+                # promote（ASK，决策记账）。
+                WritePluginTool(kernel, self),
+                TestPluginTool(kernel),
+                PromotePluginTool(kernel),
             ):
                 registry[tool.name] = tool
                 reserved[tool.name] = "builtin-structural"
@@ -568,6 +617,18 @@ class OpenXAgent:
                 or (t.name == "choose_mode" and self._mode != "manual")
             )
         ]
+
+    def _rebuild_tools(self) -> None:
+        """重建工具注册表与 schema（load/unload 插件后调用；/workspace 同款）。
+
+        P-A 模型驱动装配：元工具 load/unload 成功后触发，让新装配的工具
+        下一轮进入模型视野。重建后 meta-tools 自身仍是结构占位，恒在。
+        P-D：context/v1 插件的片段挂在系统提示上，故系统提示一并重建--
+        装配/卸载上下文类插件后，片段下一轮即生效/消失。
+        """
+        self.tools = self._build_tools()
+        self.tool_schemas = self._compute_tool_schemas()
+        self._system_prompt = self._build_system_prompt()
 
     # ── 权限模式（manual/auto/plan）──────────────────────────────
 
@@ -653,6 +714,14 @@ class OpenXAgent:
         await self.mcp.connect_all(self.console)
         self.tools.update(self.mcp.tools)
         self.tool_schemas = self._compute_tool_schemas()
+        # P-D 生命周期协议（lifecycle/v1）：会话启动钩子按注册序回调。
+        # 钩子异常由内核捕获记账（插件异常 = observation），不炸启动。
+        try:
+            from .kernel import get_kernel
+
+            get_kernel().trigger_lifecycle("session_start")
+        except Exception:
+            pass
 
     async def shutdown(self) -> None:
         """关闭所有 MCP 连接。幂等、绝不抛出。"""

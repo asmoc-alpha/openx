@@ -15,6 +15,17 @@ structured_output）**不在本插件**：它们属内核驻留编排核心（�
 
 from __future__ import annotations
 
+# P-A/P-B 自描述：list_plugins 目录的模型认知入口。内置工具恒常驻（非动态
+# 装配），装配预算 0——cost 只对"需按需装载"的插件有意义。
+__openx_meta__ = {
+    "type": "capability.tool",
+    "mount": "loop.tool-call",
+    "trust": "builtin",
+    "summary": "内置能力工具集：文件 / 搜索 / Git / Shell / Todo / Web 等核心工具",
+    "permissions": ["fs:read", "fs:write", "network", "shell", "process"],
+    "cost": {"schemaTokens": 0},
+}
+
 from ..tools.file_tools import (
     EditFileTool, GlobTool, ListDirectoryTool, ReadFileTool, WriteFileTool,
 )

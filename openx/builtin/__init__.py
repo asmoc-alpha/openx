@@ -17,7 +17,7 @@ openx 顶层；内核加载处遍历 ``BUILTIN_PLUGINS`` 装配（列表序即�
 from __future__ import annotations
 
 from . import providers, tools
-from ..kernel.loader import PluginSpec
+from ..kernel.assembly.loader import PluginSpec
 
 BUILTIN_TOOLS_ID = "builtin-tools"
 BUILTIN_PROVIDERS_ID = "builtin-providers"

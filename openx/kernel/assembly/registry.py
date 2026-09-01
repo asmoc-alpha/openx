@@ -90,5 +90,14 @@ class PluginRegistry:
     def get(self, name: str) -> Optional[Entry]:
         return self._entries.get(name)
 
+    def unregister(self, name: str) -> bool:
+        """移除一条注册；不存在返回 False。
+
+        撤销纪律（内核详设 §1.2）：unregister 仅两种来源合法——贡献注册者
+        自身或用户显式操作。本方法只做移除，把关由调用方负责
+        （kernel.unload_plugin 按 provenance 校验后调用）。
+        """
+        return self._entries.pop(name, None) is not None
+
     def __len__(self) -> int:
         return len(self._entries)

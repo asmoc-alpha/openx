@@ -279,3 +279,111 @@ async def test_permission_bridge_last_client_disconnect_denies(agent):
     session.detach(client)     # 唯一客户端断开 → deny_all
     assert await fut == (False, False)
     session.stop()
+
+
+# ── 插件 UI 面板广播（ui/v1）────────────────────────────────────
+
+
+class FakePanels:
+    """假征集器：panels() 依次返回脚本帧（可含 rich 标签），录调用数。"""
+
+    def __init__(self, frames):
+        self.frames = frames
+        self.calls = 0
+
+    def panels(self):
+        i = min(self.calls, len(self.frames) - 1)
+        self.calls += 1
+        return self.frames[i]
+
+
+class BoomPanels:
+    """坏征集器：panels() 崩溃（兜底路径：广播空面板，不炸 ticker）。"""
+
+    def panels(self):
+        raise RuntimeError("collector boom")
+
+
+def _panel_agent(collector) -> FakeAgent:
+    agent = FakeAgent()
+    agent.ui_panels = collector
+    return agent
+
+
+async def test_attach_snapshot_includes_panels():
+    """attach 快照含面板（行剥 rich 标签），宠物 attach 即可见。"""
+    agent = _panel_agent(
+        FakePanels([[("pet", ["[dim](=^··^=)  pet is happy[/dim]"])]])
+    )
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+
+    ev = [e for e in ws.sent if e["type"] == "panels"]
+    assert ev and ev[0]["panels"] == [
+        {"name": "pet", "lines": ["(=^··^=)  pet is happy"]}
+    ]
+    session.stop()
+
+
+async def test_panel_ticker_broadcasts_on_change_only(monkeypatch):
+    """ticker 变化才广播：帧变化发一帧、静止不重发（省带宽）。"""
+    import openx.app.serve.session as session_mod
+
+    monkeypatch.setattr(session_mod, "_PANEL_TICK", 0.02)
+    agent = _panel_agent(FakePanels([
+        [("pet", ["frame 0"])],
+        [("pet", ["frame 1"])],
+        [("pet", ["frame 1"])],
+    ]))
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    await asyncio.sleep(0.15)  # 数拍：frame0 -> frame1 变化一次后静止
+    events = [e for e in ws.sent if e["type"] == "panels"]
+    assert len(events) == 1, [e["panels"] for e in events]
+    assert events[0]["panels"] == [{"name": "pet", "lines": ["frame 1"]}]
+    session.stop()
+
+
+async def test_panel_collector_crash_broadcasts_empty(monkeypatch):
+    """征集器崩溃 → 兜底广播空面板（面板全消失语义），ticker 不死。"""
+    import openx.app.serve.session as session_mod
+
+    monkeypatch.setattr(session_mod, "_PANEL_TICK", 0.02)
+    agent = _panel_agent(BoomPanels())
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    # attach 快照（崩溃兜底 → 空面板）后，ticker 继续跑、不再发新帧
+    ws.sent.clear()
+
+    await asyncio.sleep(0.1)
+    assert ws.sent == []  # 空面板无变化 → 不广播；ticker 未炸
+    session.stop()
+
+
+async def test_panel_ticker_stops_with_last_client(monkeypatch):
+    """最后客户端断开 → ticker 停止、指纹复位（重连时快照重发全量）。"""
+    import openx.app.serve.session as session_mod
+
+    monkeypatch.setattr(session_mod, "_PANEL_TICK", 0.02)
+    agent = _panel_agent(FakePanels([[("pet", ["frame"])]]))
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+
+    session.detach(client)
+    assert session._panel_task is None
+    assert session._panel_sig is None
+    session.stop()

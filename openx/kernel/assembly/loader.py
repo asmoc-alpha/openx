@@ -34,7 +34,7 @@ class PluginSpec:
 
 def user_plugins_dir() -> Path:
     """~/.openx/plugins —— 调用期读 SETTINGS_PATH，测试可 monkeypatch。"""
-    from .. import config
+    from ... import config
 
     return Path(config.SETTINGS_PATH).parent / "plugins"
 

@@ -23,6 +23,8 @@ openx serve --host 0.0.0.0 --port 9000
   `init` + `history` 快照 + 当轮已广播内容；
 - **会话列表 + 复盘**：侧栏列出历史会话，点击回放对话与权限决策；
 - **interrupt**：回合进行中可停止（等价终端 Esc）。
+- **插件面板**：`ui.panel` 类插件（如桌面宠物）的常驻面板区，输入框上方
+  动画/小部件；坏面板服务端隔离，端只做哑渲染（纯文本行）。
 
 `--auto-approve` 会切到 auto 模式（跳过批准，仍受危险命令闸门约束）。
 
@@ -38,6 +40,7 @@ openx serve --host 0.0.0.0 --port 9000
 | `text_delta` / `thinking_delta` | 流式文本 / 推理增量（`[dim]` 标签已剥） |
 | `tool_use` / `tool_result` | 工具开始 / 结果（输出上限 2000 字符） |
 | `permission_request` | 权限请求：request_id / tool / reason / can_remember |
+| `panels` | 插件 UI 面板快照（ui/v1）：`{name, lines}`，行已剥 rich 标签；变化才广播（常驻 ticker ~4Hz，有客户端才跑），attach 快照含当前面板 |
 | `result` | 单轮终局：subtype / duration_ms / num_turns / usage |
 | `interrupted` | 回合被打断 |
 | `plan_request` / `ask_user` | 同步弹窗的通知（MVP 不交互，见限制） |

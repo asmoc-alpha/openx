@@ -84,6 +84,15 @@ openai-compat 的策略同属装配策略，一并迁出。
 | `coordination` | 会话边界 | 单实现槽 | 零件层 |
 | `loop` / `executor` / `ledger 格式` / `权限策略骨架` | 仅 boot | 单实现槽 | 内核 |
 
+> **回写（2026-08-31 P-D 落地；2026-09-01 增补 ui/v1）**：microkernel-design
+> §4/§4.5 已先落地四类协议注册面——`contexts`（context/v1，消费 =
+> `collect_context_fragments` 并入系统提示）、`lifecycle`（lifecycle/v1，
+> `trigger_lifecycle` 回调）与 `ui_slots`（ui/v1，`UiPanelCollector` 征集，CLI deck 每帧 + web `panels` 事件
+> 广播），渲染路径故障隔离 + 熔断），路由真源在
+> `kernel/assembly/protocols.py`。上表的 `prompt_fragments` 由 `contexts`
+> 承接；`events` / `hooks` / `memory_backends` / `coordination` 维持远期
+> 占位，落地时以 microkernel-design 为准。
+
 **命名空间三律**：
 
 1. 核心注册名全局唯一--先见者赢，加载序（拓扑序，内置恒首）即优先级；

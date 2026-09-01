@@ -42,7 +42,7 @@ if __name__ == "__main__" and not __package__:
     _sys.path.insert(0, str(_root))
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
-from ..kernel.provider import ProviderFatalError, StreamDone, StreamReasoning
+from ..kernel.reasoning.provider import ProviderFatalError, StreamDone, StreamReasoning
 from .base import LLMProvider
 
 # 可选依赖：缺失时该实现不注册（builtin-providers 跳过）；异常类型置空使

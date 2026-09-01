@@ -64,6 +64,18 @@ def test_serve_history_shape():
     assert ev["messages"][0]["content"] == "hi"
 
 
+def test_serve_panels_shape():
+    """ui/v1 面板快照事件：{type, panels:[{name, lines}]}；空列表合法。"""
+    ev = protocol.serve_panels(
+        [{"name": "pet", "lines": ["(=^-^=)  pet is happy"]}]
+    )
+    assert ev == {
+        "type": "panels",
+        "panels": [{"name": "pet", "lines": ["(=^-^=)  pet is happy"]}],
+    }
+    assert protocol.serve_panels([]) == {"type": "panels", "panels": []}
+
+
 def test_result_event_success_and_error():
     ok = protocol.result_event("done", False, 5, 2, "s1",
                                {"input_tokens": 1, "output_tokens": 2})

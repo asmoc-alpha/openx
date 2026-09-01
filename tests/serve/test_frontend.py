@@ -43,3 +43,30 @@ def test_appjs_toggles_hidden_for_modal():
     assert "overlayEl.hidden = true" in js    # respondPermission 隐藏
     # 权限按钮监听已接线（querySelectorAll + data-perm）
     assert 'querySelectorAll("#perm-overlay [data-perm]")' in js
+
+
+# ── 插件 UI 面板（ui/v1）────────────────────────────────────────
+
+
+def test_panels_container_starts_hidden():
+    """面板区起始 hidden（同权限弹窗不变量：CSS display 不得覆盖 hidden）。"""
+    html = _read("index.html")
+    assert '<div id="panels" class="panels" hidden>' in html
+
+
+def test_appjs_handles_panels_event():
+    """reducer 有 panels 分支；渲染走 textContent（XSS 纪律：面板行是插件产物）。"""
+    js = _read("app.js")
+    assert 'case "panels":' in js
+    assert "function renderPanels(panels)" in js
+    assert "row.textContent = String(line)" in js  # 纯文本渲染，不走 innerHTML
+    # 空面板 → 隐藏面板区
+    assert "panelsEl.hidden = true" in js
+    assert "panelsEl.hidden = false" in js
+
+
+def test_css_has_panel_styles():
+    css = _read("style.css")
+    assert ".panels {" in css
+    assert ".panel {" in css
+    assert ".panel-line {" in css

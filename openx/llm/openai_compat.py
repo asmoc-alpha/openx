@@ -33,14 +33,14 @@ from typing import Any, AsyncIterator, Callable, Optional
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
 from ..config import OpenXConfig
-from ..kernel.provider import (
+from ..kernel.reasoning.provider import (
     Provider,
     ProviderFatalError,  # noqa: F401 -- 契约 re-export（实现层可用）
     StreamDone,
     StreamReasoning,
     StreamEvent,
 )
-from ..kernel.retry import MAX_RETRY_DELAY, RetryingProvider, compute_delay
+from ..kernel.reasoning.retry import MAX_RETRY_DELAY, RetryingProvider, compute_delay
 from .base import LLMProvider, parse_retry_after
 
 # 兼容 re-export（存量测试 import 点）：Retry-After 解析已上移基类。

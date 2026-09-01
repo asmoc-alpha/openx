@@ -8,6 +8,13 @@
 > Provider 是零件、重试/退避/超时归内核、实现固定 chat/stream 接口）、
 > `microkernel-design.md`（四职责与搁置决定）。
 >
+> 与 2026-08 架构图的映射：本文落地的是内核五件套中 **① 推理核心**的
+> 现状面——形状进内核（`kernel/provider.py`）、重试/退避归内核
+> （`kernel/retry.py`）、实现进零件（`llm/openai_compat.py`、
+> `llm/anthropic.py`）；路由 / fallback / 限流 / 结构化输出约束等推理核心
+> 其余面为增量（microkernel-design §5.3 N2）。协议适配一律留在 llm/，
+> 内核只认识错误契约，不 import 任何 SDK。
+>
 > 与搁置决定的关系：沙箱执行与记账深化已搁置，本文**不依赖**它们--
 > 记账只用已有的 `emit()` 出口（P-D），沙箱面完全不碰。
 
