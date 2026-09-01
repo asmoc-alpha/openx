@@ -17,10 +17,13 @@ agent / tool_executor 可用的**无终端** stub console（rich TUI 必须不�
    ``_prompt_user`` 用 ``getattr(console, "_streaming_service", None)`` 判断
    是否走 Live 内嵌面板，若 ``__getattr__`` 凭空造出一个 callable 会让
    ``svc.is_live_active()`` 炸掉；
-2. ``confirm_plan`` / ``ask_user_question`` 是工具在 async execute **内部
-   同步调用**的弹窗——web 无法在同一同步调用里 await 客户端应答（会死锁），
-   MVP 采用**广播通知 + fail-closed 默认**（拒绝 / 保守默认），异步化改造
-   列 P4.1 跟进。
+2. ``confirm_plan`` / ``ask_user_question`` 有**同步与异步两个通道**：
+   异步（``confirm_plan_async`` / ``ask_user_question_async``）广播 + 等待
+   客户端应答（``tools/console_dialog.py`` 的 async 优先通道走这里）；
+   同步版是兜底（保守默认/拒绝），供不经 helper 的旧调用路径。P4.1
+   交互化（2026-09-01）后 ask_user / plan_request 均为真交互，fail-closed
+   三律不变：断流=保守默认/拒绝、超时=保守默认/拒绝、未匹配 request_id
+   =忽略。
 """
 
 from __future__ import annotations
@@ -48,6 +51,29 @@ from ...core import protocol
 
 _log = logging.getLogger("openx.serve")
 
+# 保守默认（无人应答时的 fail-closed 选择）：优先语义为"保持现状/拒绝"
+# 的选项，否则取最后一项——绝不选成高权限项（mode 询问的选项 0 是
+# "Auto"，直接取首项会在无人应答时把模式切成 auto）。
+_CONSERVATIVE = ("stay", "manual", "keep", "cancel", "deny", "decline", "no")
+
+
+def _option_labels(options: list) -> list:
+    return [
+        (o.get("label") if isinstance(o, dict) else str(o))
+        for o in options or []
+    ]
+
+
+def conservative_answer(options: list, multi_select: bool = False):
+    """ask_user 的保守默认答案（无客户端 / 超时 / 空答时使用）。"""
+    labels = _option_labels(options)
+    default = next(
+        (label for label in labels
+         if any(k in label.lower() for k in _CONSERVATIVE)),
+        (labels[-1] if labels else ""),
+    )
+    return [default] if multi_select else default
+
 
 class WebPermissionBridge:
     """远程权限桥：广播 permission_request、按 request_id 等待应答。
@@ -60,6 +86,9 @@ class WebPermissionBridge:
         self._session = session
         self._timeout = timeout
         self._pending: dict[str, asyncio.Future] = {}
+        # 交互提问 / 计划审批的待决 future（P4.1 交互化；同 permission 纪律）
+        self._pending_ask: dict[str, asyncio.Future] = {}
+        self._pending_plan: dict[str, asyncio.Future] = {}
 
     # ── 权限 ─────────────────────────────────────────────────────
 
@@ -114,40 +143,88 @@ class WebPermissionBridge:
         fut.set_result((bool(allowed), bool(remember)))
 
     def deny_all(self) -> None:
-        """客户端全部断开：所有待决裁决按拒绝处理（断流律）。
+        """客户端全部断开：所有待决按拒绝/保守默认处理（断流律）。
 
-        WS 收尾路径调用；已返回的裁决不受影响。
+        WS 收尾路径调用；已返回的裁决不受影响。ask_user 待决落空答
+        （ask_user 侧转保守默认），plan 待决落 False。
         """
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.set_result((False, False))
+        for fut in list(self._pending_ask.values()):
+            if not fut.done():
+                fut.set_result([])
+        for fut in list(self._pending_plan.values()):
+            if not fut.done():
+                fut.set_result(False)
 
-    # ── 同步弹窗的 fail-closed 通知（P4.1 前不等待应答）─────────────
+    # ── 交互提问 / 计划审批（P4.1 交互化，同 permission 的等待模式）──
 
-    def notify_plan_request(self) -> None:
-        """plan 审批请求：广播通知；ServeConsole 侧按拒绝处理（MVP）。"""
-        self._session.broadcast({
-            "type": "plan_request",
-            "plan": "",
-            "note": "Plan approval is not interactive on the web yet "
-                    "(P4.1); treated as rejected.",
-        })
+    async def ask_user(
+        self,
+        question: str,
+        options: list,
+        multi_select: bool = False,
+    ) -> Any:
+        """广播 ask_user 并等待任一客户端应答。
 
-    def notify_ask_user(
-        self, question: str, options: list
-    ) -> None:
-        """ask_user 提问：广播通知供展示（MVP 不等待应答）。"""
-        labels = [
-            (o.get("label") if isinstance(o, dict) else str(o))
-            for o in options or []
-        ]
-        self._session.broadcast({
-            "type": "ask_user",
-            "question": question,
-            "options": labels,
-            "note": "Interactive answers are not supported on the web yet "
-                    "(P4.1); a conservative default was used.",
-        })
+        fail-closed：无客户端 → 立即保守默认；超时 → 保守默认；断流
+        （deny_all 空答）→ 保守默认。返回形态与同步契约一致（multi_select
+        → list[str]，否则 str）。
+        """
+        if not self._session.has_clients():
+            _log.info("ask_user: no web client attached; conservative default")
+            return conservative_answer(options, multi_select)
+        request_id = uuid.uuid4().hex
+        self._session.broadcast(protocol.serve_ask_user(
+            request_id, question, options, multi_select,
+        ))
+        fut = asyncio.get_event_loop().create_future()
+        self._pending_ask[request_id] = fut
+        try:
+            answers = await asyncio.wait_for(fut, self._timeout)
+        except asyncio.TimeoutError:
+            _log.info("ask_user %s timed out after %.0fs; conservative default",
+                      request_id, self._timeout)
+            return conservative_answer(options, multi_select)
+        finally:
+            self._pending_ask.pop(request_id, None)
+        answers = [a for a in answers if a]
+        if not answers:
+            return conservative_answer(options, multi_select)
+        return list(answers) if multi_select else str(answers[0])
+
+    def on_ask_user_response(self, request_id: str, answers: list) -> None:
+        """收到 ask_user_response：匹配到待决 future 才落答案。"""
+        fut = self._pending_ask.get(request_id)
+        if fut is None or fut.done():
+            return
+        fut.set_result([str(a) for a in answers or []])
+
+    async def confirm_plan(self, plan: str = "") -> bool:
+        """广播 plan_request 并等待审批；无客户端 / 超时 / 断流 → 拒绝。"""
+        if not self._session.has_clients():
+            _log.info("plan approval: no web client attached; rejecting")
+            return False
+        request_id = uuid.uuid4().hex
+        self._session.broadcast(protocol.serve_plan_request(request_id, plan))
+        fut = asyncio.get_event_loop().create_future()
+        self._pending_plan[request_id] = fut
+        try:
+            return bool(await asyncio.wait_for(fut, self._timeout))
+        except asyncio.TimeoutError:
+            _log.info("plan approval %s timed out after %.0fs; rejecting",
+                      request_id, self._timeout)
+            return False
+        finally:
+            self._pending_plan.pop(request_id, None)
+
+    def on_plan_response(self, request_id: str, approved: bool) -> None:
+        """收到 plan_response：匹配到待决 future 才落裁决。"""
+        fut = self._pending_plan.get(request_id)
+        if fut is None or fut.done():
+            return
+        fut.set_result(bool(approved))
 
 
 class ServeConsole:
@@ -212,13 +289,11 @@ class ServeConsole:
         _log.info("permission denied: serve bridge not wired")
         return (False, False)
 
-    # ── 同步弹窗（MVP fail-closed，见模块 docstring）──────────────
+    # ── 同步弹窗（兜底：async 变体才是 serve 的正路，见下）─────────
 
     def confirm_plan(self, *args: Any, **kwargs: Any) -> bool:
-        """plan 审批：广播通知 + 拒绝（模型据此修订计划后重交）。"""
-        if self.bridge is not None:
-            self.bridge.notify_plan_request()
-        _log.info("plan approval via web is fail-closed (P4.1); rejecting")
+        """plan 审批同步兜底：保守拒绝（交互走 confirm_plan_async）。"""
+        _log.info("plan approval via sync console path; rejecting")
         return False
 
     def ask_user_question(
@@ -227,26 +302,28 @@ class ServeConsole:
         options: Optional[list] = None,
         multi_select: bool = False,
     ) -> Any:
-        """提问弹窗：广播通知 + 保守默认（绝不选成高权限项）。
+        """提问同步兜底：保守默认（交互走 ask_user_question_async）。"""
+        return conservative_answer(options or [], multi_select)
 
-        mode 询问的选项 0 是 "Auto"——直接取 options[0] 会在无人应答时把
-        模式切成 auto，违反 fail-closed。因此优先选语义为"保持现状/拒绝"
-        的选项（mode 的安全默认就是留在 manual），否则取最后一项。
-        """
+    # ── 交互弹窗的异步通道（P4.1 交互化；工具经 console_dialog 走这里）─
+
+    async def ask_user_question_async(
+        self,
+        question: str,
+        options: Optional[list] = None,
+        multi_select: bool = False,
+    ) -> Any:
+        """交互提问：广播 + 等待 web 客户端应答（超时保守默认）。"""
         if self.bridge is not None:
-            self.bridge.notify_ask_user(question, options or [])
-        labels = [
-            (o.get("label") if isinstance(o, dict) else str(o))
-            for o in options or []
-        ]
-        _CONSERVATIVE = ("stay", "manual", "keep", "cancel", "deny",
-                         "decline", "no")
-        default = next(
-            (label for label in labels
-             if any(k in label.lower() for k in _CONSERVATIVE)),
-            (labels[-1] if labels else ""),
-        )
-        return [default] if multi_select else default
+            return await self.bridge.ask_user(question, options or [],
+                                              multi_select)
+        return conservative_answer(options or [], multi_select)
+
+    async def confirm_plan_async(self, plan: str = "") -> bool:
+        """计划审批：广播 + 等待 web 客户端裁决（超时拒绝）。"""
+        if self.bridge is not None:
+            return await self.bridge.confirm_plan(plan)
+        return False
 
     # ── TUI 专属方法兜底：no-op，绝不打扰 serve 日志 ──────────────
 

@@ -281,6 +281,63 @@ async def test_permission_bridge_last_client_disconnect_denies(agent):
     session.stop()
 
 
+# ── P4.1 交互弹窗桥：ask_user / confirm_plan 的 fail-closed ──────
+
+
+async def test_ask_bridge_no_clients_conservative(agent):
+    """无客户端 → 立即保守默认 / 拒绝，不发广播。"""
+    session = ServeSession(agent)
+    session.start()
+    assert await session.bridge.ask_user(
+        "Mode?", [{"label": "Auto"}, {"label": "Stay in manual"}]
+    ) == "Stay in manual"          # 保守默认：绝不切成 Auto
+    assert await session.bridge.ask_user(
+        "q", [{"label": "A"}, {"label": "B"}], multi_select=True
+    ) == ["B"]                     # 无保守项 → 末项
+    assert await session.bridge.ask_user("q", []) == ""
+    assert await session.bridge.confirm_plan("# plan") is False
+    session.stop()
+
+
+async def test_ask_bridge_timeout_conservative(agent):
+    """超时 → 保守默认 / 拒绝（fail-closed），即使有客户端。"""
+    session = ServeSession(agent)
+    session.bridge._timeout = 0.05
+    session.start()
+    ws = FakeWS()
+    session.attach(ws)
+
+    assert await session.bridge.ask_user(
+        "Mode?", [{"label": "Auto"}, {"label": "Stay in manual"}]
+    ) == "Stay in manual"
+    assert await session.bridge.confirm_plan("# plan") is False
+    session.stop()
+
+
+async def test_ask_plan_last_client_disconnect_conservative(agent):
+    """断流律：最后客户端断开 → ask_user 落保守默认、plan 落拒绝。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+
+    async def _ask():
+        return await session.bridge.ask_user(
+            "Mode?", [{"label": "Auto"}, {"label": "Stay in manual"}]
+        )
+
+    async def _plan():
+        return await session.bridge.confirm_plan("# plan")
+
+    ask_fut = asyncio.ensure_future(_ask())
+    plan_fut = asyncio.ensure_future(_plan())
+    await asyncio.sleep(0.01)
+    session.detach(client)         # 断流 → deny_all
+    assert await ask_fut == "Stay in manual"
+    assert await plan_fut is False
+    session.stop()
+
+
 # ── 插件 UI 面板广播（ui/v1）────────────────────────────────────
 
 

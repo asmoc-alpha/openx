@@ -12,6 +12,8 @@ const inputEl = $("input");
 const connEl = $("conn");
 const metaEl = $("meta");
 const overlayEl = $("perm-overlay");
+const askOverlayEl = $("ask-overlay");
+const planOverlayEl = $("plan-overlay");
 const sessionListEl = $("session-list");
 const turnBarEl = $("turn-bar");
 const turnStatusEl = $("turn-status");
@@ -44,10 +46,13 @@ const state = {
   thinkingBody: null,
   lastTool: null,
   permission: null,
+  ask: null,   // 交互提问待决：{ request_id, multi_select, selected:Set, otherText }
+  plan: null,  // 计划审批待决：{ request_id }
 };
 
 function clearMessages() {
   messagesEl.innerHTML = "";
+  messagesEl.classList.remove("streaming");
   state.streamBuf = "";
   state.lastAssistant = null;
   state.thinkingBody = null;
@@ -213,6 +218,7 @@ function applyEvent(ev) {
     case "user_message":
       appendUser(ev.text || "");
       state.streaming = true;
+      messagesEl.classList.add("streaming");  // 流式光标：末条气泡尾部 ▍
       showTurnBar(true, "working…");
       break;
     case "text_delta":
@@ -230,12 +236,14 @@ function applyEvent(ev) {
       break;
     case "result":
       state.streaming = false;
+      messagesEl.classList.remove("streaming");
       state.streamBuf = "";
       showTurnBar(false);
       appendMeta(doneLabel(ev));
       break;
     case "interrupted":
       state.streaming = false;
+      messagesEl.classList.remove("streaming");
       state.streamBuf = "";
       showTurnBar(false);
       appendMeta("⏹ Interrupted");
@@ -249,10 +257,10 @@ function applyEvent(ev) {
       renderPanels(ev.panels || []);
       break;
     case "plan_request":
-      appendMeta("📋 Agent requested plan approval — interactive approval is not on the web yet (P4.1); treated as rejected.");
+      showPlan(ev);
       break;
     case "ask_user":
-      appendMeta(`❓ ${ev.question || ""} — not interactive on the web yet (P4.1); a conservative default was used.`);
+      showAsk(ev);
       break;
     default:
       break; // 未知事件容忍（前向兼容）
@@ -330,6 +338,123 @@ document.querySelectorAll("#perm-overlay [data-perm]").forEach((btn) => {
     else respondPermission(false, false);
   };
 });
+
+// ── 交互弹窗：ask_user / plan_request（P4.1 交互化）──────────────
+// 服务端广播后按 request_id 等待应答；任一客户端应答即唤醒（首个赢，
+// 其余因 future 已决被忽略——多标签页天然竞速，同权限弹窗纪律）。
+// XSS 纪律：选项/问题是模型产物，一律 textContent；plan 走 renderMarkdown
+//（先转义后渲染）。
+
+function renderAskOptions(options, multiSelect) {
+  const box = $("ask-options");
+  box.innerHTML = "";
+  for (const opt of options || []) {
+    const row = el("label", "ask-option");
+    const input = el("input", "ask-choice");
+    input.type = multiSelect ? "checkbox" : "radio";
+    input.name = "ask-choice";
+    input.value = opt.label;
+    const lab = el("span", "ask-opt-label");
+    lab.textContent = opt.label;
+    row.append(input, lab);
+    if (opt.description) {
+      const desc = el("div", "ask-opt-desc");
+      desc.textContent = opt.description;
+      row.appendChild(desc);
+    }
+    box.appendChild(row);
+  }
+}
+
+function syncAskSubmit() {
+  const s = state.ask;
+  const hasCustom = Boolean(s && s.otherText.trim());
+  $("ask-submit-btn").disabled = !(hasCustom || (s && s.selected.size > 0));
+}
+
+function showAsk(ev) {
+  state.ask = {
+    request_id: ev.request_id,
+    multi_select: Boolean(ev.multi_select),
+    selected: new Set(),
+    otherText: "",
+  };
+  $("ask-question").textContent = ev.question || "";
+  renderAskOptions(ev.options || [], state.ask.multi_select);
+  $("ask-custom").hidden = true;
+  $("ask-custom-input").value = "";
+  syncAskSubmit();
+  askOverlayEl.hidden = false;
+}
+
+function respondAsk(answers) {
+  const s = state.ask;
+  askOverlayEl.hidden = true;
+  state.ask = null;
+  if (!s) return;
+  send({ type: "ask_user_response", request_id: s.request_id, answers });
+}
+
+$("ask-options").addEventListener("change", (e) => {
+  const s = state.ask;
+  if (!s) return;
+  const input = e.target;
+  if (input.type === "checkbox") {
+    if (input.checked) s.selected.add(input.value);
+    else s.selected.delete(input.value);
+  } else {  // radio：互斥选择
+    s.selected.clear();
+    if (input.checked) s.selected.add(input.value);
+  }
+  syncAskSubmit();
+});
+
+$("ask-other-btn").onclick = () => {
+  const s = state.ask;
+  if (!s) return;
+  const showCustom = $("ask-custom").hidden;
+  $("ask-custom").hidden = !showCustom;
+  if (showCustom) {
+    $("ask-custom-input").focus();
+  } else {
+    s.otherText = "";              // 收起 Other 时清空草稿
+    $("ask-custom-input").value = "";
+  }
+  syncAskSubmit();
+};
+
+$("ask-custom-input").addEventListener("input", (e) => {
+  if (state.ask) state.ask.otherText = e.target.value;
+  syncAskSubmit();
+});
+
+$("ask-submit-btn").onclick = () => {
+  const s = state.ask;
+  if (!s) return;
+  const custom = s.otherText.trim();
+  respondAsk(custom ? [custom] : Array.from(s.selected));
+};
+
+$("ask-skip-btn").onclick = () => {
+  respondAsk([]);  // 空答 → 服务端落保守默认（不等待超时）
+};
+
+function showPlan(ev) {
+  state.plan = { request_id: ev.request_id };
+  $("plan-details").innerHTML = renderMarkdown(ev.plan || "");
+  planOverlayEl.hidden = false;
+}
+
+function respondPlan(approved) {
+  const s = state.plan;
+  planOverlayEl.hidden = true;
+  state.plan = null;
+  if (!s) return;
+  send({ type: "plan_response", request_id: s.request_id, approved });
+}
+
+$("plan-approve-btn").onclick = () => respondPlan(true);
+$("plan-reject-btn").onclick = () => respondPlan(false);
 
 // ── WS 连接 ────────────────────────────────────────────────────
 let ws = null;

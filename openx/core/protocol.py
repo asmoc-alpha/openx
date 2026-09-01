@@ -168,6 +168,47 @@ def serve_panels(panels: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "panels", "panels": panels}
 
 
+def serve_ask_user(
+    request_id: str,
+    question: str,
+    options: list[dict[str, Any]],
+    multi_select: bool = False,
+) -> dict[str, Any]:
+    """serve 下行：交互式提问（ask_user，P4.1 交互化）。
+
+    ``options = [{"label": str, "description": str}]``（label 是回传值）；
+    ``multi_select`` 时端允许多选。上行以同 ``request_id`` 的
+    ``ask_user_response`` 应答；超时服务端落保守默认（端展示倒计时提示
+    由实现自理，协议不携带）。
+    """
+    return {
+        "type": "ask_user",
+        "request_id": request_id,
+        "question": question,
+        "options": [
+            {
+                "label": o.get("label", ""),
+                "description": o.get("description", ""),
+            }
+            if isinstance(o, dict) else {"label": str(o), "description": ""}
+            for o in options
+        ],
+        "multi_select": bool(multi_select),
+    }
+
+
+def serve_plan_request(request_id: str, plan: str = "") -> dict[str, Any]:
+    """serve 下行：计划审批请求（P4.1 交互化）。
+
+    上行以同 ``request_id`` 的 ``plan_response`` 应答；超时按拒绝。
+    """
+    return {
+        "type": "plan_request",
+        "request_id": request_id,
+        "plan": plan,
+    }
+
+
 def result_event(
     result: str | None,
     is_error: bool,
@@ -210,6 +251,26 @@ class PermissionResponse:
 
 
 @dataclass
+class AskUserResponse:
+    """对 ask_user（交互提问）的回答：answers 是所选 label（或自由文本）。
+
+    单选传一个元素；多选传多个。bridge 侧按提问时的 request_id 匹配，
+    未匹配/已决一律忽略（同 permission_response 纪律）。
+    """
+
+    request_id: str
+    answers: list[str]
+
+
+@dataclass
+class PlanResponse:
+    """对 plan_request（计划审批）的裁决：approved=False 等同拒绝。"""
+
+    request_id: str
+    approved: bool
+
+
+@dataclass
 class UserMessage:
     """用户发送的聊天消息（serve 上行意图：message）。"""
 
@@ -228,7 +289,14 @@ class UplinkUnknown:
     type: str
 
 
-UplinkMessage = Union[PermissionResponse, UserMessage, Interrupt, UplinkUnknown]
+UplinkMessage = Union[
+    PermissionResponse,
+    AskUserResponse,
+    PlanResponse,
+    UserMessage,
+    Interrupt,
+    UplinkUnknown,
+]
 
 
 def parse_uplink(line: str) -> Optional[UplinkMessage]:
@@ -257,6 +325,23 @@ def parse_uplink(line: str) -> Optional[UplinkMessage]:
         if not isinstance(text, str):
             return None
         return UserMessage(text)
+    if kind == "ask_user_response":
+        request_id = obj.get("request_id")
+        answers = obj.get("answers")
+        if not isinstance(request_id, str):
+            return None
+        if isinstance(answers, str):
+            answers = [answers]
+        if not isinstance(answers, list) or not all(
+            isinstance(a, str) and a for a in answers
+        ):
+            return None
+        return AskUserResponse(request_id, answers)
+    if kind == "plan_response":
+        request_id = obj.get("request_id")
+        if not isinstance(request_id, str):
+            return None
+        return PlanResponse(request_id, bool(obj.get("approved", False)))
     if kind == "interrupt":
         return Interrupt()
     if isinstance(kind, str):

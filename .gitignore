@@ -2,6 +2,7 @@
 .venv/
 .idea/
 openx/.openx
+.openx
 
 # Python 构建/缓存产物（v0.5.0 起不再入库）
 __pycache__/

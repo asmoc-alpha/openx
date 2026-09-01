@@ -70,3 +70,48 @@ def test_css_has_panel_styles():
     assert ".panels {" in css
     assert ".panel {" in css
     assert ".panel-line {" in css
+
+
+# ── P4.1 交互弹窗：ask_user / plan_request ───────────────────────
+
+
+def test_ask_and_plan_overlays_start_hidden():
+    """两个交互弹窗必须起始 hidden（同权限弹窗不变量）。"""
+    html = _read("index.html")
+    assert 'id="ask-overlay" class="overlay" hidden' in html
+    assert 'id="plan-overlay" class="overlay" hidden' in html
+
+
+def test_appjs_renders_ask_and_plan_interactively():
+    """reducer 的 ask_user / plan_request 分支改走交互弹窗（不再 appendMeta）。"""
+    js = _read("app.js")
+    assert 'case "plan_request":' in js
+    assert 'case "ask_user":' in js
+    assert "function showAsk(ev)" in js
+    assert "function showPlan(ev)" in js
+    assert "function respondAsk(answers)" in js
+    assert "function respondPlan(approved)" in js
+    # 交互通道：上送 ask_user_response / plan_response
+    assert 'type: "ask_user_response"' in js
+    assert 'type: "plan_response"' in js
+    # 旧的非交互提示不再出现
+    assert "not interactive on the web yet" not in js
+
+
+def test_appjs_ask_options_use_textcontent():
+    """选项/问题/自定义答案是模型产物——必须 textContent，绝不 innerHTML。"""
+    js = _read("app.js")
+    assert "lab.textContent = opt.label" in js
+    assert "desc.textContent = opt.description" in js
+    assert '$("ask-question").textContent = ev.question' in js
+    # plan 是唯一走 renderMarkdown 的（先转义后渲染，XSS-safe）
+    assert '$("plan-details").innerHTML = renderMarkdown(ev.plan' in js
+
+
+def test_appjs_handles_skip_and_other():
+    """Skip 发空答（服务端落保守默认）；Other 走自由文本输入。"""
+    js = _read("app.js")
+    assert 'id="ask-skip-btn"' in _read("index.html")
+    assert "respondAsk([])" in js
+    assert "ask-custom-input" in js
+    assert "custom ? [custom] : Array.from(s.selected)" in js

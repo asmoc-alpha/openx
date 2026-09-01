@@ -34,6 +34,7 @@ from typing import Any
 from rich.markdown import Markdown
 
 from .base import Tool, ToolResult
+from .console_dialog import confirm_plan
 from ..permissions import Permission
 
 
@@ -77,8 +78,8 @@ class ExitPlanModeTool(Tool):
         # 1. 渲染计划（Markdown，走 console.raw 的 Rich Console）
         self._console.raw.print(Markdown(plan))
 
-        # 2. 交互式审批弹窗
-        approved = self._console.confirm_plan()
+        # 2. 交互式审批弹窗（async 优先：serve 走 bridge 应答通道）
+        approved = await confirm_plan(self._console, plan)
 
         if approved:
             # 3. 批准 → 退出 plan mode（set_mode 统一同步 executor/console/

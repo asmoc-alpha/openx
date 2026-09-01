@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div id="bg" aria-hidden="true"></div>
 <header id="topbar">
   <div class="brand">OpenX</div>
   <div id="meta" class="meta"></div>
@@ -47,6 +48,34 @@
       <button class="btn" data-perm="allow-once">Allow once</button>
       <button class="btn" data-perm="allow-remember" hidden>Allow &amp; remember</button>
       <button class="btn danger" data-perm="deny">Deny</button>
+    </div>
+  </div>
+</div>
+
+<div id="ask-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-title">Question</div>
+    <div class="modal-reason" id="ask-question"></div>
+    <div id="ask-options" class="ask-options"></div>
+    <div id="ask-custom" class="ask-custom" hidden>
+      <input id="ask-custom-input" class="ask-input" type="text"
+        placeholder="type your own answer…" autocomplete="off" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="ask-skip-btn">Skip</button>
+      <button class="btn" id="ask-other-btn">Other…</button>
+      <button class="btn primary" id="ask-submit-btn" disabled>Submit</button>
+    </div>
+  </div>
+</div>
+
+<div id="plan-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-title">Approve plan?</div>
+    <div class="modal-plan" id="plan-details"></div>
+    <div class="modal-actions">
+      <button class="btn danger" id="plan-reject-btn">Reject</button>
+      <button class="btn primary" id="plan-approve-btn">Approve &amp; execute</button>
     </div>
   </div>
 </div>

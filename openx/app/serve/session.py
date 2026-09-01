@@ -153,6 +153,10 @@ class ServeSession:
         msg = protocol.parse_uplink(data)
         if isinstance(msg, protocol.PermissionResponse):
             self.bridge.on_response(msg.request_id, msg.allowed, msg.remember)
+        elif isinstance(msg, protocol.AskUserResponse):
+            self.bridge.on_ask_user_response(msg.request_id, msg.answers)
+        elif isinstance(msg, protocol.PlanResponse):
+            self.bridge.on_plan_response(msg.request_id, msg.approved)
         elif isinstance(msg, protocol.UserMessage):
             self.submit(msg.text)
         elif isinstance(msg, protocol.Interrupt):

@@ -196,3 +196,99 @@ async def test_ws_interrupt_uplink(server):
     await ws.send_json({"type": "interrupt"})
     await asyncio.sleep(0.05)
     await ws.close()
+
+
+# ── P4.1 交互弹窗：ask_user / plan_request 经 WS 往返 ───────────
+
+
+async def test_ws_ask_user_roundtrip(server):
+    """ask_user 广播 → 客户端应答 → bridge 唤醒返回所选 label。"""
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)  # init
+    await ws.receive_json(timeout=5)  # history
+
+    async def _ask():
+        return await server.app[SESSION_KEY].bridge.ask_user(
+            "Pick a color", [{"label": "red"}, {"label": "blue"}]
+        )
+
+    fut = asyncio.ensure_future(_ask())
+    req = await ws.receive_json(timeout=5)
+    assert req["type"] == "ask_user"
+    assert req["question"] == "Pick a color"
+    assert req["request_id"]
+    assert req["options"] == [
+        {"label": "red", "description": ""},
+        {"label": "blue", "description": ""},
+    ]
+
+    await ws.send_json({
+        "type": "ask_user_response",
+        "request_id": req["request_id"],
+        "answers": ["blue"],
+    })
+    assert await fut == "blue"
+    await ws.close()
+
+
+async def test_ws_ask_user_empty_answers_conservative(server):
+    """空答（前端 Skip）→ 立即落保守默认，不等超时。"""
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)
+    await ws.receive_json(timeout=5)
+
+    async def _ask():
+        return await server.app[SESSION_KEY].bridge.ask_user(
+            "Mode?", [{"label": "Auto"}, {"label": "Stay in manual"}]
+        )
+
+    fut = asyncio.ensure_future(_ask())
+    req = await ws.receive_json(timeout=5)
+    await ws.send_json({
+        "type": "ask_user_response",
+        "request_id": req["request_id"],
+        "answers": [],
+    })
+    assert await fut == "Stay in manual"  # 保守默认：绝不切成 Auto
+    await ws.close()
+
+
+async def test_ws_plan_request_roundtrip(server):
+    """plan_request 广播 → 客户端批准 → bridge 返回 True。"""
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)
+    await ws.receive_json(timeout=5)
+
+    async def _ask():
+        return await server.app[SESSION_KEY].bridge.confirm_plan("# Plan")
+
+    fut = asyncio.ensure_future(_ask())
+    req = await ws.receive_json(timeout=5)
+    assert req["type"] == "plan_request"
+    assert req["plan"] == "# Plan"
+    await ws.send_json({
+        "type": "plan_response",
+        "request_id": req["request_id"],
+        "approved": True,
+    })
+    assert await fut is True
+    await ws.close()
+
+
+async def test_ws_plan_request_reject(server):
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)
+    await ws.receive_json(timeout=5)
+
+    async def _ask():
+        return await server.app[SESSION_KEY].bridge.confirm_plan("nope")
+
+    fut = asyncio.ensure_future(_ask())
+    req = await ws.receive_json(timeout=5)
+    await ws.send_json({
+        "type": "plan_response",
+        "request_id": req["request_id"],
+        "approved": False,
+    })
+    assert await fut is False
+    await ws.close()

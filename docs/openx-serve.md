@@ -19,6 +19,9 @@ openx serve --host 0.0.0.0 --port 9000
 - **聊天**：流式文本、thinking 折叠/展开、工具调用块（点击展开输出）；
 - **远程权限批准**：写工具逐项弹窗（手动模式默认）——允许一次 / 允许并记住 /
   拒绝；**fail-closed**：无客户端 / 断流 / 超时 / 未匹配 request_id 一律拒绝；
+- **交互弹窗**：`ask_user`（单选/多选 + Other 自由输入 + Skip）与计划审批
+  （Approve / Reject）都在页面上真交互；任一客户端应答即唤醒，无人应答
+  （超时 / 断流 / Skip）服务端落保守默认或拒绝；
 - **多端 attach**：开多个标签页同看一会话，事件广播；迟到客户端收到
   `init` + `history` 快照 + 当轮已广播内容；
 - **会话列表 + 复盘**：侧栏列出历史会话，点击回放对话与权限决策；
@@ -43,7 +46,8 @@ openx serve --host 0.0.0.0 --port 9000
 | `panels` | 插件 UI 面板快照（ui/v1）：`{name, lines}`，行已剥 rich 标签；变化才广播（常驻 ticker ~4Hz，有客户端才跑），attach 快照含当前面板 |
 | `result` | 单轮终局：subtype / duration_ms / num_turns / usage |
 | `interrupted` | 回合被打断 |
-| `plan_request` / `ask_user` | 同步弹窗的通知（MVP 不交互，见限制） |
+| `ask_user` | 交互提问：request_id / question / options（`{label, description}`）/ multi_select；端以同 request_id 的 `ask_user_response` 应答，超时 / 断流 / 空答服务端落保守默认 |
+| `plan_request` | 计划审批：request_id / plan；端以同 request_id 的 `plan_response` 应答，超时 / 断流按拒绝 |
 
 上行（端 → 服务端）：
 
@@ -52,6 +56,8 @@ openx serve --host 0.0.0.0 --port 9000
 | 消息 | `{"type":"message","text":...}` |
 | 打断 | `{"type":"interrupt"}` |
 | 权限裁决 | `{"type":"permission_response","request_id":...,"allowed":...,"remember":...}` |
+| 提问应答 | `{"type":"ask_user_response","request_id":...,"answers":[...]}`（answers 为空 → 服务端落保守默认，不等待超时） |
+| 计划裁决 | `{"type":"plan_response","request_id":...,"approved":bool}` |
 
 ## REST（只读）
 
@@ -64,10 +70,6 @@ openx serve --host 0.0.0.0 --port 9000
 
 ## 已知限制（MVP，后续跟进）
 
-- **plan 审批 / ask_user 弹窗**在 web 上非交互：`confirm_plan` 广播
-  `plan_request` 后按拒绝处理（模型修订计划重交）；`ask_user_question`
-  广播 `ask_user` 后取保守默认（mode 询问默认留在 manual，绝不自动切
-  auto）。异步化（`asyncio.iscoroutinefunction` 分支）列 P4.1。
 - **复盘是投影**：转录事件（text/tool/thinking）当前不进账本，回放 =
   会话文件消息行 + 控制/决策账本行，非逐字节重播。转录事件入账本后升级
   为"回放 = 账本重发"（架构详设 §3.3）。
@@ -77,10 +79,11 @@ openx serve --host 0.0.0.0 --port 9000
 
 ```
 aiohttp app（server.py）
-├── /ws            ServeSession.handle_ws：上行分发 message/interrupt/permission_response
+├── /ws            ServeSession.handle_ws：上行分发 message/interrupt/permission_response/ask_user_response/plan_response
 ├── ServeSession   串行回合队列（REPL 语义）→ agent.stream_run → 事件投影 → 广播
 │   ├── 每客户端 downlink 队列任务独占 ws.send_json（并发广播不撕裂帧）
-│   └── 权限桥 WebPermissionBridge：广播 permission_request，fail-closed 等待
-├── ServeConsole   agent 的无 TUI console：ask_permission → 桥；print_* → no-op
-└── 静态前端 web/  纯函数 reducer + XSS 安全渲染（先转义后 markdown）
+│   └── 权限桥 WebPermissionBridge：广播 permission_request/ask_user/plan_request，fail-closed 等待
+├── ServeConsole   agent 的无 TUI console：ask_permission/ask_user_question_async/confirm_plan_async → 桥；print_* → no-op
+│   └── 工具侧 console_dialog（tools/）：async 优先——serve 走 bridge 应答通道，TUI 回退同步版
+└── 静态前端 web/  纯函数 reducer + XSS 安全渲染（先转义后 markdown）；交互弹窗 renderAskOptions/renderPlan
 ```

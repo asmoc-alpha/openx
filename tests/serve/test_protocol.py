@@ -51,6 +51,59 @@ def test_permission_response_missing_allowed_defaults_to_deny():
     assert m.allowed is False and m.remember is False
 
 
+# ── P4.1 交互化上行：ask_user_response / plan_response ──────────
+
+
+def test_uplink_ask_user_response():
+    m = protocol.parse_uplink(
+        '{"type": "ask_user_response", "request_id": "r1", "answers": ["A"]}'
+    )
+    assert isinstance(m, protocol.AskUserResponse)
+    assert m.request_id == "r1" and m.answers == ["A"]
+
+
+def test_uplink_ask_user_response_single_string_and_empty():
+    """单字符串答案归一为列表；空列表合法（服务端落保守默认）。"""
+    m = protocol.parse_uplink(
+        '{"type": "ask_user_response", "request_id": "r1", "answers": "A"}'
+    )
+    assert m.answers == ["A"]
+    m2 = protocol.parse_uplink(
+        '{"type": "ask_user_response", "request_id": "r1", "answers": []}'
+    )
+    assert m2.answers == []
+
+
+def test_uplink_ask_user_response_malformed_tolerated():
+    """缺 request_id / 非字符串元素 / 非列表 → 拒绝解析（不断流）。"""
+    assert protocol.parse_uplink(
+        '{"type": "ask_user_response", "answers": ["A"]}'
+    ) is None
+    assert protocol.parse_uplink(
+        '{"type": "ask_user_response", "request_id": "r", "answers": [1]}'
+    ) is None
+    assert protocol.parse_uplink(
+        '{"type": "ask_user_response", "request_id": "r", "answers": [""]}'
+    ) is None
+    assert protocol.parse_uplink(
+        '{"type": "ask_user_response", "request_id": "r", "answers": {}}'
+    ) is None
+
+
+def test_uplink_plan_response():
+    m = protocol.parse_uplink(
+        '{"type": "plan_response", "request_id": "r2", "approved": true}'
+    )
+    assert isinstance(m, protocol.PlanResponse)
+    assert m.approved is True
+    # 缺 approved 字段 → 拒绝（fail-closed）；缺 request_id → 解析失败
+    m2 = protocol.parse_uplink('{"type": "plan_response", "request_id": "r2"}')
+    assert m2.approved is False
+    assert protocol.parse_uplink(
+        '{"type": "plan_response", "approved": true}'
+    ) is None
+
+
 # ── serve 下行事件形状 ──────────────────────────────────────────
 
 
@@ -97,3 +150,39 @@ def test_permission_request_can_remember():
     assert p["can_remember"] is False
     # 缺省 True：存量 NDJSON 消费者零改动
     assert protocol.permission_request("r2", "shell", "run")["can_remember"] is True
+
+
+# ── P4.1 交互化下行：serve_ask_user / serve_plan_request ─────────
+
+
+def test_serve_ask_user_shape():
+    ev = protocol.serve_ask_user(
+        "req-1", "Pick one",
+        [{"label": "A", "description": "first"}, {"label": "B"}],
+        multi_select=True,
+    )
+    assert ev["type"] == "ask_user"
+    assert ev["request_id"] == "req-1"
+    assert ev["question"] == "Pick one"
+    assert ev["multi_select"] is True
+    # 对象选项带 description；纯字符串选项补空 description
+    assert ev["options"] == [
+        {"label": "A", "description": "first"},
+        {"label": "B", "description": ""},
+    ]
+
+
+def test_serve_ask_user_string_options_normalized():
+    ev = protocol.serve_ask_user("r", "q", ["A", "B"])
+    assert ev["options"] == [
+        {"label": "A", "description": ""},
+        {"label": "B", "description": ""},
+    ]
+
+
+def test_serve_plan_request_shape():
+    ev = protocol.serve_plan_request("req-2", "# Plan")
+    assert ev == {"type": "plan_request", "request_id": "req-2", "plan": "# Plan"}
+    assert protocol.serve_plan_request("req-2") == {
+        "type": "plan_request", "request_id": "req-2", "plan": "",
+    }

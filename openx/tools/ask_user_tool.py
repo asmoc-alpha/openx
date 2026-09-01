@@ -31,6 +31,7 @@ import json
 from typing import Any
 
 from .base import Tool, ToolResult
+from .console_dialog import ask_user_question
 from ..permissions import Permission
 
 
@@ -167,10 +168,12 @@ class AskUserTool(Tool):
                 error="ask_user requires a non-empty 'question' string."
             )
 
-        # 调用 console 的交互选择器（阻塞读取用户输入）。弹窗异常（终端丢失
-        # 等）同样兜底成错误结果——绝不外抛触发重试循环。
+        # 调用 console 的交互选择器（async 优先：serve 走 bridge 应答通道，
+        # TUI 回退同步阻塞读取）。弹窗异常（终端丢失等）同样兜底成错误
+        # 结果——绝不外抛触发重试循环。
         try:
-            selected = self._console.ask_user_question(
+            selected = await ask_user_question(
+                self._console,
                 question=q,
                 options=opts,
                 multi_select=_coerce_bool(multi_select),

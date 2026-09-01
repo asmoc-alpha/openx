@@ -34,6 +34,7 @@ if __name__ == "__main__" and not __package__:
 from typing import Any
 
 from .base import Tool, ToolResult
+from .console_dialog import ask_user_question
 from ..permissions import Permission
 
 
@@ -92,10 +93,11 @@ class ChooseModeTool(Tool):
         if summary:
             self._console.raw.print(f"[dim]Proposed changes: {summary}[/dim]")
 
-        # 复用 ask_user 弹窗机制：触发 on_dialog_start/end 钩子 → 流式
-        # Live + InputCapture 正确暂停；自带 "Other" 自由文本行（落入
-        # 安全默认：留在 manual）。
-        answer = self._console.ask_user_question(
+        # 复用 ask_user 弹窗机制（async 优先：serve 走 bridge 应答通道）：
+        # 触发 on_dialog_start/end 钩子 → 流式 Live + InputCapture 正确
+        # 暂停；自带 "Other" 自由文本行（落入安全默认：留在 manual）。
+        answer = await ask_user_question(
+            self._console,
             "This task needs to modify files or run commands. Choose a mode "
             "(该任务需要修改文件或执行命令，请选择执行模式):",
             [
