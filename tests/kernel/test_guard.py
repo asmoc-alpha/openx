@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from openx.core.hooks import HookRunner
+from openx.kernel.audit.hooks import HookRunner
 from openx.kernel.audit.guard import GateCall, Guard, Verdict
 from openx.permissions import Permission, PermissionLevel, PermissionRules
 

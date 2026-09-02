@@ -17,7 +17,7 @@ import json
 import textwrap
 from pathlib import Path
 
-from openx.core.protocol import Event
+from openx.kernel.protocol import Event
 from openx.kernel import get_kernel
 from openx.permissions import PermissionLevel
 from openx.tools.plugin_tools import (

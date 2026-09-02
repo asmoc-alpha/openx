@@ -31,7 +31,7 @@ openx serve --host 0.0.0.0 --port 9000
 
 `--auto-approve` 会切到 auto 模式（跳过批准，仍受危险命令闸门约束）。
 
-## 协议（线格式单一真源 = `openx/core/protocol.py`）
+## 协议（线格式单一真源 = `openx/kernel/protocol.py`）
 
 下行（服务端 → 端）：
 

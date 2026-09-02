@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from ..config import SETTINGS_PATH
+from ...config import SETTINGS_PATH
 
 # 支持的事件类型（其余键一律忽略）
 HOOK_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop")
@@ -459,4 +459,4 @@ if __name__ == "__main__":
         assert not empty.has_hooks("PreToolUse", "shell")
         assert asyncio.run(empty.run("Stop", {"hook_event_name": "Stop"})).warnings == []
 
-    print("openx/core/hooks.py OK ✓")
+    print("openx/kernel/audit/hooks.py OK ✓")

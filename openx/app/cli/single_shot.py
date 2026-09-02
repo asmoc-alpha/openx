@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from ...agent import OpenXAgent, ToolResultEvent, ToolStartEvent
-from ...core import protocol
+from ...kernel import protocol
 from ...image import is_image_file, image_to_base64_url, display_image, get_image_metadata
 from ...llm import StreamReasoning
 from ...ui.console import Console
@@ -233,7 +233,7 @@ async def _run_json(agent: OpenXAgent, console: Console, user_content) -> int:
 async def _run_stream_json(agent: OpenXAgent, user_content) -> int:
     """NDJSON 事件流：init → text_delta / tool_use / tool_result → result。
 
-    事件编码收敛在 ``openx/core/protocol``（线格式单一真源，协议 P1）。
+    事件编码收敛在 ``openx/kernel/protocol``（线格式单一真源，协议 P1）。
     """
     _emit(protocol.init_event(
         agent.session_id, agent.config.model, sorted(agent.tools.keys()),

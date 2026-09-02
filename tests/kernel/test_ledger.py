@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import json
 
-import openx.core.sessions as sessions_mod
-from openx.core.protocol import Event, digest_of, project
-from openx.core.sessions import SessionStore
+import openx.orchestration.sessions as sessions_mod
+from openx.kernel.protocol import Event, digest_of, project
+from openx.orchestration.sessions import SessionStore
 from openx.kernel import get_kernel
 
 from ._helpers import BAD_SRC, HELLO_SRC, NOVALID_SRC, write_plugin

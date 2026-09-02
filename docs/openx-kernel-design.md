@@ -332,7 +332,7 @@ Event = {
 }
 ```
 
-- **单一真源**：核心 schema 定义在 `openx/core/protocol.py`，协议下行
+- **单一真源**：核心 schema 定义在 `openx/kernel/protocol.py`，协议下行
   事件 = 信封去掉簿记字段的投影。账本不另造格式，协议不另造语义。
 - **cause 链即归因链**：任何结果可沿 cause 回溯到发起意图--"这行代码是
   哪次批准的哪个工具改的"是一条链上溯，不是一次考古。
@@ -396,14 +396,14 @@ Event = {
 | `kernel/validate.py` 形状校验 | §1.1 | 已落地（随 K1 目录化） |
 | `builtin/tools.py` base bundle | §1.3 计算组合的内置项 | 已对齐 |
 | ~~`permissions.py` + executor prepare 闸门~~ | §2.2 升格入 `kernel/guard.py` | 已落地（K3）：七站管线 + 半格折叠 + `permission_decision` 记账；prompter/rules/mode 闭包注入，UI 不进内核 |
-| `core/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
+| `kernel/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
 | `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；双账本与决策事件族随 K5 |
 | `app/cli/commands.py` 内置命令 dict | §1.1 commands | 半插件化：插件命令已走注册表，27 个内置命令仍硬编码、消费方双源合并；升格 builtin-commands 插件随 K8 |
 | `mcp/`（`mcp__*` 工具直并入 agent.tools） | §1.1 tools + §1.6 | 绕过注册表：无校验/仲裁/provenance/记账；K8 收口，兼作 K6 admit() 的 pilot |
 | `instructions.py` / `skills.py` / 记忆提示常量 | §1.1 prompt_fragments | 硬连线 prompt 源；K7 收口 |
-| `core/hooks.py` | §2.2 第④站 | 独立机制（exit 2 阻断），未入半格；K3 按 §2.2 映射表折叠 |
+| `kernel/audit/hooks.py` | §2.2 第④站 | 独立机制（exit 2 阻断），未入半格；K3 按 §2.2 映射表折叠 |
 | `memory.py` / `coding_memory.py` | §1.1 memory_backends | 硬连线；P2+ |
-| `core/sessions/history/subagent/workflow/tasks` | §1.1 coordination | 硬连线；P2+ |
+| `orchestration/sessions/history/subagent/workflow/tasks` | §1.1 coordination | 硬连线；P2+ |
 | `agent.py` 直 import 具体工具（`git_status`、`MEMORY_INSTRUCTIONS`、`StructuredOutputTool`） | §1.5 零引用 | 破洞：loop 认识具体插件；随 K7/K8 修 |
 | `tools/base.py`（Tool/ToolResult 形状） | §1.1 校验器 | 形状应上移内核（`kernel/provider.py` 先例）；随 K8 |
 | ~~内核上消费方助手（`instantiate_tools`/`build_provider`/`lookup_command` 等）~~ | §0 取用通道收敛 | 已落地（K3a）：迁往 `services/assembly.py` 与 `commands.py` |

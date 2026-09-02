@@ -1,6 +1,6 @@
 """Phase 8 子代理系统测试：task 工具、子代理构建、规格加载、共享接线。
 
-覆盖 ``openx.core.subagent``（规格加载）与 ``openx.tools.subagent_tool``
+覆盖 ``openx.orchestration.subagent``（规格加载）与 ``openx.tools.subagent_tool``
 （TaskTool + build_child_agent）以及 ``OpenXAgent`` 的子模式：工具裁剪、
 PermissionRules 共享、系统提示注入、弹窗回调传播、禁套娃。
 
@@ -15,7 +15,7 @@ import json
 import pytest
 
 from openx.config import OpenXConfig
-from openx.core.subagent import (
+from openx.orchestration.subagent import (
     BUILTIN_SUBAGENTS,
     SubagentSpec,
     load_subagent_specs,
@@ -34,9 +34,9 @@ from openx.tools.subagent_tool import TaskTool, build_child_agent
 def _isolate_paths(tmp_path, monkeypatch):
     """hooks settings 与后台任务目录隔离到 tmp，绝不碰真实 home。"""
     monkeypatch.setattr(
-        "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
     )
-    monkeypatch.setattr("openx.core.tasks.TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
 
 
 class FakeLLM:

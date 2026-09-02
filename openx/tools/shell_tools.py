@@ -25,7 +25,7 @@ from .base import Tool, ToolResult, truncate_output
 from ..permissions import Permission, PermissionLevel, check_command_danger
 
 if TYPE_CHECKING:
-    from ..core.tasks import TaskRegistry
+    from ..orchestration.tasks import TaskRegistry
 
 
 class ShellTool(Tool):

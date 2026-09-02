@@ -4,9 +4,10 @@
 - ``assembly/``  ② 插件装配器（loader/registry/registrations/context/
   validate/manifest/protocols/plugin_spec）
 - ``reasoning/`` ① 推理核心（provider/retry）
-- ``audit/``     ③ 安全审计（guard）
+- ``audit/``     ③ 安全审计（guard 裁决管线 / hooks 用户钩子链）
 - ``sandbox/``   ⑤ 沙箱执行（host/protect）
 - ``ledger.py``  ④ 轨迹跟踪（事件账本，emit/attach_ledger 委托）
+- ``protocol.py`` ④ 轨迹跟踪的协议面（事件信封 schema，账本外化的单一真源）
 - ``inventory.py`` PluginInfo 共享模型
 
 本文件是 **facade（编排面）**：PluginKernel 持有注册表、Ledger 与管理 API

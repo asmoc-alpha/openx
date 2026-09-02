@@ -168,4 +168,4 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as _td2:
         # 目录缺失 → 仅内置
         assert set(load_subagent_specs(_td2)) == {"general-purpose", "explore"}
-    print("openx/core/subagent.py OK ✓")
+    print("openx/orchestration/subagent.py OK ✓")

@@ -193,4 +193,4 @@ if __name__ == "__main__":
     assert h.validate()
     h.clear()
     assert h.messages == []
-    print("openx/core/history.py OK ✓")
+    print("openx/orchestration/history.py OK ✓")

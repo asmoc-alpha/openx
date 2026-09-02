@@ -1,11 +1,11 @@
 """Phase 10 工作流测试：WorkflowEngine 钩子语义、WorkflowTool、/workflow。
 
-覆盖 ``openx.core.workflow``（引擎五钩子、parallel/pipeline 语义、并发
+覆盖 ``openx.orchestration.workflow``（引擎五钩子、parallel/pipeline 语义、并发
 上限、MAX_AGENTS 兜底、脚本错误收敛、保存工作流的 ast 列举与加载、
 共享 prompt 锁）与 ``openx.tools.workflow_tool`` 及 ``/workflow`` 斜杠
 命令；外加顶层 agent 的禁套娃接线。
 
-fake 子代理走 monkeypatch ``openx.core.workflow._build_workflow_child``
+fake 子代理走 monkeypatch ``openx.orchestration.workflow._build_workflow_child``
 （轻量鸭子）；至少一个端到端用例走**真实** ``build_child_agent`` +
 FakeLLM 证明接线。SETTINGS_PATH 与 TASKS_DIR 均隔离到 tmp_path，
 绝不触碰真实用户数据。运行：``python -m pytest tests/test_workflow.py -q``
@@ -23,9 +23,9 @@ import pytest
 from rich.console import Console as RichConsole
 
 from openx.config import OpenXConfig
-from openx.core.subagent import BUILTIN_SUBAGENTS
-import openx.core.workflow as workflow_mod
-from openx.core.workflow import (
+from openx.orchestration.subagent import BUILTIN_SUBAGENTS
+import openx.orchestration.workflow as workflow_mod
+from openx.orchestration.workflow import (
     DEFAULT_CONCURRENCY,
     WorkflowEngine,
     WorkflowError,
@@ -47,9 +47,9 @@ from openx.ui.console import Console
 def _isolate_paths(tmp_path, monkeypatch):
     """hooks settings 与后台任务目录隔离到 tmp，绝不碰真实 home。"""
     monkeypatch.setattr(
-        "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
     )
-    monkeypatch.setattr("openx.core.tasks.TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
 
 
 class FakeLLM:

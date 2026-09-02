@@ -51,8 +51,8 @@ boot 组合退化为"出厂默认组合"，运行时装配在其之上增量。
 |---|---|---|
 | ① 推理核心 | `kernel/reasoning/`（provider / retry） | 路由 / fallback / 限流随 N2 |
 | ② 插件装配器 | `kernel/assembly/`（loader / registry / registrations / context / validate / manifest / protocols / plugin_spec） | `protocols.py` 是类别 → 协议 → 装配层路由的唯一真源 |
-| ③ 安全审计 | `kernel/audit/guard.py` + 元工具 ASK 闸 | 装配请求闸门 = load/unload/write/promote 的 ASK 弹窗 |
-| ④ 轨迹跟踪 | `kernel/ledger.py`（emit / attach_ledger 委托） | 成本字段 / eval 导出随 P-E |
+| ③ 安全审计 | `kernel/audit/`（guard 裁决管线 + hooks 用户钩子链）+ 元工具 ASK 闸 | 装配请求闸门 = load/unload/write/promote 的 ASK 弹窗；hooks 自 `core/` 迁入（2026-09-02） |
+| ④ 轨迹跟踪 | `kernel/ledger.py` + `kernel/protocol.py`（emit / attach_ledger 委托；事件信封 schema = 账本外化） | 成本字段 / eval 导出随 P-E；protocol 自 `core/` 迁入（2026-09-02） |
 | ⑤ 沙箱执行器 | `kernel/sandbox/`（host / protect） | protect = 调用防护；进程隔离随 D9 |
 | 装配层（各协议 Registry） | `registrations.py` 目录：`tools` / `commands` / `contexts` / `lifecycle` / `providers` | P-D 新增 `contexts` / `lifecycle` |
 | 上下文组装管线（context/v1） | `services/assembly.py::collect_context_fragments` + `agent._build_system_prompt` | pre-inference 征集（注册序 + 字符预算 + 崩溃隔离） |
@@ -283,7 +283,7 @@ load_plugin("dataquery")
 | 校验 | `kernel/assembly/validate.py` | tools / commands 形状校验 |
 | 执行闸 | `kernel/audit/guard.py` | 七站裁决管线（K3，2026-08-28） |
 | 装配策略 | `services/assembly.py` | 工具实例化仲裁 + provider 解析（K3a） |
-| 协议 | `openx/core/protocol.py` | P1 事件信封（seq/ts/cause/origin/digest）+ serve 扩展 |
+| 协议 | `openx/kernel/protocol.py` | P1 事件信封（seq/ts/cause/origin/digest）+ serve 扩展 |
 | 重试/形状 | `kernel/reasoning/retry.py` / `kernel/reasoning/provider.py` | 推理核心的先声：重试归内核、形状进内核（M1） |
 | 记账 | `kernel.emit` / `sessions/*.jsonl` | 事件账本（K2）；**轨迹跟踪的底座** |
 | 元工具 | `kernel`（list/load/unload/help）+ `tools/plugin_tools.py` | 模型驱动装配（P-A，2026-08-29）：会话级动态装载、轻量自描述、unregister |

@@ -26,8 +26,8 @@ from types import SimpleNamespace
 import pytest
 
 from openx.config import OpenXConfig
-from openx.core import workflow as workflow_mod
-from openx.core.workflow import WorkflowEngine, WorkflowError
+from openx.orchestration import workflow as workflow_mod
+from openx.orchestration.workflow import WorkflowEngine, WorkflowError
 from openx.llm import StreamDone
 from openx.tools import subagent_tool
 from openx.tools.structured_output import StructuredOutputTool
@@ -232,7 +232,7 @@ class TestAgentStructuredRun:
     async def test_allowlist_never_drops_structured_output(self, tmp_path):
         """子代理白名单交集之后注入 → 规格裁剪不得裁掉契约出口。"""
         from openx.agent import OpenXAgent
-        from openx.core.subagent import BUILTIN_SUBAGENTS
+        from openx.orchestration.subagent import BUILTIN_SUBAGENTS
         parent = _make_agent(tmp_path, [])
         spec = next(s for s in BUILTIN_SUBAGENTS if s.name == "explore")
         assert spec.tools  # explore 带显式白名单
@@ -272,7 +272,7 @@ class FakeStructuredChild:
 
 
 def _task_tool_with_child(monkeypatch, tmp_path, child):
-    from openx.core.subagent import BUILTIN_SUBAGENTS
+    from openx.orchestration.subagent import BUILTIN_SUBAGENTS
     from openx.tools.subagent_tool import TaskTool
 
     class FakeParent:

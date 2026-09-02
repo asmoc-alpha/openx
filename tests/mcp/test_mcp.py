@@ -380,9 +380,9 @@ class TestAgentWiring:
         }))
         monkeypatch.setattr("openx.mcp.manager.SETTINGS_PATH", settings)
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
-        monkeypatch.setattr("openx.core.tasks.TASKS_DIR", tmp_path / "tasks")
+        monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
 
         agent = _make_agent(tmp_path)
         assert "mcp__fake__echo" not in agent.tools  # 连接前：只有本地工具
@@ -410,9 +410,9 @@ class TestAgentWiring:
         }))
         monkeypatch.setattr("openx.mcp.manager.SETTINGS_PATH", settings)
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
-        monkeypatch.setattr("openx.core.tasks.TASKS_DIR", tmp_path / "tasks")
+        monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
 
         from openx.agent import OpenXAgent
 

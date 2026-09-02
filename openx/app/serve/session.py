@@ -43,7 +43,7 @@ from typing import Any, Optional
 
 from aiohttp import web
 
-from ...core import protocol
+from ...kernel import protocol
 from .bridge import WebPermissionBridge
 
 _log = logging.getLogger("openx.serve")

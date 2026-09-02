@@ -1,6 +1,6 @@
 """Background task tools — ``task_output`` / ``task_stop`` (Phase 7).
 
-后台任务工具：与 :class:`~openx.core.tasks.TaskRegistry` 共享同一实例。
+后台任务工具：与 :class:`~openx.orchestration.tasks.TaskRegistry` 共享同一实例。
 
 - ``task_output``：读取后台任务日志尾部 + 状态行（running/exited）。
   只读 OpenX 自己的日志 → ALLOW，无需用户确认。
@@ -29,7 +29,7 @@ from .base import Tool, ToolResult
 from ..permissions import Permission, PermissionLevel
 
 if TYPE_CHECKING:
-    from ..core.tasks import TaskRegistry
+    from ..orchestration.tasks import TaskRegistry
 
 
 def _elapsed_since(iso_ts: str) -> str:
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     async def _self_check():
-        from ..core.tasks import TaskRegistry
+        from ..orchestration.tasks import TaskRegistry
 
         with tempfile.TemporaryDirectory() as _td:
             reg = TaskRegistry(Path(_td))

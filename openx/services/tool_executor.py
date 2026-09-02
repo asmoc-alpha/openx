@@ -37,7 +37,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from ..core.hooks import (
+from ..kernel.audit.hooks import (
     HookRunner,
     build_posttooluse_payload,
 )
@@ -503,7 +503,7 @@ if __name__ == "__main__":
 
     # Phase 5 hooks：exit 2 的钩子在 prepare 阶段阻断（pre_result 落错），
     # exit 0 的钩子放行不影响执行。内联 shell 一行即可，无需临时脚本。
-    from ..core.hooks import HookRunner
+    from ..kernel.audit.hooks import HookRunner
 
     hook_blocked = ToolExecutor(
         Console(config=OpenXConfig()), auto_approve=True,

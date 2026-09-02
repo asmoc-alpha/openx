@@ -4,7 +4,7 @@
 =============================
 模型侧入口：给定内联 ``script`` 或已保存的 ``name``
 （``<workspace>/.openx/workflows/<name>.py``），交由
-:class:`~openx.core.workflow.WorkflowEngine` 跑完，把 ``main`` 的返回值
+:class:`~openx.orchestration.workflow.WorkflowEngine` 跑完，把 ``main`` 的返回值
 JSON 序列化后连同统计脚标一起回喂模型。
 
 设计要点
@@ -35,7 +35,7 @@ import json
 from typing import TYPE_CHECKING, Any, Optional
 
 from .base import Tool, ToolResult
-from ..core.workflow import WorkflowEngine, WorkflowError, load_workflow
+from ..orchestration.workflow import WorkflowEngine, WorkflowError, load_workflow
 from ..permissions import Permission, PermissionLevel
 
 if TYPE_CHECKING:

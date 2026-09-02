@@ -18,23 +18,26 @@ openx/
 │   ├── memory.py          # Persistent memory (~/.openx/memory/)
 │   ├── instructions.py    # OPENX.md loading (global / project / subdir)
 │   ├── image.py           # Image & clipboard helpers (multimodal)
-│   ├── cli/
-│   │   ├── commands.py    # Slash-command registry (27 commands)
-│   │   ├── interactive.py # REPL loop + streaming display
-│   │   ├── single_shot.py # One-shot mode
-│   │   └── setup_wizard.py# First-run configuration wizard
-│   ├── kernel/            # Microkernel: plugin registration catalog, registries, loader, inventory, ledger
-│   │   └── registrations.py etc.
+│   ├── app/
+│   │   ├── cli/           # commands.py (slash registry) / interactive.py (REPL +
+│   │   │                  #   streaming) / single_shot.py / setup_wizard.py
+│   │   └── serve/         # Web surface (aiohttp optional dep) + static assets
+│   ├── kernel/            # Microkernel (five-piece trust base)
+│   │   ├── assembly/      #   ② Plugin assembler: loader/registry/manifest/protocols…
+│   │   ├── reasoning/     #   ① Reasoning core: provider/retry
+│   │   ├── audit/         #   ③ Security audit: guard verdict pipeline + hooks (user hook chain)
+│   │   ├── sandbox/       #   ⑤ Sandbox executor: host/protect
+│   │   ├── ledger.py      #   ④ Trace: event ledger
+│   │   └── protocol.py    #   ④ Protocol face: event envelope schema (ledger externalized)
 │   ├── builtin/           # Base-bundle builtin plugin package (tools/providers; everything-is-a-plugin)
 │   │   ├── tools.py       #   Builtin tool factory
 │   │   └── providers.py   #   Builtin provider implementations (openai-compat / anthropic)
-│   ├── core/
-│   │   ├── protocol.py    # Session protocol schema + event envelope (ledger = externalized protocol)
+│   ├── orchestration/     # Hard-wired coordination (to be plugin-ized, P2+)
 │   │   ├── history.py     # Conversation history + turn-based compaction
-│   │   ├── hooks.py       # User hooks (Claude Code-style schema)
 │   │   ├── sessions.py    # Session persistence (JSONL, --continue / --resume)
 │   │   ├── tasks.py       # Background task registry
 │   │   ├── subagent.py    # Subagent specs (builtin + .openx/agents/*.md)
+│   │   ├── fleet.py       # Fleet monitor (multi-agent view)
 │   │   └── workflow.py    # Workflow engine (deterministic multi-agent orchestration)
 │   ├── llm/
 │   │   └── client.py      # Async LLM client (OpenAI-compatible, streaming)
@@ -63,7 +66,7 @@ openx/
 │   │   └── exploration.py # Project overview detection
 │   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
 │   └── utils/             # Path, text, and error helpers
-├── tests/                 # Subdirs mirror the openx/ layout (core/ llm/ services/ tools/ ui/ mcp/)
+├── tests/                 # Subdirs mirror the openx/ layout (orchestration/ kernel/ serve/ llm/ services/ tools/ ui/ mcp/)
 ├── docs/
 ├── pyproject.toml
 └── README.md
@@ -86,13 +89,13 @@ Permission checks and hook invocations happen during serial preparation, inside
 
 | Layer | Modules | Responsibility |
 |---|---|---|
-| Surface | `cli/`, `ui/` | REPL, single-shot and headless entry; terminal rendering |
-| Kernel | `kernel/`, `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display |
+| Surface | `app/cli/`, `app/serve/`, `ui/` | REPL, single-shot, headless and web entry; terminal rendering |
+| Kernel | `kernel/` (five-piece: assembly/reasoning/audit/trace/sandbox, incl. protocol & hooks), `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display, verdicts & ledger |
 | Model | `llm/` | OpenAI-compatible async client, streaming, retry with backoff |
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |
-| Context & memory | `instructions.py`, `memory.py`, `core/history.py` | OPENX.md instructions, persistent memory, history + compaction |
-| Orchestration | `core/subagent.py`, `core/workflow.py`, `core/tasks.py`, `core/hooks.py` | Subagents, deterministic workflows, background tasks, lifecycle hooks |
-| State | `core/sessions.py`, `config.py` | Session persistence/resume, layered configuration |
+| Context & memory | `instructions.py`, `memory.py`, `orchestration/history.py` | OPENX.md instructions, persistent memory, history + compaction |
+| Orchestration | `orchestration/subagent.py`, `orchestration/workflow.py`, `orchestration/tasks.py`, `orchestration/fleet.py` | Subagents, deterministic workflows, background tasks (hard-wired, P2+ plugin-ization) |
+| State | `orchestration/sessions.py`, `config.py` | Session persistence/resume, layered configuration |
 | Collaboration | `permissions.py` | Permission tiers, stored rules, dangerous-command gate |
 
 ## See also

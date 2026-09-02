@@ -30,7 +30,7 @@ from rich.console import Console as RichConsole
 from rich.text import Text
 
 from openx.agent import ToolResultEvent, ToolStartEvent
-from openx.core.fleet import (
+from openx.orchestration.fleet import (
     MAX_VIEW_LINES,
     FleetMonitor,
     SubagentView,

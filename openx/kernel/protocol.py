@@ -381,4 +381,4 @@ if __name__ == "__main__":
     _pr = permission_request("r2", "shell", "run", can_remember=False)
     assert _pr["can_remember"] is False and _pr["type"] == "permission_request"
 
-    print("openx/core/protocol.py OK ✓")
+    print("openx/kernel/protocol.py OK ✓")

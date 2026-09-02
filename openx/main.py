@@ -29,7 +29,7 @@ from typing import Optional
 
 from .config import OpenXConfig
 from .agent import OpenXAgent
-from .core.sessions import SessionMeta, SessionStore, resolve_by_id, resolve_latest
+from .orchestration.sessions import SessionMeta, SessionStore, resolve_by_id, resolve_latest
 from .ui.console import Console
 from .app.cli.setup_wizard import run_setup_wizard
 from .app.cli.interactive import run_interactive

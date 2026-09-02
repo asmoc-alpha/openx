@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from openx.config import OpenXConfig
-from openx.core.history import ConversationHistory, SUMMARY_MARKER
+from openx.orchestration.history import ConversationHistory, SUMMARY_MARKER
 from openx.llm import StreamDone
 
 

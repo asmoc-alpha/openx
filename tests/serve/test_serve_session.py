@@ -12,7 +12,7 @@ import pytest
 
 from openx.agent import ToolResultEvent, ToolStartEvent
 from openx.app.serve.session import ServeSession
-from openx.core import protocol
+from openx.kernel import protocol
 
 
 class FakeWS:

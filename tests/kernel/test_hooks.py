@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from openx.config import OpenXConfig
-from openx.core.hooks import (
+from openx.kernel.audit.hooks import (
     TOOL_RESPONSE_LIMIT,
     HookOutcome,
     HookRunner,
@@ -265,7 +265,7 @@ class TestConfigLoading:
 
     def test_load_no_settings_anywhere(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         runner = HookRunner.load(str(tmp_path))  # 无 .openx/settings.json
         for event in ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"):
@@ -274,7 +274,7 @@ class TestConfigLoading:
     @pytest.mark.asyncio
     async def test_run_without_hooks_returns_empty_outcome(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         runner = HookRunner.load(str(tmp_path))
         outcome = await runner.run("Stop", {"hook_event_name": "Stop"})
@@ -291,7 +291,7 @@ class TestConfigLoading:
                            "command": f'echo global >> "{order_file}"'}],
             }]},
         }))
-        monkeypatch.setattr("openx.core.hooks.SETTINGS_PATH", global_settings)
+        monkeypatch.setattr("openx.kernel.audit.hooks.SETTINGS_PATH", global_settings)
         # 项目 settings
         (tmp_path / ".openx").mkdir()
         (tmp_path / ".openx" / "settings.json").write_text(json.dumps({
@@ -316,7 +316,7 @@ class TestConfigLoading:
                            "command": f'echo global >> "{order_file}"'}],
             }]},
         }))
-        monkeypatch.setattr("openx.core.hooks.SETTINGS_PATH", global_settings)
+        monkeypatch.setattr("openx.kernel.audit.hooks.SETTINGS_PATH", global_settings)
         (tmp_path / ".openx").mkdir()
         (tmp_path / ".openx" / "settings.json").write_text(json.dumps({
             "hooks": {"PreToolUse": [{
@@ -331,7 +331,7 @@ class TestConfigLoading:
 
     def test_project_only_config(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         (tmp_path / ".openx").mkdir()
         (tmp_path / ".openx" / "settings.json").write_text(json.dumps({
@@ -346,7 +346,7 @@ class TestConfigLoading:
     def test_corrupt_settings_skipped_silently(self, tmp_path, monkeypatch):
         bad = tmp_path / "bad.json"
         bad.write_text("{not json at all")
-        monkeypatch.setattr("openx.core.hooks.SETTINGS_PATH", bad)
+        monkeypatch.setattr("openx.kernel.audit.hooks.SETTINGS_PATH", bad)
         runner = HookRunner.load(str(tmp_path))
         assert runner.has_hooks("Stop") is False
 
@@ -511,7 +511,7 @@ class TestAgentIntegration:
 
     def test_session_id_and_hooks_wired(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         agent = _make_agent(tmp_path, [])
         assert len(agent.session_id) == 12
@@ -523,7 +523,7 @@ class TestAgentIntegration:
     @pytest.mark.asyncio
     async def test_stop_hook_fires_on_end_turn(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         dump = tmp_path / "stop.json"
         (tmp_path / ".openx").mkdir()
@@ -543,7 +543,7 @@ class TestAgentIntegration:
     @pytest.mark.asyncio
     async def test_stream_run_also_fires_stop(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         dump = tmp_path / "stop.json"
         (tmp_path / ".openx").mkdir()
@@ -564,7 +564,7 @@ class TestPlanModeSaveGuard:
 
     def test_double_enable_preserves_saved_value(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
         )
         config = OpenXConfig()
         config.workspace = str(tmp_path)

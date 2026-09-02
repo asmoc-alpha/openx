@@ -1,7 +1,7 @@
 """④ 轨迹跟踪 / 记账（microkernel-design §0 五件套）——事件账本的唯一出口。
 
 ``Ledger`` 持有挂接的账本 sink、会话与 seq/digest 哈希链；append-only
-（内核无 update/delete API）。**协议 = 账本的外化**：``core/protocol.py``
+（内核无 update/delete API）。**协议 = 账本的外化**：``kernel/protocol.py``
 的 Event 信封去掉簿记字段即下行事件；回放 = 把存储的事件再发一遍。
 
 从 PluginKernel 析出（2026-08-31 kernel 分包）：记账职责显式化为独立模块，
@@ -25,7 +25,7 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
-from ..core.protocol import Event, digest_of
+from .protocol import Event, digest_of
 
 _log = logging.getLogger("openx.kernel")
 
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     assert e1.seq == 1 and e2.seq == 2 and e2.cause == e1.seq
     assert e1.digest and e2.digest and e1.digest != e2.digest
     # 哈希链：digest(prev || canonical)
-    from ..core.protocol import canonical_event
+    from .protocol import canonical_event
     assert e2.digest == digest_of(e1.digest, e2)
     assert [e.type for e in events] == ["a", "b"]
 

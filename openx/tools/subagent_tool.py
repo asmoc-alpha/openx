@@ -44,7 +44,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from .base import Tool, ToolResult
-from ..core.subagent import BUILTIN_SUBAGENTS, SubagentSpec
+from ..orchestration.subagent import BUILTIN_SUBAGENTS, SubagentSpec
 from ..permissions import Permission, PermissionLevel
 
 if TYPE_CHECKING:
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     # 独立调试：绝不构造真实 OpenXAgent —— 用假父/假子验证工具自身逻辑
     import asyncio
     from types import SimpleNamespace
-    from ..core.fleet import FleetMonitor
+    from ..orchestration.fleet import FleetMonitor
 
     class _FakeExecutor:
         on_prompt_start = None

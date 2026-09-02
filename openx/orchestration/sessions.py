@@ -518,7 +518,7 @@ if __name__ == "__main__":
             # iter_events 回放：message 行 + 账本行按文件序统一产出。
             # 模拟一次 permission_decision 账本事件落盘（真实路径由内核
             # emit → append_event 写入），断言两种行都出现且序正确。
-            from openx.core.protocol import Event
+            from openx.kernel.protocol import Event
             store.append_event(Event(
                 seq=1, ts=1.0, session="selftest01", type="permission_decision",
                 payload={"type": "permission_decision", "tool": "shell",
@@ -536,4 +536,4 @@ if __name__ == "__main__":
         finally:
             SESSIONS_DIR = _saved
 
-    print("openx/core/sessions.py OK ✓")
+    print("openx/orchestration/sessions.py OK ✓")

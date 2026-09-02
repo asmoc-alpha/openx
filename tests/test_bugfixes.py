@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from openx.config import OpenXConfig
-from openx.core.history import ConversationHistory
+from openx.orchestration.history import ConversationHistory
 from openx.llm import StreamDone
 from openx.permissions import PermissionRules
 from openx.services.tool_executor import ToolExecutor

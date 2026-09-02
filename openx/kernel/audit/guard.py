@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Optional
 
-from ...core.hooks import build_pretooluse_payload
+from .hooks import build_pretooluse_payload
 from ...permissions import PermissionLevel
 
 

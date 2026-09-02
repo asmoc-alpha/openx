@@ -1022,7 +1022,7 @@ class StreamingService:
         (ctrl+t to expand)"；Ctrl+T 全局展开（硬上限 200 行）。空输出
         ``(No output)``。edit_file 结果行级着色（-红 +绿 @@dim）。
         """
-        from ..core.fleet import _tool_call_summary
+        from ..orchestration.fleet import _tool_call_summary
         from ..ui._style import MARK_INFO, SUCCESS_STYLE, ERROR_STYLE, DIM
         dot_style = {
             "running": DIM,

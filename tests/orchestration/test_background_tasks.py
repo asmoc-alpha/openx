@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from openx.core.tasks import TaskRegistry
+from openx.orchestration.tasks import TaskRegistry
 from openx.tools.shell_tools import ShellTool
 from openx.tools.task_tools import TaskOutputTool, TaskStopTool
 
@@ -31,9 +31,9 @@ from openx.tools.task_tools import TaskOutputTool, TaskStopTool
 @pytest.fixture
 def tasks_tmp(tmp_path, monkeypatch):
     """隔离任务目录与全局 settings.json（agent 构造会读后者）。"""
-    monkeypatch.setattr("openx.core.tasks.TASKS_DIR", tmp_path / "tasks")
+    monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
     monkeypatch.setattr(
-        "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
     )
     return tmp_path / "tasks"
 

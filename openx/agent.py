@@ -25,7 +25,7 @@ agent 的工作循环
 
 - **共享**父的 console、PermissionRules（"don't ask again" 双向传播）、
   HookRunner 与 TaskRegistry（后台任务退出清理由顶层统一负责）；
-- 工具集先按 :data:`~openx.core.subagent.CHILD_EXCLUDED_TOOLS` 结构性
+- 工具集先按 :data:`~openx.orchestration.subagent.CHILD_EXCLUDED_TOOLS` 结构性
   裁剪（task/ask_user/exit_plan_mode/choose_mode——禁套娃、不打断用户、
   不触审批流与模式询问），再按规格的 ``tools`` 白名单取交集；
 - 子代理**无** ``task`` / ``workflow`` 工具 → 天然无法派生孙代理
@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from .config import OpenXConfig
-from .core.hooks import HookRunner, build_stop_payload
+from .kernel.audit.hooks import HookRunner, build_stop_payload
 from .instructions import (
     build_system_prompt,
     load_instructions,
@@ -81,10 +81,10 @@ from .instructions import (
 from .llm import LLMClient, StreamDone
 from .mcp import MCPManager
 from .permissions import PermissionLevel
-from .core.fleet import FleetMonitor
-from .core.history import ConversationHistory, SUMMARY_MARKER
-from .core.sessions import SessionMeta, SessionStore
-from .core.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
+from .orchestration.fleet import FleetMonitor
+from .orchestration.history import ConversationHistory, SUMMARY_MARKER
+from .orchestration.sessions import SessionMeta, SessionStore
+from .orchestration.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
 from .kernel.sandbox.host import ToolHost
 from .kernel.assembly.plugin_spec import PLUGIN_SPEC
 from .services import assembly
@@ -104,7 +104,7 @@ from .tools.write_plugin_tools import (
 )
 from .tools.subagent_tool import TaskTool
 from .tools.workflow_tool import WorkflowTool
-from .core.tasks import TaskRegistry
+from .orchestration.tasks import TaskRegistry
 from .memory import MemoryStore
 from .coding_memory import CodingMemoryStore
 from .services.exploration import explore_project as _explore_project

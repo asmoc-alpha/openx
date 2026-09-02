@@ -15,8 +15,8 @@ from openx.agent import ToolResultEvent, ToolStartEvent
 from openx.app.serve.bridge import ServeConsole
 from openx.app.serve.server import SESSION_KEY, create_app
 from openx.app.serve.session import ServeSession
-from openx.core.protocol import Event
-from openx.core.sessions import SessionStore
+from openx.kernel.protocol import Event
+from openx.orchestration.sessions import SessionStore
 
 
 class FakeHistory:
@@ -60,7 +60,7 @@ def agent():
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
     """真实会话文件：monkeypatch SESSIONS_DIR + 预置一条历史会话供复盘。"""
-    import openx.core.sessions as sessions_mod
+    import openx.orchestration.sessions as sessions_mod
 
     monkeypatch.setattr(sessions_mod, "SESSIONS_DIR", tmp_path / "sessions")
     ws = tmp_path / "ws"

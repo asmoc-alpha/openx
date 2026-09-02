@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from openx.config import OpenXConfig
-from openx.core.sessions import (
+from openx.orchestration.sessions import (
     IMAGE_PLACEHOLDER_TEXT,
     SessionMeta,
     SessionStore,
@@ -36,10 +36,10 @@ from openx.core.sessions import (
 def sessions_tmp(tmp_path, monkeypatch):
     """隔离会话目录与全局 settings.json（agent 构造会读后者）。"""
     monkeypatch.setattr(
-        "openx.core.sessions.SESSIONS_DIR", tmp_path / "sessions"
+        "openx.orchestration.sessions.SESSIONS_DIR", tmp_path / "sessions"
     )
     monkeypatch.setattr(
-        "openx.core.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
     )
     return tmp_path / "sessions"
 
@@ -399,7 +399,7 @@ class TestToolInputTruncation:
     """超长 tool_input 字符串值截断并加标记；小值与非字符串值不变。"""
 
     def test_posttooluse_truncates_tool_input_strings(self):
-        from openx.core.hooks import TOOL_INPUT_LIMIT, build_posttooluse_payload
+        from openx.kernel.audit.hooks import TOOL_INPUT_LIMIT, build_posttooluse_payload
 
         big = "x" * (TOOL_INPUT_LIMIT + 500)
         payload = build_posttooluse_payload(
@@ -414,7 +414,7 @@ class TestToolInputTruncation:
         assert payload["tool_input"]["lines"] == 42  # 非字符串值不变
 
     def test_pretooluse_truncates_tool_input_strings(self):
-        from openx.core.hooks import TOOL_INPUT_LIMIT, build_pretooluse_payload
+        from openx.kernel.audit.hooks import TOOL_INPUT_LIMIT, build_pretooluse_payload
 
         big = "z" * (TOOL_INPUT_LIMIT + 10)
         payload = build_pretooluse_payload("write_file", {"content": big})

@@ -37,8 +37,9 @@ pytest tests/tools/test_tools_base.py -k edit # filter by name
 
 Collection is restricted to `tests/` (`testpaths` in `pyproject.toml`), and async tests
 run without decorators (`asyncio_mode = "auto"`). Test files are organized into
-subdirectories mirroring the `openx/` package layout (`tests/core/`, `tests/llm/`,
-`tests/services/`, `tests/tools/`, `tests/ui/`, `tests/mcp/`); tests for top-level
+subdirectories mirroring the `openx/` package layout (`tests/orchestration/`,
+`tests/kernel/`, `tests/serve/`, `tests/llm/`, `tests/services/`, `tests/tools/`,
+`tests/ui/`, `tests/mcp/`); tests for top-level
 modules (`agent`, `main`, `image`, `instructions`) live at the `tests/` root.
 
 ## Lint

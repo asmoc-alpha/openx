@@ -47,7 +47,7 @@ from typing import Any, Optional
 
 from rich.console import Console as RichConsole
 
-from ...core import protocol
+from ...kernel import protocol
 
 _log = logging.getLogger("openx.serve")
 

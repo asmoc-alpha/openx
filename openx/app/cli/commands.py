@@ -1154,7 +1154,7 @@ async def _cmd_workflow(agent, console, args):
     # 所有 handler 都是 async 且由 handle_slash_command await 调度（/compact
     # 同款先例），因此这里直接跑引擎即可——此时 REPL 没有活跃的 Live 区域，
     # 子代理走非流式 child.run()，绝不争抢终端。
-    from ...core.workflow import WorkflowEngine, WorkflowError, list_workflows, load_workflow
+    from ...orchestration.workflow import WorkflowEngine, WorkflowError, list_workflows, load_workflow
 
     if not args:
         rows = list_workflows(str(agent.workspace))

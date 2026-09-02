@@ -37,7 +37,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from ...core.sessions import SessionStore, resolve_by_id
+from ...orchestration.sessions import SessionStore, resolve_by_id
 from .session import ServeSession
 
 _log = logging.getLogger("openx.serve")

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ...agent import OpenXAgent
-from ...core.hooks import build_userprompt_payload
+from ...kernel.audit.hooks import build_userprompt_payload
 from ...image import (
     extract_image_paths,
     image_to_base64_url,

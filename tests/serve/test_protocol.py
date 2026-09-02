@@ -1,4 +1,4 @@
-"""serve 协议扩展测试（openx/core/protocol.py 的 P4 增量）。
+"""serve 协议扩展测试（openx/kernel/protocol.py 的 P4 增量）。
 
 覆盖：上行 message/interrupt/permission_response(remember) 解析、畸形行
 容错、未知类型容忍；下行 user_message/history/result/permission_request
@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from openx.core import protocol
+from openx.kernel import protocol
 
 
 # ── 上行解析 ─────────────────────────────────────────────────────

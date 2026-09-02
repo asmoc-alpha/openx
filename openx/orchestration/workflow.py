@@ -594,4 +594,4 @@ if __name__ == "__main__":
                 pass
         assert list_workflows(tempfile.mkdtemp()) == []
     print("load/list workflows ✓")
-    print("openx/core/workflow.py OK ✓")
+    print("openx/orchestration/workflow.py OK ✓")

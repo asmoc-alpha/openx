@@ -257,4 +257,4 @@ if __name__ == "__main__":
             assert all(not t.running for t in reg.all())
 
     asyncio.run(_self_check())
-    print("openx/core/tasks.py OK ✓")
+    print("openx/orchestration/tasks.py OK ✓")
