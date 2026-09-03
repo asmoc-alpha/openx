@@ -205,15 +205,21 @@ def build_child_agent(
     parent: "OpenXAgent",
     spec: SubagentSpec,
     structured_schema: dict | None = None,
+    role: str = "exec",
 ) -> "OpenXAgent":
     """按规格从父 agent 派生子 agent。
 
     config 经 ``dataclasses.replace`` 浅拷贝，但列表字段
     （``allowed_commands`` / ``dangerous_commands``）**深拷贝**——子代理
-    对列表的就地修改绝不能回流污染父配置。``spec.model`` 非空时覆盖
-    ``config.model``。console / rules / hooks / tasks 全部与父共享
-    （在 ``OpenXAgent`` 的子模式中接线）。``structured_schema`` 非 None
-    时子代理携带结构化输出契约（structured_output 工具 + 系统提示）。
+    对列表的就地修改绝不能回流污染父配置。console / rules / hooks /
+    tasks 全部与父共享（在 ``OpenXAgent`` 的子模式中接线）。
+    ``structured_schema`` 非 None 时子代理携带结构化输出契约
+    （structured_output 工具 + 系统提示）。
+
+    模型组角色路由：子代理默认绑定 **exec** 角色（低推理强度任务交给
+    exec 模型；exec 缺席回落 main 绑定——即继承父的主模型）。``spec.model``
+    非空时作为显式模型 id 叠加在 exec 凭据之上（binding_model_override），
+    保持旧行为"规格指定模型 > 父默认"。需让子代理用别的角色时可传 ``role``。
 
     延迟导入 ``OpenXAgent``：``agent`` 模块反过来导入本模块注册工具，
     顶层导入会构成循环。
@@ -224,8 +230,6 @@ def build_child_agent(
         "allowed_commands": list(parent.config.allowed_commands),
         "dangerous_commands": list(parent.config.dangerous_commands),
     }
-    if spec.model:
-        overrides["model"] = spec.model
     config = dataclasses.replace(parent.config, **overrides)
     return OpenXAgent(
         config,
@@ -234,6 +238,8 @@ def build_child_agent(
         tool_allowlist=spec.tools,
         subagent_extra=spec.system_prompt_extra,
         structured_schema=structured_schema,
+        binding_role=role,
+        binding_model_override=spec.model or None,
     )
 
 

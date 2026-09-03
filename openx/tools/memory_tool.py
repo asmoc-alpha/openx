@@ -211,6 +211,7 @@ if __name__ == "__main__":
             store = CodingMemoryStore(
                 workspace=str(ws),
                 global_dir=Path(td) / "global",
+                projects_root=Path(td) / "projects",  # 自检不碰真实 home
             )
             tool = MemoryTool(store)
 

@@ -667,8 +667,8 @@ class PromptMixin:
         (un-backgrounded) Markdown output.
 
         **配色定稿 = OpenClaw TUI 深色主题**（2026-08-12 用户指定参考）：
-        深石板灰底 ``#2B2F36`` + 暖白字 ``#F3EEE0`` + 左竖条 ``▎``
-        bold cyan（无背景版遗留，用户要求保留——石板块上的唯一强调点）。
+        深石板灰底 ``#2B2F36`` + 暖白字 ``#F3EEE0`` + 左标记 ``❯``
+        bold cyan（用户指定改用输入提示符同款 ❯——石板块上的唯一强调点）。
         史：初版 ``table.style = "on …"`` 在 rich 14 下从未着色
         （Table.style 只喂 border_style）→ 2026-08-11 行级 style 真上色
         的 7 种浅色块候选被用户否决回退无背景 → 2026-08-12 按 OpenClaw
@@ -687,7 +687,7 @@ class PromptMixin:
         table = Table(show_header=False, box=None, padding=(0, 1), width=tw)
         table.add_column(ratio=1)
         banner = RichText()
-        banner.append("▎ ", style=ACCENT_BOLD)
+        banner.append("❯ ", style=ACCENT_BOLD)
         banner.append(text, style=USER_BANNER_TEXT)
         table.add_row(banner, style=f"on {USER_BANNER_BG}")
         self._console.print(table)

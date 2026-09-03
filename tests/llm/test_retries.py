@@ -35,6 +35,7 @@ from openx.llm.openai_compat import (
     MAX_RETRY_DELAY,
     LLMClient,
     StreamReasoning,
+    _cached_tokens_of,
     _classify_error,
     _compute_delay,
     _parse_retry_after,
@@ -304,7 +305,10 @@ class TestChatRetries:
     async def test_usage_survives_retry(self):
         llm, comp = _make_client([_http_error(500), _text_response("ok")])
         result = await llm.chat([{"role": "user", "content": "hi"}], stream=False)
-        assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 5}
+        # 兼容 usage 无 prompt_tokens_details → cached_tokens 归 0
+        assert result["usage"] == {
+            "prompt_tokens": 3, "completion_tokens": 5, "cached_tokens": 0,
+        }
 
 
 # ── on_retry 回调 ────────────────────────────────────────────────
@@ -343,7 +347,10 @@ class TestStreamRetries:
         # 第一次的部分内容被整体丢弃，绝不拼接
         assert result["content"] == "hello"
         assert comp.calls == 2
-        assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 5}
+        # 兼容 usage 无 prompt_tokens_details → cached_tokens 归 0
+        assert result["usage"] == {
+            "prompt_tokens": 3, "completion_tokens": 5, "cached_tokens": 0,
+        }
 
     async def test_stream_chat_retries_before_any_text(self):
         llm, comp = _make_client([
@@ -473,3 +480,44 @@ class TestStreamReasoning:
         events = [e async for e in llm.stream_chat([{"role": "user", "content": "x"}])]
         assert not any(isinstance(e, StreamReasoning) for e in events)
         assert "".join(e for e in events if isinstance(e, str)) == "ab"
+
+
+# ── cached_tokens 提取 ────────────────────────────────────────────
+
+
+class TestCachedTokenExtraction:
+    """cached_tokens 从 OpenAI 兼容 usage 透出（可选字段，缺省归 0）。"""
+
+    def test_missing_or_null_details_is_zero(self):
+        # 后端不回 prompt_tokens_details / usage 缺失 → 归 0（非 0 字段绝不造假）
+        assert _cached_tokens_of(Obj(prompt_tokens=3)) == 0
+        assert _cached_tokens_of(Obj()) == 0
+        assert _cached_tokens_of(None) == 0
+        # details 里 cached_tokens 为 0（本轮未命中）→ 0
+        assert _cached_tokens_of(Obj(prompt_tokens_details=Obj(cached_tokens=0))) == 0
+
+    def test_reported_cache_hit_is_taken(self):
+        usage = Obj(
+            prompt_tokens=11, completion_tokens=7,
+            prompt_tokens_details=Obj(cached_tokens=4),
+        )
+        assert _cached_tokens_of(usage) == 4
+
+    def test_parse_response_exposes_cached(self):
+        from openx.llm.openai_compat import OpenAICompatProvider
+
+        cfg = OpenXConfig()
+        cfg.api_key = "sk-test"
+        cfg.api_base = "https://example.com/v1"
+        cfg.model = "test-model"
+        raw = Obj(
+            choices=[Obj(message=Obj(content="hi", tool_calls=None))],
+            usage=Obj(
+                prompt_tokens=11, completion_tokens=7,
+                prompt_tokens_details=Obj(cached_tokens=4),
+            ),
+        )
+        result = OpenAICompatProvider(cfg)._parse_response(raw)
+        assert result["usage"] == {
+            "prompt_tokens": 11, "completion_tokens": 7, "cached_tokens": 4,
+        }

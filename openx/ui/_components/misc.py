@@ -140,6 +140,46 @@ class MiscMixin:
             )
         )
 
+    def print_session_usage(self, usage: dict) -> None:
+        """本次会话 token 用量面板（退出与 /cost 共用）。
+
+        ``usage`` 为 ``agent.session_token_usage()`` 的四项 dict：
+        input（服务端 prompt 总数，**已含缓存命中**）/ output / cached /
+        plugin。cached ⊆ input（provider 口径），故首行展示**新输入** =
+        input − cached——与 Cache hit 不重叠，相加即该会话 prompt 总数，
+        避免"Cache = Input"被误读成重复计费。cached 未报告（后端不回
+        缓存）或无插件装载时恒 0，照样展示、绝不掩盖。
+
+        Total = 新输入 + 缓存 + 输出 = input + output（plugin 为 schema
+        重发的估算开销，已含在 input 内，不另加）。
+        """
+
+        def _fmt(n: int) -> str:
+            return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+        i = int(usage.get("input") or 0)
+        o = int(usage.get("output") or 0)
+        c = int(usage.get("cached") or 0)
+        p = int(usage.get("plugin") or 0)
+        new_input = max(0, i - c)  # 服务端缓存恒为 prompt 子集，clamp 兜底
+        body = (
+            f"[dim]New input [/dim]{_fmt(new_input):>6} tokens\n"
+            f"[dim]Cache hit [/dim]{_fmt(c):>6} tokens\n"
+            f"[dim]Output    [/dim]{_fmt(o):>6} tokens\n"
+            f"[dim]Plugins   [/dim]{_fmt(p):>6} tokens\n"
+            f"[dim]Total     [/dim]{_fmt(i + o):>6} tokens"
+        )
+        self._console.print(
+            Panel(
+                Text.from_markup(body),
+                title="Session usage",
+                title_align="left",
+                border_style=CHROME,
+                box=box_rounded(),
+                padding=(0, 1),
+            )
+        )
+
     # ── images ──────────────────────────────────────────────────
 
     def print_image_loaded(self, path: Path, metadata: dict) -> None:
@@ -219,6 +259,7 @@ if __name__ == "__main__":
                     {"content": "ship it", "status": "in_progress"},
                     {"content": "docs", "status": "pending"}])
     _m.print_cost(12000, 3400)
+    _m.print_session_usage({"input": 12400, "output": 3200, "cached": 8100, "plugin": 2800})
     _m.print_image_loaded(Path("shot.png"), {"width": 800, "height": 600, "format": "png", "size_bytes": 20480})
     _m.print_file_diff("a.py", "old = 1\nsame", "new = 2\nsame")
     print(f"captured {len(_buf.getvalue())} chars | _format_bytes(2048)={_m._format_bytes(2048)}")

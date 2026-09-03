@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
+from . import model_groups as _model_groups
 from .config import OpenXConfig
 from .kernel.audit.hooks import HookRunner, build_stop_payload
 from .instructions import (
@@ -172,24 +173,34 @@ class OpenXAgent:
         tool_allowlist: list[str] | None = None,
         subagent_extra: str = "",
         structured_schema: dict | None = None,
+        binding_role: str = "main",
+        binding_model_override: str | None = None,
     ):
         self.config = config
         # console：子代理共享父的 console（同一终端）；顶层自建
         self.console = console if console is not None else Console(config)
         self.workspace = Path(config.workspace).resolve()
 
-        # ── LLM 接入（模型接入层 M2/M3）：经内核 providers 注册表解析 ──
-        # 内置插件注册 openai-compat 实现，LLMClient 门面组合内核重试
-        # （策略 = config 实时值 + 实例覆盖，晚绑定）。解析激活实例：
-        # 扁平配置 -> 隐式 default 实例（行为≡现状）；providers 配置表 ->
-        # 两级解耦（kind 选实现，外层名字是用户实例名）。须在
-        # ensure_loaded 之后取实现，故移到 workspace 就绪处（子代理同
-        # workspace，ensure_loaded 幂等）。
+        # ── LLM 接入（模型组 modelGroups 角色绑定）─────────────────
+        # 本 agent 自己的 ``self.llm``/run 循环绑定的角色：顶层 = main，
+        # 子代理 = exec（task/任务委派），经 config.role_settings 解析出
+        # （组内共享 key/base、per-role 可覆盖；角色缺席回落 main 绑定）。
+        # 须在 ensure_loaded 之后取实现（内核注册表就绪）。
         from .kernel import get_kernel
+
+        self._bind_role = _model_groups.canonical_role(binding_role) or binding_role
+        self._binding_model_override = binding_model_override
+        self._group_name, settings = config.role_settings(binding_role)
+        if binding_model_override:
+            settings["model"] = binding_model_override
+        self._provider_name = self._group_name
+        self._provider_settings = settings
+        # 角色客户端惰性缓存（exec/mini/modal 只在用到时按组内配置创建）
+        self._role_clients: dict[str, Any] = {}
+        self._role_settings_cache: dict[str, dict] = {}
 
         kernel = get_kernel()
         kernel.ensure_loaded(str(self.workspace))
-        self._provider_name, self._provider_settings = config.resolve_provider()
         impl = assembly.resolve_provider_impl(kernel, self._provider_settings)
         if impl is None:
             # kind 未注册（如 anthropic SDK 未装）：警告并回落 openai-compat。
@@ -212,6 +223,11 @@ class OpenXAgent:
         # LLM 重试可见性：每次重试打印一行警告（_notify_retry 内部经弹窗
         # 钩子暂停流式 Live，避免重绘区夹杂输出；钩子缺省 → 零行为变化）
         self.llm.on_retry = self._notify_retry
+        # 把生效绑定投影回 config，供 header/init event/serve 展示
+        config.active_group = self._group_name
+        config.model = self._provider_settings.get("model") or config.model
+        config.api_key = self._provider_settings.get("api_key") or config.api_key
+        config.api_base = self._provider_settings.get("api_base") or config.api_base
 
         # ── 子代理（child）模式状态（Phase 8，必须在 _build_tools 之前就位）──
         # parent 非 None → 本 agent 是 task 工具派生的子代理：工具集裁剪、
@@ -287,9 +303,14 @@ class OpenXAgent:
         self.history = ConversationHistory(max_tokens=config.max_history_tokens)
         # 缓存系统提示，避免每轮重新拼装；指令/工作区变更时重建
         self._system_prompt: str = ""
-        # 累计 token 用量（供 /cost 展示）
+        # 累计 token 用量（供 /cost 与退出用量面板展示）
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
+        # 累计缓存命中 token（provider 报告的可选字段，未报告恒 0）
+        self.total_cached_tokens: int = 0
+        # 累计插件 schema token（装配预算口径估算：每轮 LLM 调用把当时
+        # ACTIVE 插件的 schemaTokens 之和记一笔；内置恒 0 = 基线不归插件）
+        self.total_plugin_tokens: int = 0
         # 任务清单：与 TodoWriteTool 共享同一 list 对象
         self.todos: list[dict[str, Any]] = []
         # 最近一次 run() 的工具往返数（headless JSON 输出的 num_turns）
@@ -773,8 +794,13 @@ class OpenXAgent:
         return self.history.estimate_tokens()
 
     async def compact_history(self, keep_last: int = 4) -> str:
-        """压缩历史：把旧历史摘要成一条 user 消息，保留最近若干轮原文。"""
-        return await self.history.compact(self.llm, keep_last=keep_last)
+        """压缩历史：把旧历史摘要成一条 user 消息，保留最近若干轮原文。
+
+        走 mini 角色（最简模型做廉价摘要）；mini 未配置回落 main。
+        """
+        return await self.history.compact(
+            self.client_for("mini"), keep_last=keep_last
+        )
 
     async def _maybe_auto_compact(self) -> bool:
         """历史逼近上限时自动压缩；失败绝不打断本轮对话。
@@ -793,7 +819,7 @@ class OpenXAgent:
         if self.history.estimate_tokens() <= threshold:
             return False
         try:
-            await self.history.compact(self.llm, keep_last=4)
+            await self.history.compact(self.client_for("mini"), keep_last=4)
         except Exception:
             # 压缩失败必须留给下一轮重试，而不是毁掉当前回合
             return False
@@ -829,12 +855,12 @@ class OpenXAgent:
         except Exception:
             pass
 
-    # ── Provider 绑定与切换（模型接入层 M3/M5）──────────────────
+    # ── 模型组绑定与切换（modelGroups 角色路由）──────────────────
 
     def _emit_provider_selected(self, origin: str) -> None:
-        """记账：provider_selected 事件（agent 绑定 / /provider 切换）。
+        """记账：provider_selected 事件（agent 绑定 / /model 切换）。
 
-        payload：实例名、kind、model、origin（kernel=绑定 / user=切换）。
+        payload：组名、kind、model、role、origin（kernel=绑定 / user=切换）。
         切换留痕是将来"为什么这次回答换了模型"的答案来源；emit 只依赖
         内核出口，任何异常绝不影响绑定/切换本身。
         """
@@ -846,6 +872,8 @@ class OpenXAgent:
                 {
                     "type": "provider_selected",
                     "provider": self._provider_name,
+                    "group": self._group_name,
+                    "role": self._bind_role,
                     "kind": self._provider_settings.get("kind", "openai-compat"),
                     "model": self._provider_settings.get("model", ""),
                     "origin": origin,
@@ -855,61 +883,197 @@ class OpenXAgent:
         except Exception:
             pass
 
-    def switch_provider(self, name: str) -> bool:
-        """把 agent 的 provider 绑定切到已配置实例 ``name``（/provider）。
+    def role_settings(self, role: str) -> dict:
+        """取某角色在**当前组**下的设置 dict（缓存在内存）。
 
-        校验存在性（settings.json 的 providers 键）；重建 LLMClient（新
-        实现 + 实例级重试覆盖）并记 ``provider_selected``（origin=user）。
-        持久化 active_provider 由命令层负责（save_provider_settings）。
-        kind 未注册（如 SDK 缺失的 anthropic）时返回 False，agent 状态不变。
+        ``role`` 为绑定角色（"main"/"exec"…）时直接返回当前绑定设置；其余
+        角色经 config 重解析（读到的是当前组的文件状态）。内部一律用长键。
         """
-        from .config import OpenXConfig
+        role_key = _model_groups.canonical_role(role) or role
+        if role_key == self._bind_role:
+            return self._provider_settings
+        cached = self._role_settings_cache.get(role_key)
+        if cached is None:
+            cached = self.config.role_settings(role_key)[1]
+            self._role_settings_cache[role_key] = cached
+        return cached
+
+    def client_for(self, role: str) -> Any:
+        """取某角色的 LLMClient（惰性建；缺席/与 main 绑定全等 → self.llm）。
+
+        mini/exec/modal 未配置或与 main 绑定完全相同（kind/key/base/model）
+        时复用主客户端——组里只有 main 就绝不额外建对象。角色 kind 未注册
+        （如 anthropic SDK 缺失）按现有语义告警并回落主客户端。
+        """
+        role_key = _model_groups.canonical_role(role) or role
+        if role_key == _model_groups.MAIN_ROLE or role_key == self._bind_role:
+            return self.llm
+        cached = self._role_clients.get(role_key)
+        if cached is not None:
+            return cached
+        settings = self.role_settings(role_key)
+        if self._same_binding(settings):
+            return self.llm
         from .kernel import get_kernel
 
-        providers = OpenXConfig.load_provider_settings()["providers"]
-        if name not in providers:
-            return False
-        settings = dict(providers[name])
-        settings.setdefault("kind", "openai-compat")
-        for key in ("api_key", "api_base", "model", "temperature", "max_tokens"):
-            settings.setdefault(key, getattr(self.config, key))
+        kernel = get_kernel()
+        kernel.ensure_loaded(str(self.workspace))
+        impl = assembly.resolve_provider_impl(kernel, settings)
+        if impl is None:
+            try:
+                warn = getattr(self.console, "print_warning", None)
+                if callable(warn):
+                    warn(
+                        f"Role '{role_key}' implementation "
+                        f"'{settings.get('kind')}' unavailable; using main model."
+                    )
+            except Exception:
+                pass
+            return self.llm
+        client = LLMClient(self.config, impl=impl, policy_overrides=settings)
+        client.on_retry = self._notify_retry
+        self._role_clients[role_key] = client
+        return client
+
+    def _same_binding(self, settings: dict) -> bool:
+        """settings 是否与当前绑定等价（kind/key/base/model 全同）。"""
+        cur = self._provider_settings
+        return (
+            settings.get("kind") == cur.get("kind")
+            and (settings.get("api_key") or "") == (cur.get("api_key") or "")
+            and (settings.get("api_base") or "") == (cur.get("api_base") or "")
+            and settings.get("model") == cur.get("model")
+        )
+
+    def _drop_role_clients(self) -> None:
+        """清空惰性角色客户端与缓存（组/角色切换后调用）。"""
+        self._role_clients.clear()
+        self._role_settings_cache.clear()
+
+    def _rebuild_llm(self) -> bool:
+        """按当前组 + 绑定角色重建 self.llm（主/子代理自身的客户端）。
+
+        同步 config 投影并 drop 角色缓存。kind 解析失败返回 False。
+        """
+        from .kernel import get_kernel
+
+        settings = dict(
+            self.config.role_settings(self._bind_role, group_name=self._group_name)[1]
+        )
+        if self._binding_model_override:
+            settings["model"] = self._binding_model_override
         kernel = get_kernel()
         kernel.ensure_loaded(str(self.workspace))
         impl = assembly.resolve_provider_impl(kernel, settings)
         if impl is None:
             return False
-        self._provider_name = name
+        self._provider_name = self._group_name
         self._provider_settings = settings
-        # config.model 同步到新实例的 model（/config 展示与会话 meta 随之一致）
-        self.config.model = settings.get("model") or self.config.model
-        self.llm = LLMClient(
-            self.config,
-            impl=impl,
-            policy_overrides=settings,
-        )
+        self.llm = LLMClient(self.config, impl=impl, policy_overrides=settings)
         self.llm.on_retry = self._notify_retry
-        self._emit_provider_selected(origin="user")
+        self.config.model = settings.get("model") or self.config.model
+        self.config.api_key = settings.get("api_key") or self.config.api_key
+        self.config.api_base = settings.get("api_base") or self.config.api_base
+        self._drop_role_clients()
         return True
 
-    def set_active_model(self, model: str) -> None:
-        """只改激活实例的 model（/model）：内存同步 + 持久化。
+    def switch_group(self, name: str) -> bool:
+        """把本 agent 绑定切到模型组 ``name``（/model <组>）。
 
-        providers 配置时持久化到激活实例；扁平迁移路径只改 config.model
-        （存量行为≡现状）。实现侧配置一并同步（M2 工厂复制的缺口），凭据
-        未变则保留已建客户端，仅下次请求用新 model。
+        校验组存在 + main 的 kind 可解析；重建 self.llm、投影 config、清空
+        角色缓存并记 ``provider_selected``（origin=user）。持久化
+        ``activeGroup`` 由命令层负责（set_active_group），切组即换掉整个
+        组的角色绑定（main/exec/mini/modal 下一轮都读新组）。
         """
         from .config import OpenXConfig
 
-        self.config.model = model
-        self._provider_settings["model"] = model
-        self.sync_provider_config()
-        ps = OpenXConfig.load_provider_settings()
-        providers = ps["providers"]
-        if providers:
-            active = ps["active_provider"]
-            if active in providers:
-                providers[active]["model"] = model
-                OpenXConfig.save_provider_settings(providers, active)
+        groups, active, _ = OpenXConfig.load_model_groups()
+        if name not in groups:
+            return False
+        self._group_name = name
+        if not self._rebuild_llm():
+            return False
+        self.config.active_group = name
+        self._emit_provider_selected(origin="user")
+        return True
+
+    def set_role_model(self, role: str, model: str) -> bool:
+        """持久化 (当前组, 角色) 的模型为 ``model``；影响当前绑定时重建客户端。
+
+        角色可为别名或长键。写入 settings.json 的 modelGroups（该角色若有
+        旧值转成对象覆盖 model）；然后若改的是本 agent 绑定角色则重建
+        self.llm，否则仅清掉该角色的惰性缓存。
+        """
+        from .config import OpenXConfig
+
+        role_key = _model_groups.canonical_role(role)
+        if role_key is None:
+            return False
+        raw = OpenXConfig.load_model_groups_raw()
+        group_name = self._group_name or self.config.active_group_name()
+        if group_name not in raw:
+            return False  # 内存合成组（无 settings 组）不可持久化
+        group_raw = dict(raw.get(group_name) or {})
+        # 保留既有简写/对象形态：原字符串简写仍写字符串，原对象/缺席写对象
+        if isinstance(group_raw.get(role_key), str):
+            group_raw[role_key] = model
+        else:
+            group_raw[role_key] = {"model": model}
+        raw[group_name] = group_raw
+        OpenXConfig.save_model_groups(raw)
+        # 更新内存投影（main 角色的 config.model）
+        if role_key == _model_groups.MAIN_ROLE:
+            self.config.model = model
+        self._drop_role_clients()
+        if role_key == _model_groups.MAIN_ROLE or role_key == self._bind_role:
+            return self._rebuild_llm()
+        return True
+
+    def set_role_cred(self, role: str, field: str, value: str) -> bool:
+        """持久化 (当前组, 角色) 的连接覆盖（apiKey/apiBase）；空值=清除覆盖。
+
+        ``field`` ∈ {"api_key","api_base"} → 落盘键 "apiKey"/"apiBase"。角色
+        尚无显式对象（走 main 回落）时，先落一条带 main 当前 model 的对象，
+        再挂覆盖——覆盖值以解析层 role > group 优先级生效。改 main/绑定角色
+        会重建客户端；非绑定角色只清该角色缓存，下次 client_for 按新覆盖重建。
+        """
+        from .config import OpenXConfig
+
+        if field not in ("api_key", "api_base"):
+            return False
+        role_key = _model_groups.canonical_role(role)
+        if role_key is None:
+            return False
+        raw = OpenXConfig.load_model_groups_raw()
+        group_name = self._group_name or self.config.active_group_name()
+        if group_name not in raw:
+            return False
+        group_raw = dict(raw.get(group_name) or {})
+        existing = group_raw.get(role_key)
+        if isinstance(existing, dict):
+            entry = dict(existing)
+        elif isinstance(existing, str):
+            entry = {"model": existing}
+        else:
+            entry = {}
+        if "model" not in entry:
+            main_raw = group_raw.get(_model_groups.MAIN_ROLE)
+            if isinstance(main_raw, dict):
+                entry["model"] = str(main_raw.get("model") or "")
+            elif isinstance(main_raw, str):
+                entry["model"] = main_raw
+        disk_key = "apiKey" if field == "api_key" else "apiBase"
+        if value:
+            entry[disk_key] = value
+        else:
+            entry.pop(disk_key, None)
+        group_raw[role_key] = entry
+        raw[group_name] = group_raw
+        OpenXConfig.save_model_groups(raw)
+        self._drop_role_clients()
+        if role_key == _model_groups.MAIN_ROLE or role_key == self._bind_role:
+            return self._rebuild_llm()
+        return True
 
     def sync_provider_config(self) -> None:
         """把 agent.config 的连接字段同步进已建实现（/model、/config 后调用）。
@@ -941,6 +1105,10 @@ class OpenXAgent:
         """
         usage = response.pop("usage", None) or {}
         self.total_input_tokens += usage.get("prompt_tokens") or 0
+        self.total_cached_tokens += usage.get("cached_tokens") or 0
+        # 插件 schema 随本次请求重发（工具 schema 就在 prompt 里）：把当时
+        # ACTIVE 插件的 schemaTokens 之和记入插件累计——装配预算口径
+        self.total_plugin_tokens += _active_plugin_schema_tokens()
         output = usage.get("completion_tokens") or 0
         if not output:
             # 无 usage（后端未返回或测试假 LLM）——按字符估算，镜像流式路径的近似计数
@@ -952,6 +1120,23 @@ class OpenXAgent:
             )
             output = max(1, (len(text) + args_len) // 4)
         self.total_output_tokens += output
+
+    def session_token_usage(self) -> dict[str, int]:
+        """本次会话 token 用量四项汇总（/cost 与退出用量面板共用）。
+
+        - input / output：服务端 usage 累计（缺失时输出按字符估算）；
+        - cached：provider 报告的缓存命中累计（未报告恒 0）；
+        - plugin：装配预算口径的插件 schema 累计——每轮 LLM 调用把当时
+          ACTIVE 插件的 ``cost.schemaTokens`` 之和记一笔（内置恒 0 =
+          基线不归插件），即"本次对话因插件而额外占用的上下文 token"
+          估算。四项皆为累计值，随会话持久化。
+        """
+        return {
+            "input": self.total_input_tokens,
+            "output": self.total_output_tokens,
+            "cached": self.total_cached_tokens,
+            "plugin": self.total_plugin_tokens,
+        }
 
     # ── 会话恢复（Phase 6）───────────────────────────────────────
 
@@ -966,6 +1151,8 @@ class OpenXAgent:
         self.history.messages.extend(messages)
         self.total_input_tokens = meta.total_input_tokens
         self.total_output_tokens = meta.total_output_tokens
+        self.total_cached_tokens = meta.total_cached_tokens
+        self.total_plugin_tokens = meta.total_plugin_tokens
         self.todos[:] = meta.todos
         self.session_id = meta.session_id
         self.hooks.session_id = meta.session_id
@@ -993,6 +1180,8 @@ class OpenXAgent:
             fields: dict[str, Any] = {
                 "total_input_tokens": self.total_input_tokens,
                 "total_output_tokens": self.total_output_tokens,
+                "total_cached_tokens": self.total_cached_tokens,
+                "total_plugin_tokens": self.total_plugin_tokens,
                 "todos": self.todos,
             }
             # 首条用户消息回填（meta 里尚为空时），取纯文本前 80 字符
@@ -1025,9 +1214,12 @@ class OpenXAgent:
             user_msg,
         ]
         new_turn: list[dict[str, Any]] = [user_msg]  # 本轮待并入历史的新消息
+        # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
+        # provider（tool-call 序列对 provider 格式敏感）。
+        turn_llm = self.llm if not _has_image(user_message) else self.client_for("modal")
 
         while state.tool_rounds < self.config.max_tool_rounds:
-            response = await self.llm.chat(
+            response = await turn_llm.chat(
                 messages=state.messages,
                 tools=self.tool_schemas,
                 stream=self.config.stream,
@@ -1115,11 +1307,14 @@ class OpenXAgent:
             user_msg,
         ]
         new_turn: list[dict[str, Any]] = [user_msg]
+        # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
+        # provider（tool-call 序列对 provider 格式敏感）。
+        turn_llm = self.llm if not _has_image(user_message) else self.client_for("modal")
 
         while state.tool_rounds < self.config.max_tool_rounds:
             done: StreamDone | None = None
 
-            async for event in self.llm.stream_chat(
+            async for event in turn_llm.stream_chat(
                 messages=state.messages,
                 tools=self.tool_schemas,
             ):
@@ -1134,6 +1329,10 @@ class OpenXAgent:
             # 累计 token 用量
             self.total_output_tokens += done.token_count
             self.total_input_tokens += done.input_tokens
+            self.total_cached_tokens += done.cached_tokens
+            # 插件 schema 随本次流请求重发（工具 schema 就在 prompt 里）：
+            # 把当时 ACTIVE 插件的 schemaTokens 之和记入插件累计
+            self.total_plugin_tokens += _active_plugin_schema_tokens()
 
             response = done.response
 
@@ -1222,6 +1421,35 @@ class OpenXAgent:
             self.tools["git_status"],
             self.tools["git_log"],
         )
+
+
+def _active_plugin_schema_tokens() -> int:
+    """当前 ACTIVE 插件的 schemaTokens 之和（单次 LLM 调用的插件开销估算）。
+
+    装配预算口径：插件工具的 schema 每次请求都随 prompt 重发，schemaTokens
+    是插件声明的上下文占用。内置插件恒 0（base bundle 的 schema 是基线，
+    不归插件）；内核未就绪或任何异常一律按 0 兜底——统计绝不能被插件装载
+    拖垮（展示前仍可调用方兜底）。
+    """
+    try:
+        from .kernel import get_kernel
+        from .kernel.inventory import PHASE_ACTIVE
+
+        total = 0
+        for p in get_kernel().list_plugins():
+            if p.get("phase") == PHASE_ACTIVE:
+                total += int((p.get("cost") or {}).get("schemaTokens", 0) or 0)
+        return total
+    except Exception:
+        return 0
+
+
+def _has_image(user_message: Any) -> bool:
+    """用户消息（str 或多模 content parts 列表）是否含图（modal 角色判定）。"""
+    parts = user_message if isinstance(user_message, list) else []
+    return any(
+        isinstance(p, dict) and p.get("type") == "image_url" for p in parts
+    )
 
 
 def _plain_text_preview(content: Any, limit: int = 80) -> str:

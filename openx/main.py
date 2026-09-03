@@ -226,7 +226,7 @@ def _open_session(
             return _resume_from(meta)
 
     # 新会话
-    store = SessionStore.create(workspace, config.model)
+    store = SessionStore.create(workspace, config.model, group=config.active_group)
     return store, None, []
 
 
@@ -323,38 +323,47 @@ def main(argv: Optional[list[str]] = None) -> None:
     has_cli = bool(args.api_key)
 
     if not has_settings and not has_env and not has_cli:
-        # Not configured — launch interactive setup wizard
-        env = asyncio.run(run_setup_wizard())
-        OpenXConfig.save_settings(env)
-        # Apply to current process environment so config picks them up
-        for k, v in env.items():
-            if v:
-                os.environ[k] = v
+        # Not configured — launch interactive setup wizard（向导直接写 modelGroups）
+        asyncio.run(run_setup_wizard())
 
-    # Build config (picks up settings.json + env vars + CLI args)
+    # Build config (picks up settings.json modelGroups + env vars + CLI args)
     config = OpenXConfig.load(workspace=args.workspace)
-    config.api_key = args.api_key or config.api_key
 
-    # Final safety check — should not happen after wizard, but guard anyway
-    if not config.api_key.strip():
+    # CLI 临时覆盖：仅 main 角色生效（-m 最大）；api_key/base 也回填兜底
+    if args.api_key:
+        config.api_key = args.api_key
+        config.cli_api_key_override = args.api_key
+    if args.api_base:
+        config.api_base = args.api_base
+        config.cli_api_base_override = args.api_base
+    if args.model:
+        config.cli_model_override = args.model
+
+    # 解析激活组 main 绑定并做启动校验（无组/字段缺 → 向导重来）
+    active_group, main_settings = config.role_settings("main")
+    if not main_settings.get("api_key", "").strip():
         print("Error: No API key configured.", file=sys.stderr)
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)
-    # api_base 仅 openai-compat 迁移路径必需；providers 配置的激活实例
-    # （如 anthropic 原生）无 base URL 概念。
-    if not config.api_base.strip() and not OpenXConfig.load_provider_settings()["providers"]:
+    # api_base 仅 openai-compat 必需；anthropic 原生无 base URL 概念。
+    if (
+        main_settings.get("kind") == "openai-compat"
+        and not main_settings.get("api_base", "").strip()
+    ):
         print("Error: No API base URL configured.", file=sys.stderr)
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)
-    if not config.model.strip():
+    if not main_settings.get("model", "").strip():
         print("Error: No model configured.", file=sys.stderr)
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)
 
-    if args.api_base:
-        config.api_base = args.api_base
-    if args.model:
-        config.model = args.model
+    # 把生效的 main 绑定投影回 config（header/会话 meta/init event 用）
+    config.active_group = active_group
+    config.model = main_settings.get("model") or config.model
+    config.api_key = main_settings.get("api_key") or config.api_key
+    config.api_base = main_settings.get("api_base") or config.api_base
+
     if args.max_rounds:
         config.max_tool_rounds = args.max_rounds
     if args.temperature is not None:
@@ -436,7 +445,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             try:
                 asyncio.run(run_interactive(agent, console))
             except KeyboardInterrupt:
-                console.print_goodbye()
+                console.print_goodbye(agent.session_token_usage())
     finally:
         _cleanup_background_tasks(agent)
     if exit_code:

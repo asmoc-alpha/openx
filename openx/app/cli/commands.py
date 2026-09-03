@@ -159,7 +159,7 @@ async def handle_slash_command(
 
 @register("quit", description="Exit OpenX", aliases=["exit", "q"])
 async def _cmd_quit(agent, console, args):
-    console.print_goodbye()
+    console.print_goodbye(agent.session_token_usage())
     return False
 
 
@@ -189,129 +189,152 @@ async def _cmd_clear(agent, console, args):
     return True
 
 
-@register("model", description="Switch LLM model (e.g., /model gpt-4o)")
+@register("model", description="List model groups / switch active group / set a role model")
 async def _cmd_model(agent, console, args):
     from ...config import OpenXConfig
+    from ...model_groups import ROLE_KEYS, role_short
 
-    # 带参数：直接切换（只改激活实例的 model，M3）
+    # ── 组:角色 → 换该角色模型（交互输入新模型 id）────────────
+    if args and ":" in args[0]:
+        return await _cmd_set_role_model(agent, console, args[0])
+
+    # ── 单参：是组 → 切组；否则设 active 组 main 模型（旧肌肉记忆）
     if args:
-        agent.set_active_model(args[0])
-        console.print_success(f"Model set to: {args[0]}")
+        name = args[0]
+        groups_raw = OpenXConfig.load_model_groups_raw()
+        if name in groups_raw:
+            return _switch_group(agent, console, name)
+        if not agent.set_role_model("main", name):
+            console.print_error(
+                f"'{name}' is not a configured group, and no model group is "
+                "persisted to edit. Switch first with /model <group>."
+            )
+            return True
+        console.print_success(f"Main model set to: {name}")
         return True
 
-    # 无参数：交互式选择已配置的模型
-    profiles = OpenXConfig.load_model_profiles()
-    if not profiles:
+    # ── 无参：列出全部组与角色绑定 ────────────────────────────
+    groups_raw = OpenXConfig.load_model_groups_raw()
+    groups, active, _ = OpenXConfig.load_model_groups()
+    if not groups_raw:
         console.print_info(
-            "No model profiles configured.\n\n"
-            "Use /config → 'Add model profile' to save named model configurations,\n"
-            "or specify a model directly: /model <model-name>"
+            "No model groups configured.\n\n"
+            'Add groups under "modelGroups" in ~/.openx/settings.json, '
+            "or use /config."
         )
         return True
-
-    # 构建选项列表：标注当前激活的模型
-    options: list[tuple[str, object]] = []
-    current_model = agent.config.model
-    for name, prof in profiles.items():
-        model_name = prof.get("model", "")
-        base = prof.get("api_base", "")
-        label = f"{name}  ({model_name})"
-        if base:
-            label += f"  [{base}]"
-        if model_name == current_model:
-            label += "  ← current"
-        options.append((label, name))
-    options.append(("Enter model name manually…", "__manual__"))
-
-    console.raw.print()
-    try:
-        choice = console._interactive_select(
-            options, default_index=0, prompt="Select model:",
+    console.raw.print(
+        "\n[bold]Model Groups[/bold]  [dim](~/.openx/settings.json)[/dim]\n"
+    )
+    for name, raw in groups_raw.items():
+        g = groups.get(name)
+        kind = (g.kind if g else None) or raw.get("kind") or "openai-compat"
+        mark = "  [green]← active[/green]" if name == active else ""
+        console.raw.print(
+            f"  [bold cyan]{name}[/bold cyan] [dim]({kind})[/dim]{mark}"
         )
-    except (KeyboardInterrupt, EOFError):
-        return True
-
-    if choice == "__manual__":
-        from ...ui._style import PROMPT_STYLE
-        console.raw.print()
-        value = paste_aware_input(console.raw,
-            f"  [{PROMPT_STYLE}]Model name[/{PROMPT_STYLE}]: "
-        ).strip()
-        if value:
-            agent.set_active_model(value)
-            console.print_success(f"Model set to: {value}")
-        return True
-
-    if choice and choice in profiles:
-        prof = profiles[choice]
-        agent.set_active_model(prof.get("model", agent.config.model))
-        if prof.get("api_base"):
-            agent.config.api_base = prof["api_base"]
-        if prof.get("api_key"):
-            agent.config.api_key = prof["api_key"]
-        agent.sync_provider_config()
-        # 凭据可能变了 → 丢弃已建客户端
-        agent.llm._client = None
-        console.print_success(
-            f"Switched to profile '{choice}' → model: {agent.config.model}"
-        )
+        if g is None:
+            continue
+        for role_key in ROLE_KEYS:
+            rb = g.roles.get(role_key)
+            if rb is None:
+                continue
+            deco = ""
+            if rb.api_base and rb.api_base != g.api_base:
+                deco += f"  [dim][base {rb.api_base}][/dim]"
+            if rb.api_key and rb.api_key != g.api_key:
+                deco += "  [dim][own key][/dim]"
+            console.raw.print(
+                f"      [dim]{role_short(role_key)}[/dim] → {rb.model}{deco}"
+            )
+    console.raw.print(
+        "\n[dim]Switch: /model <group>   ·   change a role model: "
+        "/model <group>:<role>   (roles: main | exec | mini | modal)[/dim]"
+    )
     return True
 
 
-@register("provider", description="List or switch the active LLM provider instance")
-async def _cmd_provider(agent, console, args):
+def _save_group_role_model(group_name: str, role_key: str, model: str) -> bool:
+    """文件级写入某组某角色的 model（不改当前绑定；非 active 组编辑用）。"""
     from ...config import OpenXConfig
 
-    ps = OpenXConfig.load_provider_settings()
-    providers = ps["providers"]
+    raw = OpenXConfig.load_model_groups_raw()
+    if group_name not in raw:
+        return False
+    group_raw = dict(raw.get(group_name) or {})
+    # 保留既有简写/对象形态：原字符串简写仍写字符串，原对象/缺席写对象
+    if isinstance(group_raw.get(role_key), str):
+        group_raw[role_key] = model
+    else:
+        group_raw[role_key] = {"model": model}
+    raw[group_name] = group_raw
+    OpenXConfig.save_model_groups(raw)
+    return True
 
-    # ── 无参：列出实例与激活态 ─────────────────────────────────
-    if not args:
-        if not providers:
-            console.print_info(
-                "No provider instances configured — using flat config "
-                "(implicit 'default' instance, kind=openai-compat).\n\n"
-                "Add instances under \"providers\" in ~/.openx/settings.json:\n"
-                '  {"providers": {"claude": {"kind": "anthropic", '
-                '"api_key": "…", "model": "…"}}, '
-                '"active_provider": "claude"}\n'
-                "Then switch with: /provider <name>"
-            )
-            return True
-        console.raw.print(
-            "\n[bold]Provider Instances[/bold]  "
-            "[dim](~/.openx/settings.json)[/dim]\n"
-        )
-        active = ps["active_provider"]
-        for name, inst in providers.items():
-            kind = inst.get("kind", "openai-compat")
-            model = inst.get("model", "")
-            mark = " [green]← active[/green]" if name == active else ""
-            console.raw.print(
-                f"  [bold cyan]{name}[/bold cyan] "
-                f"[dim]({kind})[/dim] {model}{mark}"
-            )
-        console.raw.print("\n[dim]Switch: /provider <name>[/dim]")
-        return True
 
-    # ── 带参：切换（校验存在性；切换即重建 agent 的 provider 绑定）──
-    name = args[0]
-    if name not in providers:
-        console.print_error(f"Provider '{name}' not configured.")
-        return True
-    if not agent.switch_provider(name):
+def _switch_group(agent, console, name) -> Optional[bool]:
+    """切到模型组 ``name``：切换绑定 + 持久化 activeGroup + 会话留痕。"""
+    from ...config import OpenXConfig
+
+    if not agent.switch_group(name):
         console.print_error(
-            f"Cannot switch to '{name}': implementation "
-            f"'{providers[name].get('kind', 'openai-compat')}' not available "
-            "(missing SDK?)."
+            f"Cannot switch to group '{name}': unknown group, or its "
+            "implementation is unavailable (missing SDK?)."
         )
         return True
-    OpenXConfig.save_provider_settings(providers, name)
-    inst = providers[name]
+    OpenXConfig.set_active_group(name)
+    try:
+        store = getattr(agent, "session_store", None)
+        if store is not None:
+            store.update_meta(group=name, model=agent.config.model)
+    except Exception:
+        pass
     console.print_success(
-        f"Active provider set to: {name}  "
-        f"({inst.get('kind', 'openai-compat')} · {inst.get('model', '')})"
+        f"Active model group set to: {name}  ({agent.config.model})"
     )
+    return True
+
+
+async def _cmd_set_role_model(agent, console, target: str) -> Optional[bool]:
+    """``/model <组>:<角色>``：交互输入新模型 id 并持久化。"""
+    from ...config import OpenXConfig
+    from ...model_groups import canonical_role
+    from ...ui._style import PROMPT_STYLE
+
+    group_name, _, role_part = target.partition(":")
+    role_key = canonical_role(role_part)
+    if role_key is None:
+        console.print_error(
+            f"Unknown role '{role_part}'. Use main | exec | mini | modal."
+        )
+        return True
+    groups_raw = OpenXConfig.load_model_groups_raw()
+    if group_name not in groups_raw:
+        console.print_error(f"Unknown group '{group_name}'.")
+        return True
+    cur = ""
+    role_raw = (groups_raw.get(group_name) or {}).get(role_key)
+    if isinstance(role_raw, str):
+        cur = role_raw
+    elif isinstance(role_raw, dict):
+        cur = str(role_raw.get("model") or "")
+
+    console.raw.print()
+    default = f"[dim][{cur}][/dim] " if cur else ""
+    value = paste_aware_input(
+        console.raw,
+        f"  [{PROMPT_STYLE}]New {role_key} model[/{PROMPT_STYLE}] {default}: ",
+    ).strip()
+    if not value:
+        console.print_info("Aborted.")
+        return True
+
+    if group_name == getattr(agent, "_group_name", ""):
+        agent.set_role_model(role_key, value)
+    elif not _save_group_role_model(group_name, role_key, value):
+        console.print_error("Failed to persist the model change.")
+        return True
+    console.print_success(f"{group_name}:{role_part} model set to: {value}")
     return True
 
 
@@ -544,17 +567,27 @@ async def _cmd_instructions(agent, console, args):
     return True
 
 
-@register("config", description="Show current configuration and edit model / API settings")
+@register("config", description="Show current configuration and edit model group / API settings")
 async def _cmd_config(agent, console, args):
     from ...config import OpenXConfig
+    from ...ui._helpers import mask_key
     from ...ui._style import PROMPT_STYLE
     c = agent.config
 
+    def _active_group_name() -> str:
+        return getattr(agent, "_group_name", "") or c.active_group or "(none)"
+
     def _show() -> None:
-        from ...ui._helpers import mask_key
+        from ...model_groups import ROLE_KEYS, role_short
+
+        gname = _active_group_name()
+        kind = agent._provider_settings.get("kind", "openai-compat") if hasattr(
+            agent, "_provider_settings"
+        ) else "openai-compat"
         console.raw.print(
             f"\n[bold]Configuration[/bold]\n\n"
-            f"  Model:        [cyan]{c.model}[/cyan]\n"
+            f"  Group:        [cyan]{gname}[/cyan] [dim]({kind})[/dim]\n"
+            f"  Main model:   [cyan]{c.model}[/cyan]\n"
             f"  API Base:     [dim]{c.api_base}[/dim]\n"
             f"  API Key:      [dim]{mask_key(c.api_key) if c.api_key else '(not set)'}[/dim]\n"
             f"  Workspace:    [dim]{c.workspace}[/dim]\n"
@@ -563,97 +596,209 @@ async def _cmd_config(agent, console, args):
             f"  Max rounds:   {c.max_tool_rounds}\n"
             f"  Tools loaded: {len(agent.tools)}\n"
         )
-        # 展示已保存的模型配置
-        profiles = OpenXConfig.load_model_profiles()
-        if profiles:
-            console.raw.print("  [bold]Model profiles:[/bold]\n")
-            for pname, prof in profiles.items():
-                pmodel = prof.get("model", "?")
-                pbase = prof.get("api_base", "")
-                active = " [green]← active[/green]" if pmodel == c.model else ""
-                line = f"    [cyan]{pname}[/cyan] → {pmodel}"
-                if pbase:
-                    line += f"  [dim]({pbase})[/dim]"
-                console.raw.print(line + active)
+        # 展示组内各角色绑定（exec/mini/modal；main 已在上面主模型行）
+        roles_raw = _current_group_raw()
+        if roles_raw:
+            for rk in ROLE_KEYS:
+                if rk == "openx-main-model":
+                    continue
+                short = role_short(rk)
+                e = roles_raw.get(rk)
+                if isinstance(e, str):
+                    model, over = e, ""
+                elif isinstance(e, dict):
+                    model = str(e.get("model") or "")
+                    tags = [t for t, k in (("key", "apiKey"), ("base", "apiBase"))
+                            if e.get(k)]
+                    over = f" [dim](own {'/'.join(tags)})[/dim]" if tags else ""
+                else:
+                    model, over = "(= main)", ""
+                console.raw.print(f"  [dim]{short}:[/dim] {model}{over}")
             console.raw.print()
 
-    def _apply(env_key: str, field: str, value: str) -> None:
-        """写入 settings.json 并同步到运行中的 agent（立即生效）。"""
-        env = OpenXConfig.load_settings()
-        env[env_key] = value
-        OpenXConfig.save_settings(env)
-        setattr(c, field, value)
-        agent.sync_provider_config()  # 回写实现侧 config（M2 工厂复制的缺口）
-        # api_key / api_base 变了 → 丢弃已建客户端，下次调用按新凭据重建
-        agent.llm._client = None
+    def _current_group_raw() -> dict:
+        """当前绑定组的原始 dict（未持久化/内存合成时返回 {}）。"""
+        groups = OpenXConfig.load_model_groups_raw()
+        return groups.get(_active_group_name(), {}) if _active_group_name() in groups else {}
 
-    def _add_model_profile() -> None:
-        """交互式添加一个新的模型配置。"""
-        from ...ui._helpers import mask_key
-        console.raw.print("\n[bold]Add Model Profile[/bold]\n")
-        name = paste_aware_input(console.raw, 
-            f"  [{PROMPT_STYLE}]Profile name[/{PROMPT_STYLE}] "
-            f"[dim](e.g. gpt4o, claude, local)[/dim]: "
+    def _edit_active_group(api_base: bool, value: str) -> bool:
+        """改当前组共享 apiBase/apiKey；成功后重建客户端（凭据变了）。"""
+        group_raw = _current_group_raw()
+        if not group_raw:
+            console.print_error("No persisted model group to edit.")
+            return False
+        key = "apiBase" if api_base else "apiKey"
+        group_raw[key] = value
+        raw = OpenXConfig.load_model_groups_raw()
+        raw[_active_group_name()] = group_raw
+        OpenXConfig.save_model_groups(raw)
+        setattr(c, "api_base" if api_base else "api_key", value)
+        agent._drop_role_clients()
+        agent._rebuild_llm()
+        return True
+
+    def _add_model_group() -> None:
+        console.raw.print("\n[bold]Add Model Group[/bold]\n")
+        name = paste_aware_input(console.raw,
+            f"  [{PROMPT_STYLE}]Group name[/{PROMPT_STYLE}] "
+            f"[dim](letters/digits/./_/-)[/dim]: "
         ).strip()
         if not name:
-            console.print_warning("Profile name cannot be empty — skipped.")
+            console.print_warning("Group name cannot be empty — skipped.")
             return
-        model = paste_aware_input(console.raw, 
-            f"  [{PROMPT_STYLE}]Model[/{PROMPT_STYLE}] "
-            f"[dim](e.g. gpt-4o, claude-3-opus)[/dim]: "
+        groups = OpenXConfig.load_model_groups_raw()
+        if name in groups:
+            console.print_warning(f"Group '{name}' already exists.")
+            return
+        model = paste_aware_input(console.raw,
+            f"  [{PROMPT_STYLE}]Main model[/{PROMPT_STYLE}] "
+            f"[dim](required)[/dim]: "
         ).strip()
         if not model:
-            console.print_warning("Model name cannot be empty — skipped.")
+            console.print_warning("Main model cannot be empty — skipped.")
             return
-        api_base = paste_aware_input(console.raw, 
+        api_base = paste_aware_input(console.raw,
             f"  [{PROMPT_STYLE}]API base URL[/{PROMPT_STYLE}] "
-            f"[dim](Enter to keep current: {c.api_base})[/dim]: "
+            f"[dim](Enter to skip)[/dim]: "
         ).strip()
-        api_key = paste_aware_input(console.raw, 
+        api_key = paste_aware_input(console.raw,
             f"  [{PROMPT_STYLE}]API key[/{PROMPT_STYLE}] "
-            f"[dim](Enter to keep current)[/dim]: "
+            f"[dim](Enter to skip; env-var fallback applies)[/dim]: "
         ).strip()
-
-        profile: dict = {"model": model}
+        group: dict = {"kind": "openai-compat", "openx-main-model": model}
         if api_base:
-            profile["api_base"] = api_base
+            group["apiBase"] = api_base
         if api_key:
-            profile["api_key"] = api_key
-        OpenXConfig.save_model_profile(name, profile)
-        console.print_success(f"Model profile '{name}' saved.")
+            group["apiKey"] = api_key
+        raw = OpenXConfig.load_model_groups_raw()
+        raw[name] = group
+        OpenXConfig.save_model_groups(raw)
+        console.print_success(
+            f"Model group '{name}' saved. Activate with /model {name}"
+        )
 
-    def _delete_model_profile() -> None:
-        """交互式删除一个已有的模型配置。"""
-        profiles = OpenXConfig.load_model_profiles()
-        if not profiles:
-            console.print_info("No model profiles to delete.")
-            return
-        options: list[tuple[str, object]] = [
-            (f"{n}  ({p.get('model', '?')})", n) for n, p in profiles.items()
-        ]
+    _ROLE_CHOICES = ["exec", "mini", "modal"]
+
+    def _pick_role() -> str | None:
+        """在 exec/mini/modal 里选角色；取消返回 None。"""
+        options = [(r, r) for r in _ROLE_CHOICES]
         options.append(("Cancel", None))
         console.raw.print()
         try:
-            choice = console._interactive_select(
-                options, default_index=0, prompt="Delete profile:",
+            picked = console._interactive_select(
+                options, default_index=0, prompt="Role:",
+            )
+        except (KeyboardInterrupt, EOFError):
+            return None
+        return picked
+
+    def _role_key(role: str) -> str:
+        from ...model_groups import canonical_role
+
+        return canonical_role(role) or role
+
+    def _prompt_new_role_model(role: str) -> None:
+        console.raw.print()
+        value = paste_aware_input(console.raw,
+            f"  [{PROMPT_STYLE}]{role} model[/{PROMPT_STYLE}] "
+            f"[dim](type - to clear back to main)[/dim]: "
+        ).strip()
+        if value == "-":
+            _clear_role(role)  # 显式清除：回到 main 回落
+            return
+        if not value:
+            console.print_info("Aborted.")
+            return
+        if agent.set_role_model(role, value):
+            console.print_success(f"{role} model set to: {value}")
+
+    def _clear_role(role: str) -> None:
+        """移除当前组某角色的显式绑定（回落 main）。"""
+        role_key = _role_key(role)
+        groups_raw = OpenXConfig.load_model_groups_raw()
+        gname = _active_group_name()
+        if gname not in groups_raw:
+            return
+        entry = dict(groups_raw[gname])
+        entry.pop(role_key, None)
+        groups_raw[gname] = entry
+        OpenXConfig.save_model_groups(groups_raw)
+        agent._drop_role_clients()
+        if role_key == agent._bind_role:
+            agent._rebuild_llm()
+        console.print_success(f"{role} cleared (falls back to main)")
+
+    def _edit_role_cred() -> None:
+        role = _pick_role()
+        if not role:
+            return
+        options = [
+            ("API key (this role)", "key"),
+            ("API base URL (this role)", "base"),
+            ("Cancel", None),
+        ]
+        console.raw.print()
+        try:
+            field = console._interactive_select(
+                options, default_index=0, prompt=f"{role} override:",
             )
         except (KeyboardInterrupt, EOFError):
             return
-        if choice and OpenXConfig.delete_model_profile(choice):
-            console.print_success(f"Deleted profile: {choice}")
+        if field not in ("key", "base"):
+            return
+        label = "API key" if field == "key" else "API base URL"
+        console.raw.print()
+        value = paste_aware_input(console.raw,
+            f"  [{PROMPT_STYLE}]{role} {label}[/{PROMPT_STYLE}] "
+            f"[dim](Enter empty to clear override)[/dim]: "
+        ).strip()
+        if agent.set_role_cred(role, "api_key" if field == "key" else "api_base", value):
+            console.print_success(
+                f"{role} {label} override {'set' if value else 'cleared'}"
+            )
+
+    def _delete_model_group() -> None:
+        groups = OpenXConfig.load_model_groups_raw()
+        active = _active_group_name()
+        candidates = [n for n in groups if n != active]
+        if not candidates:
+            console.print_info(
+                "Cannot delete the only/active group — switch first."
+            )
+            return
+        options = [(n, n) for n in candidates]
+        options.append(("Cancel", None))
+        console.raw.print()
+        try:
+            picked = console._interactive_select(
+                options, default_index=0, prompt="Delete group:",
+            )
+        except (KeyboardInterrupt, EOFError):
+            return
+        if not picked:
+            return
+        raw = OpenXConfig.load_model_groups_raw()
+        raw.pop(picked, None)
+        OpenXConfig.save_model_groups(raw)
+        agent._drop_role_clients()
+        console.print_success(f"Deleted model group: {picked}")
 
     _show()
-    PROMPT = "▸"
     while True:
         console.raw.print()
         try:
             choice = console._interactive_select(
                 [
-                    ("Change model", "model"),
-                    ("Change API base URL", "base"),
-                    ("Change API key", "key"),
-                    ("Add model profile", "add_profile"),
-                    ("Delete model profile", "del_profile"),
+                    ("Change main model", "model"),
+                    ("Change exec model", "role:exec"),
+                    ("Change mini model", "role:mini"),
+                    ("Change modal model", "role:modal"),
+                    ("Role key/base override", "role_cred"),
+                    ("Shared API base URL", "base"),
+                    ("Shared API key", "key"),
+                    ("Add model group", "add_group"),
+                    ("Switch active group", "switch_group"),
+                    ("Delete model group", "del_group"),
                     ("Done", None),
                 ],
                 default_index=0,
@@ -663,35 +808,55 @@ async def _cmd_config(agent, console, args):
             return True
         if choice == "model":
             console.raw.print()
-            value = paste_aware_input(console.raw, 
-                f"  [{PROMPT_STYLE}]Model[/{PROMPT_STYLE}] [dim][{c.model}][/dim]: "
+            value = paste_aware_input(console.raw,
+                f"  [{PROMPT_STYLE}]Main model[/{PROMPT_STYLE}] [dim][{c.model}][/dim]: "
             ).strip()
-            if value:
-                _apply("OPENX_DEFAULT_MODEL", "model", value)
-                console.print_success(f"Model set to {value}")
+            if value and agent.set_role_model("main", value):
+                console.print_success(f"Main model set to {value}")
+        elif isinstance(choice, str) and choice.startswith("role:"):
+            _prompt_new_role_model(choice[5:])
+        elif choice == "role_cred":
+            _edit_role_cred()
         elif choice == "base":
             console.raw.print()
-            value = paste_aware_input(console.raw, 
-                f"  [{PROMPT_STYLE}]API base URL[/{PROMPT_STYLE}] "
+            value = paste_aware_input(console.raw,
+                f"  [{PROMPT_STYLE}]Shared API base URL[/{PROMPT_STYLE}] "
                 f"[dim][{c.api_base}][/dim]: "
             ).strip()
-            if value:
-                _apply("OPENX_BASE_URL", "api_base", value)
-                console.print_success(f"API base set to {value}")
+            if value and _edit_active_group(api_base=True, value=value):
+                console.print_success(f"Shared API base set to {value}")
         elif choice == "key":
-            from ...ui._helpers import mask_key
             console.raw.print()
             disp = mask_key(c.api_key) if c.api_key else "(not set)"
-            value = paste_aware_input(console.raw, 
-                f"  [{PROMPT_STYLE}]API key[/{PROMPT_STYLE}] [dim][{disp}][/dim]: "
+            value = paste_aware_input(console.raw,
+                f"  [{PROMPT_STYLE}]Shared API key[/{PROMPT_STYLE}] "
+                f"[dim][{disp}][/dim]: "
             ).strip()
-            if value:
-                _apply("OPENX_API_KEY", "api_key", value)
-                console.print_success("API key updated")
-        elif choice == "add_profile":
-            _add_model_profile()
-        elif choice == "del_profile":
-            _delete_model_profile()
+            if value and _edit_active_group(api_base=False, value=value):
+                console.print_success("Shared API key updated")
+        elif choice == "add_group":
+            _add_model_group()
+        elif choice == "switch_group":
+            groups_raw = OpenXConfig.load_model_groups_raw()
+            if not groups_raw:
+                console.print_info("No model groups to switch to.")
+                continue
+            options = [
+                (f"{n}" + ("  ← active" if n == _active_group_name() else ""), n)
+                for n in groups_raw
+            ]
+            options.append(("Cancel", None))
+            console.raw.print()
+            try:
+                picked = console._interactive_select(
+                    options, default_index=0, prompt="Switch active group:",
+                )
+            except (KeyboardInterrupt, EOFError):
+                continue
+            if picked:
+                _switch_group(agent, console, picked)
+        elif choice == "del_group":
+            _delete_model_group()
         else:
             break
     _show()
@@ -763,7 +928,7 @@ async def _cmd_todos(agent, console, args):
 
 @register("cost", description="Show cumulative token usage")
 async def _cmd_cost(agent, console, args):
-    console.print_cost(agent.total_input_tokens, agent.total_output_tokens)
+    console.print_session_usage(agent.session_token_usage())
     return True
 
 

@@ -113,7 +113,31 @@ class TestResponseToOpenAI:
         tc = result["tool_calls"][0]
         assert tc["id"] == "c1" and tc["function"]["name"] == "f"
         assert tc["function"]["arguments"] == '{"x": 1, "nested": [2]}'
-        assert result["usage"] == {"prompt_tokens": 11, "completion_tokens": 22}
+        # Usage 未带 cache_read_input_tokens（可选字段）→ cached_tokens 归 0
+        assert result["usage"] == {
+            "prompt_tokens": 11, "completion_tokens": 22, "cached_tokens": 0,
+        }
+
+    def test_cache_read_input_tokens_flow_into_usage(self):
+        """usage 报告 cache_read_input_tokens → 原样透出 cached_tokens。"""
+
+        class Block:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+
+        class Usage:
+            input_tokens = 11
+            output_tokens = 22
+            cache_read_input_tokens = 7
+
+        class Resp:
+            content = [Block(type="text", text="hello")]
+            usage = Usage()
+
+        result = response_to_openai(Resp())
+        assert result["usage"] == {
+            "prompt_tokens": 11, "completion_tokens": 22, "cached_tokens": 7,
+        }
 
     def test_thinking_block_excluded(self):
         class Block:
@@ -304,14 +328,20 @@ class TestChat:
         p = _provider(Resp())
         result = await p.chat([{"role": "user", "content": "q"}], stream=False)
         assert result["content"] == "hi"
-        assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 5}
+        # 非流式 usage 未报告 cache_read → cached_tokens 归 0（透出字段）
+        assert result["usage"] == {
+            "prompt_tokens": 3, "completion_tokens": 5, "cached_tokens": 0,
+        }
         assert p._client.messages.calls == 1
 
     async def test_chat_stream_true_reassembles(self):
         p = _provider(_text_stream(["a", "b"]))
         result = await p.chat([{"role": "user", "content": "q"}], stream=True)
         assert result["content"] == "ab"
-        assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 7}
+        # 流式无缓存命中事件 → cached_tokens 归 0
+        assert result["usage"] == {
+            "prompt_tokens": 3, "completion_tokens": 7, "cached_tokens": 0,
+        }
 
     async def test_retrying_provider_retries_transient(self):
         """内核 RetryingProvider 认识 anthropic 的瞬态契约（M1 集成）。"""

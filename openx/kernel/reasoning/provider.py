@@ -45,11 +45,15 @@ class StreamDone:
         token_count: Approximate number of output tokens in this turn.
         input_tokens: Number of input (prompt) tokens for this turn, if the
             provider returned usage info; otherwise 0 (caller may estimate).
+        cached_tokens: Number of prompt tokens served from the provider's
+            cache (OpenAI ``prompt_tokens_details.cached_tokens`` / Anthropic
+            ``cache_read_input_tokens``), if reported; otherwise 0.
     """
 
     response: dict[str, Any]
     token_count: int = 0
     input_tokens: int = 0
+    cached_tokens: int = 0
 
 
 # A streaming event is either a text token string, a reasoning/thinking

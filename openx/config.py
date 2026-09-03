@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import model_groups as _mg
+
 # ── Settings path ────────────────────────────────────────────────
 
 SETTINGS_PATH = Path.home() / ".openx" / "settings.json"
@@ -45,6 +47,18 @@ class OpenXConfig:
     )
     max_tokens: int = 8192
     temperature: float = 0.0
+
+    # ── 模型组（modelGroups）──────────────────────────────────────
+    # active_group 是当前绑定组的投影（agent 构造/切组时回写），供 UI 展示。
+    # cli_*_override 为临时 CLI 覆盖（main.py 置位），仅对 main 角色生效。
+    active_group: str = ""
+    cli_model_override: Optional[str] = None
+    cli_api_key_override: Optional[str] = None
+    cli_api_base_override: Optional[str] = None
+    # load() 置位：手动构造的 OpenXConfig（测试/嵌入，字段直给）不读全局
+    # modelGroups——保持与旧 resolve_provider 相同的隔离（避免真实 ~/.openx
+    # 泄漏进单测）。由 load() 产出、或经 save/ensure 消费的实例才走文件组。
+    settings_loaded: bool = False
 
     # ── Retry settings ───────────────────────────────────────────
     # LLM 请求重试（429/5xx/连接错误/流中断）。0 = 不重试，出错即抛。
@@ -133,81 +147,89 @@ class OpenXConfig:
 
     @staticmethod
     def is_configured() -> bool:
-        """Check if settings.json exists with all required fields.
+        """Check if a model group with an active main binding is configured.
 
-        两条路径任一满足即视为已配置：扁平 env 三件套（存量），或
-        providers 配置的激活实例带 api_key + model（M3 新增）。
+        先跑一次迁移（存量 env/providers/models 折成模型组），再判定激活组
+        的 main 角色是否带 model（api_key 可经运行时 env 兜底，启动校验
+        另行要求）。无任何组时返回 False（交给 setup 向导 / 内存合成）。
         """
-        env = OpenXConfig.load_settings()
-        if all(
-            env.get(k, "").strip()
-            for k in ("OPENX_API_KEY", "OPENX_BASE_URL", "OPENX_DEFAULT_MODEL")
-        ):
-            return True
-        ps = OpenXConfig.load_provider_settings()
-        providers = ps["providers"]
-        active = ps["active_provider"]
-        if active in providers:
-            inst = providers[active]
-            return bool(
-                inst.get("api_key", "").strip() and inst.get("model", "").strip()
-            )
+        OpenXConfig.ensure_model_groups()
+        data = OpenXConfig._load_full_settings()
+        groups_raw = data.get("modelGroups") or {}
+        active = data.get("activeGroup") or ""
+        if active not in groups_raw:
+            active = next(iter(groups_raw), "")
+        if not active:
+            return False
+        raw_group = groups_raw.get(active)
+        if not isinstance(raw_group, dict):
+            return False
+        main = raw_group.get(_mg.MAIN_ROLE)
+        if isinstance(main, str):
+            return bool(main.strip())
+        if isinstance(main, dict):
+            return bool(str(main.get("model") or "").strip())
         return False
 
-    # ── Model profiles management ─────────────────────────────────
+    # ── 模型组（modelGroups）存取 ────────────────────────────────
 
     @staticmethod
-    def load_model_profiles() -> dict[str, dict]:
-        """Load saved model profiles from settings.json.
+    def load_model_groups_raw() -> dict[str, dict]:
+        """读取 settings.json 里 ``modelGroups`` 原始 dict（name -> raw）。"""
+        return OpenXConfig._load_full_settings().get("modelGroups", {}) or {}
 
-        Returns a dict like::
+    @staticmethod
+    def load_model_groups() -> tuple[dict, str, list[str]]:
+        """解析全部模型组 → ``(groups, active_name, warnings)``。
 
-            {"gpt4o": {"model": "gpt-4o", "api_base": "...", "api_key": "..."}}
+        ``groups: dict[name, model_groups.ModelGroup]``（结构错误的组跳过并
+        记 warning）；``active_name`` 为激活组名（失效回落首个，无组时 ""）。
         """
-        return OpenXConfig._load_full_settings().get("models", {})
+        raw = OpenXConfig.load_model_groups_raw()
+        groups: dict = {}
+        warnings: list[str] = []
+        for name, r in raw.items():
+            try:
+                groups[name] = _mg.parse_group(name, r)
+            except ValueError as exc:
+                warnings.append(str(exc))
+        active = str(OpenXConfig._load_full_settings().get("activeGroup") or "")
+        if active not in groups:
+            active = next(iter(groups), "")
+        return groups, active, warnings
 
     @staticmethod
-    def save_model_profile(name: str, profile: dict) -> None:
-        """Add or update a named model profile in settings.json."""
+    def save_model_groups(groups: dict) -> None:
+        """覆盖保存 ``modelGroups``（camel 规范形），保留其他顶层键。"""
         data = OpenXConfig._load_full_settings()
-        models = data.setdefault("models", {})
-        models[name] = profile
-        OpenXConfig._save_full_settings(data)
-
-    @staticmethod
-    def delete_model_profile(name: str) -> bool:
-        """Delete a named model profile. Returns True if it existed."""
-        data = OpenXConfig._load_full_settings()
-        models = data.get("models", {})
-        if name in models:
-            del models[name]
-            OpenXConfig._save_full_settings(data)
-            return True
-        return False
-
-    # ── Provider instances management（模型接入层 P3，M3）─────────
-    # settings.json 顶层 ``providers``/``active_provider``：两级解耦--
-    # ``providers`` 存用户配的实例（名字 -> {kind, api_key, ...}），
-    # ``active_provider`` 指名激活哪个实例；``kind`` 才选内核注册表里的
-    # 实现（openai-compat / anthropic...）。缺省时由扁平字段迁移合成
-    # 隐式 default 实例（见 :meth:`resolve_provider`），存量配置零改动。
-
-    @staticmethod
-    def load_provider_settings() -> dict:
-        """读取 providers 配置：``{"providers": {...}, "active_provider": "..."}``。"""
-        data = OpenXConfig._load_full_settings()
-        return {
-            "providers": data.get("providers", {}) or {},
-            "active_provider": data.get("active_provider", "default") or "default",
+        data["modelGroups"] = {
+            name: _mg.to_raw(g) if isinstance(g, _mg.ModelGroup) else _mg._canonicalize_raw(g)
+            for name, g in groups.items()
         }
+        OpenXConfig._save_full_settings(data)
 
     @staticmethod
-    def save_provider_settings(providers: dict, active_provider: str) -> None:
-        """保存 providers 配置（顶层键），保留其他顶层键。"""
+    def set_active_group(name: str) -> None:
+        """持久化激活组名 ``activeGroup``。"""
         data = OpenXConfig._load_full_settings()
-        data["providers"] = providers
-        data["active_provider"] = active_provider
+        data["activeGroup"] = name
         OpenXConfig._save_full_settings(data)
+
+    @staticmethod
+    def ensure_model_groups() -> list[str]:
+        """modelGroups 缺失且存在旧结构时，自动迁移并落盘一次。
+
+        返回迁移说明（无迁移返回空列表）。已含 modelGroups 或没有任何
+        旧结构（留给内存合成兜底）时不动文件。
+        """
+        data = OpenXConfig._load_full_settings()
+        if data.get("modelGroups"):
+            return []
+        new_data, notes = _mg.migrate_legacy(data)
+        if not notes:
+            return []
+        OpenXConfig._save_full_settings(new_data)
+        return notes
 
     # ── Plugin management（微内核 P1）─────────────────────────
 
@@ -278,7 +300,11 @@ class OpenXConfig:
         2. .openx.json (project-level)
         3. Environment variable overrides
         """
+        # 存量结构（扁平 env / providers / profiles）首次加载时迁移为模型组
+        OpenXConfig.ensure_model_groups()
+
         config = cls()
+        config.settings_loaded = True
 
         if workspace:
             config.workspace = workspace
@@ -340,41 +366,77 @@ class OpenXConfig:
                 else:
                     setattr(self, key, value)
 
-    # ── Provider 实例解析（M3）─────────────────────────────────
+    # ── 模型组解析（modelGroups，唯一咽喉点）────────────────────
 
-    def resolve_provider(self) -> tuple[str, dict]:
-        """解析激活的 provider 实例，返回 ``(实例名, 实例配置 dict)``。
+    def _cli_overrides(self) -> dict:
+        """当前临时 CLI 覆盖（仅 main 角色消费）。"""
+        out: dict = {}
+        if self.cli_model_override:
+            out["model"] = self.cli_model_override
+        if self.cli_api_key_override:
+            out["api_key"] = self.cli_api_key_override
+        if self.cli_api_base_override:
+            out["api_base"] = self.cli_api_base_override
+        return out
 
-        两级解耦的落点：``kind`` 选实现（内核注册表键），外层名字是用户
-        实例名。迁移规则（行为≡现状）：settings 无 ``providers`` 键时，
-        扁平 ``api_key/api_base/model`` 合成隐式实例 ``default``
-        （kind=openai-compat），``active_provider="default"``。
+    def _synthesize_default_group(self) -> "_mg.ModelGroup":
+        """无任何组时的内存合成 default 组（不落盘）。
 
-        实例配置的缺省回落：api_key/api_base/model/temperature/max_tokens
-        缺省取本 config 的全局字段（CLI/环境覆盖随 ``load()`` 已并入）；
-        重试字段（max_retries/retry_base_delay）**只在实例显式声明时**出现
-        --策略对象读 config 实时值，构造后再改 config 依然生效。
+        保留「手动设 config 字段 / 无 settings 文件」用法（测试与嵌入），
+        main 绑定 = 本 config 的 model/key/base。
         """
-        ps = OpenXConfig.load_provider_settings()
-        providers = ps["providers"]
-        if not providers:
-            # 迁移：扁平字段合成隐式 default 实例
-            return "default", {
-                "kind": "openai-compat",
-                "api_key": self.api_key,
-                "api_base": self.api_base,
-                "model": self.model,
-                "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
-            }
-        active = ps["active_provider"]
-        if active not in providers:
-            active = next(iter(providers))  # 激活名失效时回落首个实例
-        resolved = dict(providers[active])
-        resolved.setdefault("kind", "openai-compat")
-        for key in ("api_key", "api_base", "model", "temperature", "max_tokens"):
-            resolved.setdefault(key, getattr(self, key))
-        return active, resolved
+        g = _mg.ModelGroup(
+            name="default",
+            kind="openai-compat",
+            api_key=self.api_key or None,
+            api_base=self.api_base or None,
+        )
+        g.roles[_mg.MAIN_ROLE] = _mg.RoleBinding(_mg.MAIN_ROLE, self.model or "")
+        return g
+
+    def _file_groups(self) -> tuple[dict, str]:
+        """文件里的 (解析组, 激活名)；手动构造的 config 一律不读（见字段注）。"""
+        groups, active, _ = OpenXConfig.load_model_groups()
+        if groups and not self.settings_loaded:
+            return {}, ""
+        return groups, active
+
+    def active_group_name(self) -> str:
+        """当前生效的组名（self.active_group 投影 > activeGroup > 首个 > default）。"""
+        groups, active = self._file_groups()
+        if self.active_group and self.active_group in groups:
+            return self.active_group
+        if active in groups:
+            return active
+        if groups:
+            return next(iter(groups))
+        return "default"
+
+    def resolve_group(self, name: Optional[str] = None) -> "_mg.ModelGroup":
+        """解析指定（或当前激活）模型组；无组时返回内存合成 default。"""
+        groups, active = self._file_groups()
+        if not groups:
+            return self._synthesize_default_group()
+        target = name or self.active_group or active
+        if target not in groups:
+            target = active if active in groups else next(iter(groups))
+        return groups[target]
+
+    def role_settings(
+        self, role: str, group_name: Optional[str] = None
+    ) -> tuple[str, dict]:
+        """解析 (组, 角色) 的 provider 设置 → ``(生效组名, settings dict)``。
+
+        角色可为长键或别名（main/exec/mini/modal）。dict 键与 provider 工厂
+        读取一致（kind/api_key/api_base/model/temperature/max_tokens，retry
+        字段仅在组/角色显式声明时出现）——消费方零改动。CLI 临时覆盖仅对
+        main 角色生效（历史 ``-m`` 最大的语义保留）。
+        """
+        role_key = _mg.canonical_role(role) or role
+        group = self.resolve_group(group_name)
+        return group.name, _mg.resolve_role_settings(
+            self, group, role_key, self._cli_overrides()
+        )
 
     def save_global(self) -> None:
         """Save global config."""

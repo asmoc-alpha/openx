@@ -82,7 +82,7 @@ async def run_interactive(agent: OpenXAgent, console: Console) -> None:
                         output_tokens=agent.total_output_tokens,
                     )
                 except (KeyboardInterrupt, EOFError):
-                    console.print_goodbye()
+                    console.print_goodbye(agent.session_token_usage())
                     break
 
                 # EOF（非 TTY stdin 已耗尽，如 `openx </dev/null`）：
@@ -91,7 +91,7 @@ async def run_interactive(agent: OpenXAgent, console: Console) -> None:
                 # Non-TTY EOF yields None — break cleanly like /quit,
                 # otherwise `not user_input: continue` would busy-loop.
                 if user_input is None:
-                    console.print_goodbye()
+                    console.print_goodbye(agent.session_token_usage())
                     break
 
                 if not user_input:

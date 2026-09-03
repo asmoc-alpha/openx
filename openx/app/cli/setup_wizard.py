@@ -27,14 +27,12 @@ _ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5"
 async def run_setup_wizard() -> dict:
     """Run the interactive first-run setup wizard.
 
-    Step 0 选 provider 类型（OpenAI 兼容 / Anthropic 原生）：
+    Step 0 选实现（OpenAI 兼容 / Anthropic 原生），再收连接字段；收齐后
+    把结果写成 ``default`` 模型组（modelGroups + activeGroup）并落盘。
+    直接返回空 dict（配置已写入 settings.json，无需调用方再存 env）。
 
-    - OpenAI 兼容：扁平三件套（base url / key / model）写 ``env``，迁移
-      路径自动合成隐式 ``default`` 实例（行为≡现状）；
-    - Anthropic：写 ``providers`` 配置（kind=anthropic）+ 扁平 env 的
-      api_key/model；无 base URL 概念。
-
-    Returns an env dict ready for ``OpenXConfig.save_settings()``.
+    组内只配 main 角色；其余 exec/mini/modal 可稍后经 settings.json /
+    /config 补充。
     """
     # Use a bare-minimum console for setup (no config needed yet)
     console = Console(OpenXConfig())
@@ -58,7 +56,7 @@ async def run_setup_wizard() -> dict:
     env: dict[str, str] = {}
 
     if ptype == "anthropic":
-        # ── Anthropic 原生：key + model，写 providers 配置 ──────
+        # ── Anthropic 原生：key + model（无 base URL 概念）────────
         env["OPENX_API_KEY"] = console.prompt_setup_field(
             step=1, total=2, label="Anthropic API Key", default="",
         )
@@ -67,6 +65,7 @@ async def run_setup_wizard() -> dict:
             default=_ANTHROPIC_DEFAULT_MODEL,
         )
         env["OPENX_BASE_URL"] = ""
+        kind = "anthropic"
         while not console.print_setup_summary(env):
             console.raw.print("\n[dim]Let's try again...[/dim]")
             env["OPENX_API_KEY"] = console.prompt_setup_field(
@@ -77,18 +76,8 @@ async def run_setup_wizard() -> dict:
                 step="*", total=2, label="Default Model",
                 default=env["OPENX_DEFAULT_MODEL"],
             )
-        OpenXConfig.save_provider_settings(
-            {
-                "default": {
-                    "kind": "anthropic",
-                    "api_key": env["OPENX_API_KEY"],
-                    "model": env["OPENX_DEFAULT_MODEL"],
-                }
-            },
-            "default",
-        )
     else:
-        # ── OpenAI 兼容：扁平三件套（迁移合成 default 实例）─────
+        # ── OpenAI 兼容：base + key + model ──────────────────────
         env["OPENX_BASE_URL"] = console.prompt_setup_field(
             step=1, total=3, label="API Base URL",
             default="https://api.openai.com/v1",
@@ -99,6 +88,7 @@ async def run_setup_wizard() -> dict:
         env["OPENX_DEFAULT_MODEL"] = console.prompt_setup_field(
             step=3, total=3, label="Default Model", default="gpt-4o",
         )
+        kind = "openai-compat"
         while not console.print_setup_summary(env):
             console.raw.print("\n[dim]Let's try again...[/dim]")
             env["OPENX_BASE_URL"] = console.prompt_setup_field(
@@ -113,9 +103,23 @@ async def run_setup_wizard() -> dict:
                 default=env["OPENX_DEFAULT_MODEL"],
             )
 
+    # ── 落盘：写 default 模型组 + 激活 ──────────────────────────
+    group: dict = {
+        "kind": kind,
+        "openx-main-model": env.get("OPENX_DEFAULT_MODEL", ""),
+    }
+    if env.get("OPENX_API_KEY"):
+        group["apiKey"] = env["OPENX_API_KEY"]
+    if env.get("OPENX_BASE_URL"):
+        group["apiBase"] = env["OPENX_BASE_URL"]
+    raw = OpenXConfig.load_model_groups_raw()
+    raw["default"] = group
+    OpenXConfig.save_model_groups(raw)
+    OpenXConfig.set_active_group("default")
+
     console.print_success("Settings saved to ~/.openx/settings.json")
     console._console.print()
-    return env
+    return {}
 
 
 if __name__ == "__main__":

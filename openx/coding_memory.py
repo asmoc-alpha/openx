@@ -2,8 +2,9 @@
 
 与通用 memory.py 的关键差异
 ==========================
-- **项目级隔离**：记忆分全局（~/.openx/coding-memory/）和项目级
-  （<workspace>/.openx/coding-memory/），项目知识不污染其他项目。
+- **项目级隔离**：记忆分全局（~/.openx/coding-memory/memories.jsonl）和
+  项目级（~/.openx/coding-memory/projects/<workspace_hash>/），项目知识不
+  污染其他项目——运行时数据一律默认进 home，绝不在项目里自动建 `.openx`。
 - **结构化分类**：project_fact / code_convention / architecture_decision /
   debug_pattern / dependency / workflow，每类有专属召回权重。
 - **代码关联**：记忆可绑定文件路径/目录 glob，当 agent 操作相关文件时
@@ -46,6 +47,7 @@ if __name__ == "__main__" and not __package__:
 import fnmatch
 import hashlib
 import json
+import shutil
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -54,6 +56,9 @@ from typing import Optional
 # ── 常量 ─────────────────────────────────────────────────────────
 
 GLOBAL_MEMORY_DIR = Path.home() / ".openx" / "coding-memory"
+#: 项目级记忆根：~/.openx/coding-memory/projects/<workspace_hash>/
+#: （运行时数据默认进 home，绝不在项目里自动 mkdir `.openx`）
+PROJECTS_ROOT = GLOBAL_MEMORY_DIR / "projects"
 _MEMORY_FILE = "memories.jsonl"
 
 # 记忆分类及其基础权重（召回时乘以此系数）
@@ -68,6 +73,15 @@ CATEGORIES: dict[str, float] = {
 
 # 注入系统提示时的默认 token 预算（按字符估算，1 token ≈ 4 chars）
 DEFAULT_CHAR_BUDGET = 3000
+
+
+def _project_hash(workspace: str | Path) -> str:
+    """工作区确定性指纹（sha1 of resolved path，前 16 hex）。
+
+    与 sessions 的 workspace_hash 同款算法（父目录不同，无需共享实例）；
+    保证同一项目跨机器目录稳定映射到 home 下固定子目录。
+    """
+    return hashlib.sha1(str(Path(workspace).resolve()).encode()).hexdigest()[:16]
 
 
 # ── 数据模型 ─────────────────────────────────────────────────────
@@ -113,7 +127,8 @@ class CodingMemoryStore:
 
     双层存储：
     - 全局：~/.openx/coding-memory/memories.jsonl（跨项目通用知识）
-    - 项目：<workspace>/.openx/coding-memory/memories.jsonl（项目专属）
+    - 项目：~/.openx/coding-memory/projects/<workspace_hash>/memories.jsonl
+      （项目专属；旧 <workspace>/.openx/coding-memory 自动一次性迁移）
 
     召回时合并两层，项目级同 ID 覆盖全局。
     """
@@ -123,13 +138,38 @@ class CodingMemoryStore:
         workspace: str | Path | None = None,
         *,
         global_dir: Path | None = None,
+        projects_root: Path | None = None,
     ) -> None:
         self._global_dir = global_dir or GLOBAL_MEMORY_DIR
         self._global_dir.mkdir(parents=True, exist_ok=True)
+        # 项目级记忆默认进 home（PROJECTS_ROOT/<workspace_hash>），
+        # 绝不 mkdir <workspace>/.openx——运行时数据不散落到项目目录。
+        # projects_root 仅供测试/嵌入覆盖落点。
         self._project_dir: Path | None = None
         if workspace:
-            self._project_dir = Path(workspace) / ".openx" / "coding-memory"
+            root = projects_root or PROJECTS_ROOT
+            self._project_dir = root / _project_hash(workspace)
             self._project_dir.mkdir(parents=True, exist_ok=True)
+            self._migrate_legacy_project_file(Path(workspace))
+
+    def _migrate_legacy_project_file(self, workspace: Path) -> None:
+        """一次性把旧位置 <workspace>/.openx/coding-memory/memories.jsonl
+        copy 到新 home 位置（若新文件尚不存在）。
+
+        只读旧文件、copy、绝不 mkdir/写旧目录；copy 后旧文件保留作备份，
+        后续一律只读写新位置。异常静默（数据迁移是优化，不阻塞启动）。
+        """
+        if self._project_dir is None:
+            return
+        legacy = workspace / ".openx" / "coding-memory" / _MEMORY_FILE
+        target = self._project_dir / _MEMORY_FILE
+        if not legacy.is_file() or target.exists():
+            return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(legacy, target)
+        except OSError:
+            pass
 
     # ── 写入 ──────────────────────────────────────────────────
 
@@ -472,7 +512,10 @@ if __name__ == "__main__":
         store = CodingMemoryStore(
             workspace=str(ws),
             global_dir=td / "global-mem",
+            projects_root=td / "projects",  # 自检不碰真实 home
         )
+        # 项目记忆默认进 home 落点，不再在项目里建 .openx
+        assert not (ws / ".openx").exists(), "must not create workspace .openx"
 
         # 基本写入
         m1 = store.remember(

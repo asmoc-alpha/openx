@@ -232,6 +232,8 @@ def response_to_openai(response: Any) -> dict[str, Any]:
         result["usage"] = {
             "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
             "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+            # 缓存命中（prompt caching）：cache_read_input_tokens 为可选字段
+            "cached_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
         }
     return result
 
@@ -250,6 +252,7 @@ class _StreamAssembler:
         self.blocks: dict[int, dict[str, Any]] = {}
         self.input_tokens = 0
         self.output_tokens = 0
+        self.cached_tokens = 0  # cache_read_input_tokens（可选字段，0 = 未报告）
         self.stop_reason: Optional[str] = None
 
     def on_event(self, event: Any) -> Optional[tuple[str, str]]:
@@ -259,6 +262,7 @@ class _StreamAssembler:
             usage = getattr(msg, "usage", None) if msg is not None else None
             if usage is not None:
                 self.input_tokens = getattr(usage, "input_tokens", 0) or 0
+                self.cached_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
         elif etype == "content_block_start":
             block = getattr(event, "content_block", None)
             idx = getattr(event, "index", 0)
@@ -299,6 +303,10 @@ class _StreamAssembler:
             usage = getattr(event, "usage", None)
             if usage is not None:
                 self.output_tokens = getattr(usage, "output_tokens", 0) or 0
+                # 部分版本 message_delta 也回 cache_read_input_tokens——有则以新值为准
+                cr = getattr(usage, "cache_read_input_tokens", None)
+                if cr:
+                    self.cached_tokens = cr
         return None
 
     def build_response(self) -> dict[str, Any]:
@@ -384,6 +392,7 @@ class AnthropicProvider(LLMProvider):
             result["usage"] = {
                 "prompt_tokens": assembler.input_tokens,
                 "completion_tokens": assembler.output_tokens,
+                "cached_tokens": assembler.cached_tokens,
             }
         return result
 
@@ -406,6 +415,7 @@ class AnthropicProvider(LLMProvider):
             response=assembler.build_response(),
             token_count=max(assembler.output_tokens, 1),
             input_tokens=assembler.input_tokens,
+            cached_tokens=assembler.cached_tokens,
         )
 
 

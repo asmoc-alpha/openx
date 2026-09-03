@@ -53,6 +53,19 @@ _compute_delay = compute_delay
 _sleep = asyncio.sleep
 
 
+def _cached_tokens_of(usage: Any) -> int:
+    """OpenAI 兼容 usage 的缓存命中 token（prompt_tokens_details.cached_tokens）。
+
+    字段为可选：后端不回 details 或 details 里没有 cached_tokens 时归 0
+    （DeepSeek 系部分后端用 prompt_cache_hit_tokens 字段，暂不展开——
+    命中 0 只是少展示一行统计，不影响主流程）。
+    """
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return 0
+    return int(getattr(details, "cached_tokens", 0) or 0)
+
+
 async def _patchable_sleep(delay: float) -> None:
     """解析期晚绑定包装：monkeypatch ``openai_compat._sleep`` 后随之生效。
 
@@ -132,6 +145,7 @@ class OpenAICompatProvider(LLMProvider):
             result["usage"] = {
                 "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
                 "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "cached_tokens": _cached_tokens_of(usage),
             }
         return result
 
@@ -149,6 +163,7 @@ class OpenAICompatProvider(LLMProvider):
         tool_call_buffers: dict[int, dict[str, Any]] = {}
         input_tokens = 0       # 来自 usage chunk 的真实输入 token，0 表示未知
         completion_tokens = 0  # 服务端返回的输出 token，0 表示未知
+        cached_tokens = 0      # 服务端返回的缓存命中 token，0 表示未知/未命中
 
         stream = await self.client.chat.completions.create(**stream_params, stream=True)
 
@@ -157,6 +172,7 @@ class OpenAICompatProvider(LLMProvider):
             if usage is not None:
                 input_tokens = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                cached_tokens = _cached_tokens_of(usage)
 
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta is None:
@@ -201,6 +217,7 @@ class OpenAICompatProvider(LLMProvider):
             result["usage"] = {
                 "prompt_tokens": input_tokens,
                 "completion_tokens": completion_tokens,
+                "cached_tokens": cached_tokens,
             }
         return result
 
@@ -217,6 +234,7 @@ class OpenAICompatProvider(LLMProvider):
         tool_call_buffers: dict[int, dict[str, Any]] = {}
         token_count = 0          # 输出 token 近似计数（按 delta 累加）
         input_tokens = 0         # 来自 usage chunk 的真实输入 token，0 表示未知
+        cached_tokens = 0        # 服务端返回的缓存命中 token，0 表示未知/未命中
 
         stream = await self.client.chat.completions.create(**stream_params, stream=True)
 
@@ -225,6 +243,7 @@ class OpenAICompatProvider(LLMProvider):
             usage = getattr(chunk, "usage", None)
             if usage is not None:
                 input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                cached_tokens = _cached_tokens_of(usage)
                 # 若服务端给了 completion_tokens，优先采用，覆盖近似值
                 ct = getattr(usage, "completion_tokens", 0)
                 if ct:
@@ -285,6 +304,7 @@ class OpenAICompatProvider(LLMProvider):
             response=result,
             token_count=max(token_count, 1),
             input_tokens=input_tokens,
+            cached_tokens=cached_tokens,
         )
 
 

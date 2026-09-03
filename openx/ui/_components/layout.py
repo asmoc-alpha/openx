@@ -37,6 +37,13 @@ from .._style import (
 )
 
 
+def _model_label(config: object) -> str:
+    """头部/启动面板的模型标签：激活组非空显示 ``组 · 模型``，否则纯模型。"""
+    model = getattr(config, "model", "") or "(not set)"
+    group = getattr(config, "active_group", "") or ""
+    return f"{group} · {model}" if group else model
+
+
 class LayoutMixin:
     """Header bar, startup screen, project overview, and status hints."""
 
@@ -68,7 +75,7 @@ class LayoutMixin:
     def print_header(self, instructions_loaded: bool = False) -> None:
         """Compact single-line header: brand · model · workspace."""
         ws = shorten_path(Path(self.config.workspace), max_len=40)
-        model = self.config.model or "(not set)"
+        model = _model_label(self.config)
 
         bar = Text()
         bar.append("  openx", style=ACCENT_BOLD)
@@ -256,7 +263,7 @@ class LayoutMixin:
         吉祥物提供辨识度而不争夺注意力（主体灰、仅眼/手着色）。
         """
         ws = shorten_path(Path(self.config.workspace), max_len=50)
-        model = self.config.model or "(not set)"
+        model = _model_label(self.config)
         version = get_version()
 
         brand = Text()

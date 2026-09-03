@@ -445,22 +445,104 @@ class TestScrollback:
         assert not any("↓ …" in r for r in rows)
 
     def test_new_content_keeps_frozen_view(self, deterministic_live):
-        """上翻后新内容不拽动视图（冻结），从 ↓ … 之下进入。"""
+        """内容锚定：上翻后新内容**不拽动**已显示的正文行（冻结），
+        _scroll_offset（窗下隐藏行数）随 total 增长而增大。"""
         h = Harness(rows=24, cols=80)
         h.svc.start()
         self._stream_long(h)
-        self._press(h, "\x1b[5~")  # PgUp → 半页偏移
-        offset = h.svc._scroll_offset
-        assert offset > 0
+        self._press(h, "\x1b[5~")  # PgUp → 锚定半页
+        offset_before = h.svc._scroll_offset
+        assert offset_before > 0
+        # 记录视窗内某行可见正文的（屏幕行, 内容）指纹
+        rows0 = h.rows()
+        anchor = next(
+            (y, r.rstrip()) for y, r in enumerate(rows0)
+            if "response line" in r
+        )
 
         for i in range(1, 6):
             h.svc.feed(f"extra line {i}\n\n")
         h.svc._live.refresh()
         h.flush()
-        assert h.svc._scroll_offset == offset, "新内容不得改变滚动偏移"
+
+        # 锚定行仍在同一屏幕行（视窗没被顶走）；隐藏行数增大
+        rows1 = h.rows()
+        assert rows1[anchor[0]].rstrip() == anchor[1], "锚定内容行被新内容顶走"
+        assert h.svc._scroll_offset > offset_before
+        assert any("↓ …" in r for r in rows1)
+        assert not any("extra line 5" in r for r in rows1), "新内容在视窗之下"
+
+    def test_scroll_to_top_shows_first_line_and_down_marker(self, deterministic_live):
+        h = Harness(rows=24, cols=80)
+        h.svc.start()
+        self._stream_long(h)
+        # 连续 PgUp 直到顶部（clamp 在 _windowed 内）
+        for _ in range(30):
+            h.svc._capture._hotkeys.append("\x1b[5~")
+        h.svc._live.refresh()
+        h.flush()
         rows = h.rows()
-        assert any("↓ …" in r for r in rows)
-        assert not any("extra line 5" in r for r in rows), "新内容在视窗之下"
+        # 顶部窗口：response line 1 在屏上、其上方无 ↑ …，其下有 ↓ …
+        line1_row = next(
+            (y for y, r in enumerate(rows) if "response line 1" in r), None
+        )
+        assert line1_row is not None, "response line 1 应可见"
+        assert not any(_SCROLL_MARKER in r for y, r in
+                       enumerate(rows) if y < line1_row)
+        assert any("↓ …" in r for r in rows), "顶部应显示 ↓ …"
+
+    def test_follow_resumes_and_shows_newest_after_scrolling_down(self, deterministic_live):
+        h = Harness(rows=24, cols=80)
+        h.svc.start()
+        self._stream_long(h)
+        self._press(h, "\x1b[5~", 3)  # 上翻锚定
+        assert h.svc._scroll_offset > 0
+        self._press(h, "\x1b[6~", 40)  # PgDn 大量回底
+        assert h.svc._scroll_offset == 0, "回到底应恢复跟随"
+        rows = h.rows()
+        assert any("response line 60" in r for r in rows)
+        assert not any("↓ …" in r for r in rows)
+
+    def test_long_mode_shows_scroll_hint_in_follow_mode(self, deterministic_live):
+        """long 闩后即便未滚动，spinner 也常驻滚动提示（可发现性）。"""
+        h = Harness(rows=24, cols=80)
+        h.svc.start()
+        self._stream_long(h)
+        rows = h.rows()
+        assert h.svc._scroll_offset == 0  # 尚未滚动
+        assert any("↑/PgUp scroll" in r for r in rows), "应提示可上翻回看"
+        assert any("esc to interrupt" in r for r in rows)
+        # spinner 仍单行：esc 提示行与 FRAME 相邻（不折行撑高）
+        esc_y = next(y for y, r in enumerate(rows) if "esc to interrupt" in r)
+        frame_y = max(y for y, t in h.nonempty() if "FRAME" in t)
+        assert frame_y == esc_y + 1
+
+    def test_group_never_exceeds_viewport_while_pinned(self, deterministic_live):
+        """pin 在顶继续流入内容：组高恒定，FRAME 不超视口。"""
+        h = Harness(rows=24, cols=80)
+        h.svc.start()
+        self._stream_long(h)
+        for _ in range(30):
+            h.svc._capture._hotkeys.append("\x1b[5~")
+        h.svc._live.refresh()
+        h.flush()
+        for i in range(1, 21):
+            h.svc.feed(f"tail {i}\n\n")
+        h.svc._live.refresh()
+        h.flush()
+        frame_y = max(y for y, t in h.nonempty() if "FRAME" in t)
+        assert frame_y <= 23, "FRAME 被顶出视口"
+
+    def test_tiny_terminal_keeps_frame_visible(self, deterministic_live):
+        """rows=10 短终端长文：兜底窗口化后 FRAME 仍在屏（不被 ellipsis 裁）。"""
+        h = Harness(rows=10, cols=60)
+        h.svc.start()
+        for i in range(1, 61):
+            h.svc.feed(f"response line {i}\n\n")
+        h.svc._live.refresh()
+        h.flush()
+        rows = h.rows()
+        assert any("FRAME" in r for r in rows), "短终端 FRAME 应可见"
 
     def test_pageup_half_page_and_clamp(self, deterministic_live):
         h = Harness(rows=24, cols=80)
@@ -622,17 +704,19 @@ class TestFlickerRegression:
             f"补齐高度应恒定 {max_lines}，实际 {len(lines)}"
         )
 
-    def test_short_response_not_padded_to_bottom(self, deterministic_live):
-        """短响应就地显示：绝不补齐到屏底（SDD 目标 1 不受修复牵连）。"""
+    def test_short_response_on_fixed_canvas(self, deterministic_live):
+        """固定画布：短响应也恒窗口化——正文顶部对齐、FRAME 恒在底部
+        固定行（整组高度恒定，杜绝高度变化触发终端滚动/开头重复）。"""
         h = Harness(rows=24, cols=80)
         h.svc.start()
         h.svc.feed("short answer")
         h.svc._live.refresh()
         h.flush()
         frame_y = self._frame_y(h)
-        assert frame_y < 12, (
-            f"短响应框应紧跟内容就地显示，实际 FRAME 在第 {frame_y} 行"
-        )
+        # rows=24：内容区 17 行（0..16）→ spinner 17 → FRAME 18
+        assert frame_y == 18, f"FRAME 应恒在固定底部行，实际第 {frame_y} 行"
+        rows = h.rows()
+        assert any("short answer" in r for r in rows[:5]), "正文应顶部对齐可见"
 
 
 # ── spinner 标签扫光（shimmer，参考 OpenClaw tui-waiting.ts）─────

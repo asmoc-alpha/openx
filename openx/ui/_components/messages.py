@@ -46,10 +46,14 @@ class MessagesMixin:
     def print_success(self, message: str) -> None:
         self._console.print(f"{MARK_OK} {message}", style=SUCCESS_STYLE)
 
-    def print_goodbye(self) -> None:
+    def print_goodbye(self, usage: dict | None = None) -> None:
         # Drop the pinned-frame scroll region so the terminal behaves
         # normally again before exiting.
         self.reset_scroll_region()
+        # 交互退出时（/quit、EOF、Ctrl-C 汇聚到此）先展示本次会话的
+        # token 用量四项，再告别。usage 缺失（非交互/服务端路径）不展示。
+        if usage:
+            self.print_session_usage(usage)
         self._console.print("\nGoodbye.", style=DIM)
 
     # ── help / tips / release notes ─────────────────────────────
@@ -63,7 +67,7 @@ class MessagesMixin:
             ("/quit, /exit, /q", "Exit OpenX"),
             ("/help", "Show this help"),
             ("/clear", "Clear screen and conversation history"),
-            ("/model <name>", "Switch LLM model"),
+            ("/model [group][:role]", "List model groups / switch active group or a role's model"),
             ("/workspace <path>", "Change workspace directory"),
             ("/auto-approve", "Toggle auto-approve mode"),
             ("/mode [mode]", "Show or switch permission mode (manual / auto / plan)"),

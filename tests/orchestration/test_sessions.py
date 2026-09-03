@@ -95,7 +95,10 @@ class TestRoundtrip:
             {"role": "user", "content": "bye"},
         ]
         store.append_messages(msgs)
-        store.update_meta(total_input_tokens=42, total_output_tokens=7)
+        store.update_meta(
+            total_input_tokens=42, total_output_tokens=7,
+            total_cached_tokens=9, total_plugin_tokens=800,
+        )
 
         meta, loaded = SessionStore.load(store.path)
         assert loaded == msgs
@@ -104,6 +107,8 @@ class TestRoundtrip:
         assert meta.model == "gpt-4o"
         assert meta.total_input_tokens == 42
         assert meta.total_output_tokens == 7
+        assert meta.total_cached_tokens == 9
+        assert meta.total_plugin_tokens == 800
         assert meta.created_at and meta.updated_at >= meta.created_at
         assert meta.path == store.path
 
@@ -118,16 +123,20 @@ class TestMetaUpdateMerge:
         store = SessionStore.create("/ws", "m", session_id="s1")
         store.update_meta(
             total_input_tokens=10, total_output_tokens=1,
+            total_cached_tokens=4, total_plugin_tokens=400,
             todos=[{"content": "a", "activeForm": "a", "status": "pending"}],
         )
         store.update_meta(
             total_input_tokens=25, total_output_tokens=3,
+            total_cached_tokens=8, total_plugin_tokens=800,
             todos=[{"content": "a", "activeForm": "a", "status": "completed"}],
         )
 
         meta, _ = SessionStore.load(store.path)
         assert meta.total_input_tokens == 25
         assert meta.total_output_tokens == 3
+        assert meta.total_cached_tokens == 8
+        assert meta.total_plugin_tokens == 800
         assert meta.todos == [
             {"content": "a", "activeForm": "a", "status": "completed"}
         ]
@@ -419,3 +428,31 @@ class TestToolInputTruncation:
         big = "z" * (TOOL_INPUT_LIMIT + 10)
         payload = build_pretooluse_payload("write_file", {"content": big})
         assert payload["tool_input"]["content"].endswith("...[truncated]")
+
+
+# ── 11. 模型组 meta 留痕 ──────────────────────────────────────────
+
+
+class TestModelGroupMeta:
+    """SessionMeta.group + 切组时 model/group 前向更新。"""
+
+    def test_group_roundtrip_and_switch_update(self, sessions_tmp):
+        store = SessionStore.create("/ws/g", "m1", group="g1")
+        assert store.meta.group == "g1"
+
+        store.update_meta(model="m2", group="g2")  # 切组留痕
+
+        meta, _ = SessionStore.load(store.path)
+        assert meta.group == "g2"
+        assert meta.model == "m2"
+
+        # 老文件无 group → 默认 ""（向后兼容）
+        from pathlib import Path
+        h = SessionStore.workspace_hash("/ws/g")
+        path = sessions_tmp / h / f"{store.meta.session_id}.jsonl"
+        path.write_text(
+            '{"type":"meta","version":1,"session_id":"x","workspace":"/w",'
+            '"model":"m","created_at":"t","updated_at":"t"}\n'
+        )
+        old_meta, _ = SessionStore.load(path)
+        assert old_meta.group == ""

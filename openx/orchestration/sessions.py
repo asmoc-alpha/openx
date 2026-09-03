@@ -52,6 +52,10 @@ IMAGE_PLACEHOLDER_TEXT = "[image omitted from session log]"
 _META_UPDATE_FIELDS = (
     "total_input_tokens",
     "total_output_tokens",
+    "total_cached_tokens",
+    "total_plugin_tokens",
+    "model",
+    "group",
     "todos",
     "first_user_message",
     "updated_at",
@@ -76,8 +80,11 @@ class SessionMeta:
     created_at: str
     updated_at: str
     first_user_message: str = ""
+    group: str = ""  # 会话使用的模型组（切组留痕；恢复仍用当前 activeGroup）
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cached_tokens: int = 0  # provider 报告的缓存命中累计（未报告恒 0）
+    total_plugin_tokens: int = 0  # 装配预算口径：插件 schema 逐轮累计（估算）
     todos: list = field(default_factory=list)
     path: Path | None = None  # create/load 之后回填
 
@@ -152,8 +159,11 @@ def _meta_from_line(line: dict[str, Any], path: Path | None = None) -> SessionMe
         created_at=str(line.get("created_at") or ""),
         updated_at=str(line.get("updated_at") or line.get("created_at") or ""),
         first_user_message=str(line.get("first_user_message") or ""),
+        group=str(line.get("group") or ""),
         total_input_tokens=int(line.get("total_input_tokens") or 0),
         total_output_tokens=int(line.get("total_output_tokens") or 0),
+        total_cached_tokens=int(line.get("total_cached_tokens") or 0),
+        total_plugin_tokens=int(line.get("total_plugin_tokens") or 0),
         todos=list(line.get("todos") or []),
     )
     meta.path = path
@@ -189,12 +199,13 @@ class SessionStore:
         cls,
         workspace: str,
         model: str,
+        group: str = "",
         session_id: str | None = None,
     ) -> "SessionStore":
         """新建会话：mkdir -p 工作区目录并写入 meta 首行。
 
         ``first_user_message`` 留空，待首条用户消息到达后经
-        ``update_meta`` 回填。
+        ``update_meta`` 回填。``group`` 记录建会话时的模型组（展示/归因）。
         """
         session_id = session_id or uuid.uuid4().hex[:12]
         directory = SESSIONS_DIR / cls.workspace_hash(workspace)
@@ -204,6 +215,7 @@ class SessionStore:
             session_id=session_id,
             workspace=str(Path(workspace).resolve()),
             model=model,
+            group=group,
             created_at=now,
             updated_at=now,
         )
@@ -214,6 +226,7 @@ class SessionStore:
             "session_id": meta.session_id,
             "workspace": meta.workspace,
             "model": meta.model,
+            "group": meta.group,
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
         }
@@ -362,11 +375,21 @@ class SessionStore:
             if key not in line:
                 continue
             value = line[key]
-            if key in ("total_input_tokens", "total_output_tokens"):
+            if key in (
+                "total_input_tokens",
+                "total_output_tokens",
+                "total_cached_tokens",
+                "total_plugin_tokens",
+            ):
                 try:
                     setattr(meta, key, int(value or 0))
                 except (TypeError, ValueError):
                     continue
+            elif key == "model":
+                if value:
+                    meta.model = str(value)
+            elif key == "group":
+                meta.group = str(value or "")
             elif key == "todos":
                 meta.todos = list(value or [])
             elif key == "first_user_message":
@@ -487,9 +510,14 @@ if __name__ == "__main__":
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "hi!"},
             ])
-            store.update_meta(total_input_tokens=10, total_output_tokens=3)
+            store.update_meta(
+                total_input_tokens=10, total_output_tokens=3,
+                total_cached_tokens=6, total_plugin_tokens=400,
+            )
             meta, messages = SessionStore.load(store.path)
             assert meta.session_id == "selftest01" and meta.total_input_tokens == 10
+            assert meta.total_cached_tokens == 6
+            assert meta.total_plugin_tokens == 400
             assert [m["role"] for m in messages] == ["user", "assistant"]
 
             # 图片 part 绝不落盘

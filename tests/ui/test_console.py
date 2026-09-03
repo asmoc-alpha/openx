@@ -319,9 +319,9 @@ class TestSentMessageBanner:
         assert "48;2;43;47;54" in out, "横幅背景不是 OpenClaw 石板灰"
         # OpenClaw userText #F3EEE0 → 38;2;243;238;224
         assert "38;2;243;238;224" in out, "横幅正文不是暖白"
-        # 左竖条 ▎ 保留（无背景版遗留，用户指定）：bold cyan = 1;36——
+        # 左标记 ❯（用户指定改用输入提示符同款）：bold cyan = 1;36——
         # 与行背景合并成单条 SGR（1;36;48;2;…），只钉前缀
-        assert "1;36;" in out and "▎" in out, "竖条缺失或不是 bold cyan"
+        assert "1;36;" in out and "❯" in out, "标记缺失或不是 bold cyan"
 
     def test_banner_survives_markup_like_text(self, console):
         # 用户输入可含方括号——字面展示，不得抛 MarkupError / 误解析样式
@@ -335,3 +335,58 @@ class TestSentMessageBanner:
         console.print_sent_message("line one\nline two")
         out = _capture(console)
         assert "line one" in out and "line two" in out
+
+
+class TestExitUsagePanel:
+    """退出 token 用量面板（print_goodbye 带 usage → 先面板后告别）。"""
+
+    def test_goodbye_renders_four_token_categories(self, console):
+        console.print_goodbye({
+            "input": 12000, "output": 3400, "cached": 8100, "plugin": 400,
+        })
+        out = _capture(console)
+        assert "Session usage" in out
+        for label in ("New input", "Output", "Cache hit", "Plugins", "Total"):
+            assert label in out, f"面板缺 {label!r}"
+        # 新输入 = input − cached = 3900；缓存单独成行，避免与 Input 重读
+        assert "3.9k" in out and "3.4k" in out and "8.1k" in out
+        assert "15.4k" in out  # Total = 新输入 + 缓存 + 输出 = 12000 + 3400
+        assert "Goodbye." in out
+
+    def test_goodbye_without_usage_omits_panel(self, console):
+        console.print_goodbye()
+        out = _capture(console)
+        assert "Goodbye." in out
+        assert "Session usage" not in out
+
+    def test_full_cache_hit_shows_zero_new_input(self):
+        # 整段 prompt 命中缓存（cached == input，DeepSeek 自动缓存复测场景）
+        # → 首行 New input 归 0，避免被读成“重复计费”。
+        import re
+        from openx.config import OpenXConfig
+        from openx.ui.console import Console
+
+        c = Console(OpenXConfig())
+        buf = io.StringIO()
+        c._console = RichConsole(file=buf, width=70, force_terminal=False,
+                                 highlight=False)
+        c.print_session_usage({"input": 5000, "output": 200,
+                               "cached": 5000, "plugin": 0})
+        out = buf.getvalue()
+        assert re.search(r"New input\s+0 tokens", out)
+        assert re.search(r"Cache hit\s+5\.0k tokens", out)
+
+
+class TestHeaderModelGroupLabel:
+    """头部模型标签：active_group 非空显示 ``组 · 模型``。"""
+
+    def test_header_shows_group_prefix(self, console, config):
+        config.active_group = "deepseek"
+        console.print_header(instructions_loaded=False)
+        assert "deepseek · gpt-4o" in _capture(console)
+
+    def test_header_no_group_plain_model(self, console):
+        console.print_header(instructions_loaded=False)
+        out = _capture(console)
+        assert "gpt-4o" in out
+        assert "· gpt-4o" not in out

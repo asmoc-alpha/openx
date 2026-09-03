@@ -321,11 +321,25 @@ class StreamingService:
         # Latch: once the response reaches the viewport cap, the content
         # region stays pinned to exactly max_lines rows (blank-padded).
         self._long_mode = False
-        # 滚动回看偏移：视窗距响应末尾的行数（0 = 跟随末尾——默认）。
-        # ↑/PgUp 增大、↓/PgDn 减小；归 0 恢复自动跟随。新内容到达时
-        # 偏移保持（视窗冻结、内容从 "↓ …" 标记下持续进入），用户
-        # 来得及回看（修复"长回答边输出边滚走、来不及看"的报告）。
+        # ── 内容锚定滚动（分页器）────────────────────────────────
+        # 物理真话：输入框钉在普通终端底部、Live 区刻意不滚动终端（避免
+        # 整屏重写闪烁），故流式期的"历史"只能来自**自有正文缓冲 + 上方
+        # 窗口化切片**（类 Claude Code 分页器），不是终端 scrollback。
+        #
+        # 窗口由三个量描述：
+        # - ``_scroll_end``：可见窗口终点（内容行下标，exclusive）。
+        #   ``None`` = 跟随末尾（默认，最新 token 在窗底流入）。一旦
+        #   ↑/PgUp 上翻便设为固定行号，**不随 total 前进**——新内容在
+        #   "↓ …" 标记下持续累积，读者眼前文字不再被顶走（修复"长回答
+        #   边输出边滑走、无法按自己节奏回读"）。
+        # - ``_scroll_offset``：派生值 = 窗下被隐藏的行数
+        #   （``max(0, total − _scroll_end)``）；0 = 跟随末尾。保留该名，
+        #   供缓存键/spinner 提示/↓ 舰队分支读取。
+        # - ``_last_total``：最近一次 _windowed 见到的正文行数，供热键
+        #   drain（先于当帧 total 计算）夹取起点。
         self._scroll_offset = 0
+        self._scroll_end: Optional[int] = None
+        self._last_total = 0
         # 上次强制刷新时刻（monotonic）；0.0 = 从未，首个 token 必刷新。
         self._last_force_refresh = 0.0
 
@@ -355,7 +369,10 @@ class StreamingService:
         self._reasoning_expanded = False
         self._reasoning_done = False
         self._thinking_elapsed = 0.0
-        self._scroll_offset = 0  # 滚动回看偏移每轮归零
+        # 滚动分页状态每轮归零：偏移、锚点终点、已知总行数
+        self._scroll_offset = 0
+        self._scroll_end = None
+        self._last_total = 0
         if self._fleet is not None:
             self._fleet.reset()
         # 事件循环引用：Esc 打断经 call_soon_threadsafe 取消消费任务。
@@ -544,8 +561,10 @@ class StreamingService:
             self._reasoning_done = True
             self._thinking_elapsed = elapsed
         # done 渲染全文（_response_view 的 done 分支不经 _windowed），
-        # 滚动偏移失去意义——归零防残留影响后续渲染缓存键
+        # 滚动分页状态失去意义——归零/清锚点防残留影响后续渲染缓存键
         self._scroll_offset = 0
+        self._scroll_end = None
+        self._last_total = 0
         if self._live:
             if not self._live.is_started:
                 # done-while-paused（弹窗未结束/异常路径）：Live 已被
@@ -837,21 +856,29 @@ class StreamingService:
                     # 详情视图内：↑ 循环切换到上一项（主视图回卷末代理）
                     self._focus = (self._focus - 1) % (len(snap) + 1)
                 elif key in ("\x1b[A", "\x1b[5~"):
-                    # ↑ / PgUp：上翻回看——有列表选择时 ↑ 反向循环选择
-                    # （含主条目 0），否则移动视窗（偏移夹取在 _windowed
-                    # 内，那里才知道总行数）
+                    # ↑ / PgUp：上翻回看。有列表选择时 ↑ 反向循环选择（含
+                    # 主条目 0）；否则**内容锚定**上移——跟随中先锚到"最近
+                    # 已知末尾往上一步"，已锚定时把窗底继续上移（绝不随
+                    # total 前进，见 _scroll_end 注释）。
                     if key == "\x1b[A" and self._fleet_selected >= 0:
                         self._fleet_selected = (
                             (self._fleet_selected - 1) % (len(snap) + 1)
                         )
-                    else:
-                        self._scroll_offset += self._scroll_step(key)
+                    elif self._long_mode or self._scroll_end is not None:
+                        step = self._scroll_step(key)
+                        if self._scroll_end is None:
+                            # 首次上翻：从最近已知末尾往上一步锚定
+                            self._scroll_end = max(0, self._last_total - step)
+                        else:
+                            self._scroll_end = max(0, self._scroll_end - step)
+                        self._refresh_scroll_offset()
+                    # 尚未进入长响应且未锚定：无内容可滚，忽略
                 elif key in ("\x1b[B", "\x1b[6~"):
-                    # ↓ / PgDn：滚动回看优先——视窗离开末尾时 ↓ 先滚回
-                    # 底部；已在底部（offset=0）且有子代理时，↓ 选中首个
-                    # 运行中的子代理（再按在 0..N 间循环，0 = 主条目），
-                    # Enter 确认把主视图切换到选中条目。
-                    if key == "\x1b[B" and self._scroll_offset == 0 and snap:
+                    # ↓ / PgDn：滚动回看优先——已锚定时先滚回底部（到底即
+                    # 恢复跟随）；跟随中（_scroll_end is None）且有子代理
+                    # 时，↓ 选中首个运行中的子代理（0..N 循环，Enter 确认
+                    # 把主视图切到选中条目）。
+                    if key == "\x1b[B" and self._scroll_end is None and snap:
                         if self._fleet_selected < 0:
                             self._fleet_selected = next(
                                 (i + 1 for i, v in enumerate(snap)
@@ -862,10 +889,14 @@ class StreamingService:
                             self._fleet_selected = (
                                 (self._fleet_selected + 1) % (len(snap) + 1)
                             )
-                    else:
-                        self._scroll_offset = max(
-                            0, self._scroll_offset - self._scroll_step(key)
+                    elif self._scroll_end is not None:
+                        step = self._scroll_step(key)
+                        self._scroll_end = min(
+                            self._last_total, self._scroll_end + step
                         )
+                        if self._scroll_end >= self._last_total:
+                            self._scroll_end = None  # 到达末尾 → 恢复跟随
+                        self._refresh_scroll_offset()
                 elif key in ("\r", "\n") and self._fleet_selected >= 0 and snap:
                     # Enter 确认：主视图切换到选中条目（0 = 回主视图，
                     # 1..N = 子代理详情，内容展示在输入框上方）。空 Enter
@@ -1095,6 +1126,15 @@ class StreamingService:
             height = 24
         return max(1, (height - _VIEWPORT_RESERVE) // 2)
 
+    def _refresh_scroll_offset(self) -> None:
+        """派生 _scroll_offset = 窗下被隐藏行数（0 = 跟随末尾）。"""
+        if self._scroll_end is None:
+            self._scroll_offset = 0
+        else:
+            self._scroll_offset = max(
+                0, (self._last_total or 0) - self._scroll_end
+            )
+
     def _windowed(self, renderable, extra_reserve: int = 0):
         """只渲染超高一屏响应的**末尾窗口**（自动跟随最新内容），并锁定区高。
 
@@ -1123,14 +1163,18 @@ class StreamingService:
         Keep only the trailing viewport of a too-tall response so the newest
         tokens stay visible, and pin the region height so Rich's cursor
         anchor never jitters between refreshes.
+
+        **内容锚定分页**：用户 ↑/PgUp 上翻后，视窗终点（``_scroll_end``）固定
+        为内容行号、不再随 total 前滑——新内容在 "↓ …" 下持续累积，已显示的
+        早段文字稳定可读（修复"边输出边滚走、无法按自己节奏回读"）。历史来自
+        自有正文缓冲 + 本窗口切片（输入框钉底、Live 区不滚动终端，故非终端
+        scrollback）。
         """
         try:
             height = self._rich.height
         except Exception:
             return renderable
-        max_lines = height - _VIEWPORT_RESERVE - extra_reserve
-        if max_lines < 5:
-            return renderable  # 视口过矮：退回原渲染，绝不强行裁剪
+        max_lines = max(1, height - _VIEWPORT_RESERVE - extra_reserve)
         try:
             lines = self._rich.render_lines(renderable, pad=False)
         except Exception:
@@ -1139,20 +1183,31 @@ class StreamingService:
         total = len(lines)
         if total >= max_lines:
             self._long_mode = True  # 闩：触及上限即永不退出
+        self._last_total = total
 
-        # 滚动偏移夹取到可滚范围（内容收缩/未超屏时自动归零）
-        max_offset = max(0, total - max_lines)
-        if self._scroll_offset > max_offset:
-            self._scroll_offset = max_offset
-
-        if not self._long_mode and self._scroll_offset == 0:
-            return renderable
-
-        # ── 长响应模式：输出锁定恰好 max_lines 行 ─────────────────
-        # offset=0 → 末尾窗口（自动跟随最新内容）；offset>0 → 视窗上移
-        # 回看（冻结：新内容继续从 "↓ …" 标记下进入，按 ↓ 归 0 恢复跟随）。
-        offset = self._scroll_offset
-        end = total - offset
+        # ── 固定画布：内容区恒为 max_lines 行（杜绝高度变化）──────
+        # 关键：即使正文未超屏，也**恒窗口化**——全文顶部对齐 + 底部空行
+        # 补齐到 max_lines。整组高度（content + spinner + frame + decks）
+        # 从回合第一帧起恒定 → Rich Live 相对光标锚点零漂移、终端永不因本组
+        # 滚动 → 已滚进 scrollback 的开头旧行 + 新重画的开头叠加（"开头
+        # 重复"）在物理上不可能发生。
+        #
+        # 长响应后：跟随（_scroll_end None）→ end=total（最新在窗底流入，
+        # 顶部 "↑ …"）；↑/PgUp 锚定（end 固定、**不随 total 前进**，新内容
+        # 在 "↓ …" 下累积）——读者可按自己节奏回看早段。
+        if not self._long_mode:
+            self._scroll_end = None
+            self._scroll_offset = 0
+            end = total
+        else:
+            if self._scroll_end is not None and self._scroll_end >= total:
+                self._scroll_end = None  # 内容缩到锚点内 → 跟随末尾
+            if self._scroll_end is None:
+                end = total
+            else:
+                end = max(max_lines - 1, min(self._scroll_end, total))
+                self._scroll_end = end
+        self._refresh_scroll_offset()
         # 两趟确定内容预算：标记行（↑ … / ↓ …）各占 1 行，先按无标记
         # 估 start，再按实际标记数收紧，保证窗口恒 ≤ max_lines 行。
         start = max(0, end - max_lines)
@@ -1210,9 +1265,20 @@ class StreamingService:
         label = "Thinking…" if not self._has_body() else "Answering…"
         # "esc to interrupt" 常驻提示（v0.4.1）：思考与输出阶段都可打断，
         # 能力必须可见——用户报告"不知道能打断"即缺此提示。
-        # 滚动回看期间追加提示：用户可能不知道如何回到实时末尾。
-        scroll_hint = "  ·  ↑/↓ scroll · ↓ to follow" if self._scroll_offset else ""
-        text = Text()
+        # 长响应（超屏）后恒提示可回看；已上翻时报告窗下隐藏行数并提示
+        # ↓ 回底恢复跟随——可发现性修复：用户不必先猜 ↑ 才看到提示。
+        if self._long_mode:
+            if self._scroll_offset:
+                scroll_hint = (
+                    f"  ·  ↑/↓ scroll · {self._scroll_offset} hidden · ↓ follow"
+                )
+            else:
+                scroll_hint = "  ·  ↑/PgUp scroll"
+        else:
+            scroll_hint = ""
+        # 硬不变量：spinner 恒占 1 行（no_wrap + ellipsis）——滚动提示加长
+        # 后若折行会多占 1 行、把 FRAME 顶下一行（光标锚点/视口预算被破坏）。
+        text = Text(no_wrap=True, overflow="ellipsis")
         text.append(f"  {glyph} ", style=ACCENT)
         for seg_text, seg_style in self._shimmer_spans(label, elapsed):
             text.append(seg_text, style=seg_style)
