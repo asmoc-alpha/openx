@@ -722,28 +722,28 @@ class TestDeckSelection:
         assert h.svc._focus == 0
         assert "main answer" in "\n".join(r for _, r in h.nonempty())
 
-    def test_down_scrolls_first_then_selects_at_bottom(self, deterministic_live):
-        """上翻回看期间 ↓ 先滚回底部；到底后 ↓ 才选中子代理。"""
+    def test_down_selects_running_agent_from_main_view(self, deterministic_live):
+        """funnel 语义：主视图 ↓ 直接选中首个运行中子代理——无"先滚回底"
+        阶段（内部分页已删，正文固化进 scrollback）。"""
         h, mon = self._harness_two()
         for i in range(1, 61):
             h.svc.feed(f"response line {i}\n\n")
         h.refresh()
-        h.svc._capture._hotkeys.append("\x1b[A")
-        h.svc._capture._hotkeys.append("\x1b[A")  # 上翻 2 行
-        h.refresh()
-        assert h.svc._scroll_offset == 2
+        assert not hasattr(h.svc, "_scroll_offset"), "分页器状态应已删除"
 
-        h.svc._capture._hotkeys.append("\x1b[B")  # ↓ → 滚动（不选中）
+        h.svc._capture._hotkeys.append("\x1b[B")  # ↓ → 选中首个 running（v2）
         h.refresh()
-        assert h.svc._scroll_offset == 1
-        assert h.svc._fleet_selected == -1  # 滚动期间不触发选择
+        assert h.svc._fleet_selected == 2
 
-        h.svc._capture._hotkeys.append("\x1b[B")  # 到底
+        h.svc._capture._hotkeys.append("\x1b[B")  # ↓ 循环 → 主条目 0
         h.refresh()
-        assert h.svc._scroll_offset == 0
-        assert h.svc._fleet_selected == -1  # 滚动到底仍不触发选择
+        assert h.svc._fleet_selected == 0
 
-        h.svc._capture._hotkeys.append("\x1b[B")  # 已在底部 → 选中运行中的 v2
+        h.svc._capture._hotkeys.append("\x1b[B")  # ↓ 循环 0→1（v1）
+        h.refresh()
+        assert h.svc._fleet_selected == 1
+
+        h.svc._capture._hotkeys.append("\x1b[B")  # ↓ 循环 1→2（v2）
         h.refresh()
         assert h.svc._fleet_selected == 2
 

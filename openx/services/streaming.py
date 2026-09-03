@@ -28,6 +28,7 @@ if __name__ == "__main__" and not __package__:
 import asyncio
 import json
 import re
+import shutil
 import sys
 import threading
 import time
@@ -86,12 +87,9 @@ _MIN_FORCE_REFRESH = 0.2
 # has to cope with a region touching the screen edge (known jitter).
 _VIEWPORT_RESERVE = 7
 
-# 响应超过一屏时，窗口首行的"上文已滚出"标记。
-# Marker shown atop the trailing window once the response scrolls.
+# running 工具长输出裁尾时易变区首行的"上文在易变区外"标记
+# （固化行在 scrollback，终端原生上翻可见，无需标记）。
 _SCROLL_MARKER = "↑ …"
-# 滚动回看时窗口末行的"下文未显示"标记（用户上翻期间，新内容持续进入
-# 标记之下；按 ↓ 回到窗口底（offset 归 0）恢复自动跟随）。
-_SCROLL_MARKER_DOWN = "↓ …"
 
 # 状态层（deck，frame 之上）的行数上限：计划面板最多 _DECK_PLAN_ROWS
 # 条 todos、队列面板最多 _DECK_QUEUE_ROWS 条待发提示、舰队最多
@@ -198,15 +196,34 @@ class _ResizeAwareLive(Live):
     def __init__(self, *args, resize=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._resize = resize  # ResizeWatcher | None（测试 SimpleNamespace console）
+        # 终端宽度漂移兜底的自跟踪基线：上次渲染所见终端列宽。
+        # （不能再用 shape[0]：易变区宽 < 终端宽，逐帧误判为 resize。）
+        self._last_term_width: Optional[int] = None
 
     def refresh(self) -> None:
+        svc = getattr(self._renderable, "_svc", None)
         with self._lock:  # RLock：刷新线程已持锁（可重入），feed/done 串行
             shape = self._live_render._shape
             resized = self._resize.check() if self._resize is not None else False
-            # 宽度漂移兜底：shape 宽 ≠ 当前终端宽 → 视同 resize
-            if shape is not None and (
-                resized or shape[0] != self.console.width
-            ):
+            # 宽度漂移兜底：以"当前终端列宽 vs 上次渲染所见"判定——易变区
+            # 可能比终端窄（shape[0] 是区宽不是终端宽），原 shape 比对在
+            # funnel 下会逐帧误判为 resize、吞掉 _maybe_commit。
+            try:
+                tw = self.console.width or shutil.get_terminal_size(
+                    (80, 24)).columns
+            except Exception:
+                tw = shutil.get_terminal_size((80, 24)).columns
+            if self._last_term_width is None:
+                self._last_term_width = tw
+            drift = tw != self._last_term_width
+            if shape is not None and (resized or drift):
+                if drift:
+                    self._last_term_width = tw
+                # resize：新宽重渲染前按"保 volatile 行数"重锚水印——
+                # 旧宽已固化行不重打（无二次打印）、旧易变行在新宽下
+                # 重新导出（无内容丢失），仅边界留宽差缝（与现状同类）
+                if svc is not None and self.is_started:
+                    svc._on_width_change()
                 _, h = shape
                 with self.console._lock:  # 与其他 console 写入原子化
                     f = self.console.file
@@ -218,6 +235,13 @@ class _ResizeAwareLive(Live):
                     self._live_render._shape = None  # 下次渲染视为首渲（不移光标）
                     super().refresh()  # RLock 重入；就地按新尺寸重渲
                 return
+            # 固化漏斗：5Hz 节拍与 feed 强制刷新都经此——新稳定行
+            # 提交进 scrollback（print-during-Live 嵌到区域上方），
+            # 随后 super().refresh() 只重绘更小的易变区。
+            # is_started 守卫：pause 的 transient stop 后 Live 已停、渲染
+            # 钩子已弹，此路径绝不能再 print（否则弹窗光标处落盘弄脏画面）。
+            if svc is not None and self.is_started:
+                svc._maybe_commit()
         super().refresh()
 
 
@@ -307,39 +331,20 @@ class StreamingService:
         # executor 权限钩子与 console 弹窗钩子可以安全叠加触发。
         # Ref-counted pause depth: nested pause/resume pairs stay balanced.
         self._pause_count = 0
-        # 响应渲染对象按内容缓存：自动刷新 5Hz 重建整组，但只要 buffer
-        # 未变就直接复用缓存——不重新解析 Markdown（一个 token 可致整段
-        # 重排，逐帧重解析放大帧间 diff 与开销）、不重切视口窗口，帧间
-        # 差异收敛到 spinner 一行。键含 (宽, 高)：终端 resize 即失效重建。
-        # Response renderable cached by content; only the spinner row
-        # changes between refreshes while the buffer is unchanged.
-        self._resp_cache_key: Optional[tuple] = None
-        self._resp_cache_view = None
-        # "已超一屏"闩：响应行数一旦触及视口上限，内容区此后恒定补齐
-        # 到恰好 max_lines 行——单 token 重排致行数在上限附近 N/N-1
-        # 震荡时组高也不再抖动，Rich Live 的光标锚点帧间稳定。
-        # Latch: once the response reaches the viewport cap, the content
-        # region stays pinned to exactly max_lines rows (blank-padded).
-        self._long_mode = False
-        # ── 内容锚定滚动（分页器）────────────────────────────────
-        # 物理真话：输入框钉在普通终端底部、Live 区刻意不滚动终端（避免
-        # 整屏重写闪烁），故流式期的"历史"只能来自**自有正文缓冲 + 上方
-        # 窗口化切片**（类 Claude Code 分页器），不是终端 scrollback。
-        #
-        # 窗口由三个量描述：
-        # - ``_scroll_end``：可见窗口终点（内容行下标，exclusive）。
-        #   ``None`` = 跟随末尾（默认，最新 token 在窗底流入）。一旦
-        #   ↑/PgUp 上翻便设为固定行号，**不随 total 前进**——新内容在
-        #   "↓ …" 标记下持续累积，读者眼前文字不再被顶走（修复"长回答
-        #   边输出边滑走、无法按自己节奏回读"）。
-        # - ``_scroll_offset``：派生值 = 窗下被隐藏的行数
-        #   （``max(0, total − _scroll_end)``）；0 = 跟随末尾。保留该名，
-        #   供缓存键/spinner 提示/↓ 舰队分支读取。
-        # - ``_last_total``：最近一次 _windowed 见到的正文行数，供热键
-        #   drain（先于当帧 total 计算）夹取起点。
-        self._scroll_offset = 0
-        self._scroll_end: Optional[int] = None
-        self._last_total = 0
+        # ── 逐行固化 scrollback 管线（取代尾窗 _windowed）──────────
+        # 已提交进终端 scrollback 的 body 行数。贪心换行前缀稳定——
+        # token 追加只改渲染结果的最后一行——故 [0, watermark) 的行
+        # 固化后永不重渲/重打（"二次打印"的根因修法）。watermark 另
+        # 夹取：首个 running 工具记录首行（状态点 dim→绿 会变）、尾
+        # 部未闭合表格首行（表格非前缀稳定）、末 text 段的最后一行。
+        # Committed body lines in terminal scrollback; never re-rendered.
+        self._committed_count = 0
+        # body render_lines 缓存：键含宽度（resize 失效）；bounds 记每
+        # chunk（thinking/段）的行区间供水印计算。5Hz 重建整组但内容
+        # 未变时复用——不重解析 Markdown，帧间差异收敛到 spinner 行。
+        self._body_cache_key: Optional[tuple] = None
+        self._body_cache_lines: list = []
+        self._body_bounds: list = []
         # 上次强制刷新时刻（monotonic）；0.0 = 从未，首个 token 必刷新。
         self._last_force_refresh = 0.0
 
@@ -369,10 +374,11 @@ class StreamingService:
         self._reasoning_expanded = False
         self._reasoning_done = False
         self._thinking_elapsed = 0.0
-        # 滚动分页状态每轮归零：偏移、锚点终点、已知总行数
-        self._scroll_offset = 0
-        self._scroll_end = None
-        self._last_total = 0
+        # 固化管线每轮归零（实例本就每轮新建，双保险）
+        self._committed_count = 0
+        self._body_cache_key = None
+        self._body_cache_lines = []
+        self._body_bounds = []
         if self._fleet is not None:
             self._fleet.reset()
         # 事件循环引用：Esc 打断经 call_soon_threadsafe 取消消费任务。
@@ -553,31 +559,29 @@ class StreamingService:
         return False
 
     def done(self) -> float:
-        """Finalise: final render, stop capture, queue its lines, leave frame."""
+        """Finalise: commit remainder, stop capture, leave frame."""
         self._done = True
         elapsed = time.monotonic() - self._t0
         # 纯 thinking 回合（无正文/工具事件收尾）兜底冻结推理阶段
         if self._reasoning_buffer and not self._reasoning_done:
             self._reasoning_done = True
             self._thinking_elapsed = elapsed
-        # done 渲染全文（_response_view 的 done 分支不经 _windowed），
-        # 滚动分页状态失去意义——归零/清锚点防残留影响后续渲染缓存键
-        self._scroll_offset = 0
-        self._scroll_end = None
-        self._last_total = 0
+        # 未固化余量一次性提交进 scrollback——**只打余量、不全文重
+        # 渲染**（旧行为在此整体重打全文 = 用户报告的"二次打印"）。
+        # 固化行早已在 scrollback，余量 = 易变尾（≤ 末行 + 未冻结
+        # thinking + 尾部工具块），通常只有几行。
+        self._flush_commit()
         if self._live:
             if not self._live.is_started:
                 # done-while-paused（弹窗未结束/异常路径）：Live 已被
                 # pause 的 transient stop 停掉、渲染钩子已弹——直接
-                # refresh 是空操作，答案将永远留在被擦除状态（用户报告
-                # 的消失 bug）。先重启再重绘，最终帧真正落屏。
+                # refresh 是空操作。先重启再重绘，最终帧真正落屏。
                 sys.stdout.write("\r")  # 兜底回列 0（同 resume，防弹窗未回列）
                 sys.stdout.flush()
                 self._live.start()
-            # 全文渲染（_response_view 的 done 分支）不得被 LiveRender
-            # 默认 ellipsis 裁成一屏：先置 visible，stop() 内部会再置一次。
-            self._live.vertical_overflow = "visible"
-            self._live.refresh()  # 以 done 状态再重绘一次（隐藏 spinner）
+            # 以 done 状态再重绘一次：易变区已空 → 组 = 仅 frame
+            # （spinner/deck 门控跳过），stop 后 frame 留屏供下轮复用。
+            self._live.refresh()
             self._live.stop()
         self._stop_capture(keep_queue=True)
         # 只允许在最终帧确已渲染时声称为真——否则下一轮 prompt 的复用
@@ -680,6 +684,9 @@ class StreamingService:
         # stop() 会停掉 Live——须在停之前读 is_started 判别 frame 在屏否
         frame_on_screen = self._live is not None and self._live.is_started
         if self._live:
+            # 部分回答保真：未固化余量提交进 scrollback（旧行为经 stop
+            # 内全文重渲染保留部分回答——新管线只打余量，等价无重打）
+            self._flush_commit()
             self._live.stop()
             self._live = None
         self._stop_capture(keep_queue=True)
@@ -835,9 +842,12 @@ class StreamingService:
                     # Ctrl-O：主视图 ⇄ 各子代理直接循环切换
                     self._focus = (self._focus + 1) % (1 + len(snap))
                     self._fleet_selected = -1  # 直接切换 → 清待确认选择
-                elif key == "\x12" and self._reasoning_buffer:
+                elif key == "\x12" and self._reasoning_buffer \
+                        and not self._reasoning_done:
                     # Ctrl+R：thinking 展开/折叠（对标 Claude Code）。
                     # 无推理内容的回合静默忽略。下一个 5Hz 节拍内生效。
+                    # **冻结后 no-op**：冻结即随下 tick 固化进 scrollback，
+                    # 已固化行不可重渲（同 Ctrl+T 纪律）。
                     self._reasoning_expanded = not self._reasoning_expanded
                 elif (
                     len(key) == 2 and key[0] == "\x1b" and key[1].isdigit()
@@ -855,48 +865,26 @@ class StreamingService:
                 elif key == "\x1b[A" and self._focus > 0 and snap:
                     # 详情视图内：↑ 循环切换到上一项（主视图回卷末代理）
                     self._focus = (self._focus - 1) % (len(snap) + 1)
-                elif key in ("\x1b[A", "\x1b[5~"):
-                    # ↑ / PgUp：上翻回看。有列表选择时 ↑ 反向循环选择（含
-                    # 主条目 0）；否则**内容锚定**上移——跟随中先锚到"最近
-                    # 已知末尾往上一步"，已锚定时把窗底继续上移（绝不随
-                    # total 前进，见 _scroll_end 注释）。
-                    if key == "\x1b[A" and self._fleet_selected >= 0:
+                elif key == "\x1b[A" and self._fleet_selected >= 0:
+                    # ↑ 反向循环选择（含主条目 0）。窗内上翻回看已删——
+                    # 固化进 scrollback 后终端原生滚动接管（↑/PgUp 不再
+                    # 入热键，终端自行处理）。
+                    self._fleet_selected = (
+                        (self._fleet_selected - 1) % (len(snap) + 1)
+                    )
+                elif key == "\x1b[B" and snap:
+                    # ↓ 选中首个运行中的子代理（再按在 0..N 间循环，
+                    # 0 = 主条目），Enter 确认把主视图切换到选中条目。
+                    if self._fleet_selected < 0:
+                        self._fleet_selected = next(
+                            (i + 1 for i, v in enumerate(snap)
+                             if v["status"] == "running"),
+                            1,
+                        )
+                    else:
                         self._fleet_selected = (
-                            (self._fleet_selected - 1) % (len(snap) + 1)
+                            (self._fleet_selected + 1) % (len(snap) + 1)
                         )
-                    elif self._long_mode or self._scroll_end is not None:
-                        step = self._scroll_step(key)
-                        if self._scroll_end is None:
-                            # 首次上翻：从最近已知末尾往上一步锚定
-                            self._scroll_end = max(0, self._last_total - step)
-                        else:
-                            self._scroll_end = max(0, self._scroll_end - step)
-                        self._refresh_scroll_offset()
-                    # 尚未进入长响应且未锚定：无内容可滚，忽略
-                elif key in ("\x1b[B", "\x1b[6~"):
-                    # ↓ / PgDn：滚动回看优先——已锚定时先滚回底部（到底即
-                    # 恢复跟随）；跟随中（_scroll_end is None）且有子代理
-                    # 时，↓ 选中首个运行中的子代理（0..N 循环，Enter 确认
-                    # 把主视图切到选中条目）。
-                    if key == "\x1b[B" and self._scroll_end is None and snap:
-                        if self._fleet_selected < 0:
-                            self._fleet_selected = next(
-                                (i + 1 for i, v in enumerate(snap)
-                                 if v["status"] == "running"),
-                                1,
-                            )
-                        else:
-                            self._fleet_selected = (
-                                (self._fleet_selected + 1) % (len(snap) + 1)
-                            )
-                    elif self._scroll_end is not None:
-                        step = self._scroll_step(key)
-                        self._scroll_end = min(
-                            self._last_total, self._scroll_end + step
-                        )
-                        if self._scroll_end >= self._last_total:
-                            self._scroll_end = None  # 到达末尾 → 恢复跟随
-                        self._refresh_scroll_offset()
                 elif key in ("\r", "\n") and self._fleet_selected >= 0 and snap:
                     # Enter 确认：主视图切换到选中条目（0 = 回主视图，
                     # 1..N = 子代理详情，内容展示在输入框上方）。空 Enter
@@ -926,8 +914,11 @@ class StreamingService:
 
         if self._focus > 0 and snap:
             parts.append(self._detail_view(snap[self._focus - 1], extra))
-        elif self._has_body() or self._reasoning_buffer:
-            parts.append(self._response_view(extra))
+        else:
+            # body = 未固化行（易变尾）；已固化行在 scrollback，不进组
+            vol = self._volatile_view(extra)
+            if vol is not None:
+                parts.append(vol)
 
         if not self._done:
             parts.append(self._spinner_text(elapsed))
@@ -945,15 +936,18 @@ class StreamingService:
         self._last_deck_h = perm_h + fleet_deck_h + plugin_h  # 框下总行数
         return Group(*parts)
 
-    def _thinking_block(self) -> list:
-        """thinking 块部件列表（置于正文 Markdown 之前，同过 _windowed）。
+    def _thinking_block(self, hints: bool = False) -> list:
+        """thinking 块部件列表（置于正文 Markdown 之前）。
 
         折叠态 = 单行静态指示行；展开态 = 指示行 + 全文（纯文本 dim，
         **绝不走 Markdown**——thinking 内的围栏/反引号会被重排乱）+
         空行分隔。指示行遵循 deck 行不变量（no_wrap + ellipsis ≡
-        1 终端行）；指示文本**不含滴答计时**（本块进 _response_view
-        缓存体，逐秒变化的文本会每 5Hz 失效缓存、复活闪烁病——耗时
-        只由 spinner 行呈现）。
+        1 终端行）；指示文本**不含滴答计时**（缓存体逐秒变化会每 5Hz
+        失效缓存、复活闪烁病——耗时只由 spinner 行呈现）。
+
+        ``hints``：易变显示渲染传 True、固化渲染传 False。**冻结
+        （_reasoning_done）即随下一 tick 固化进 scrollback**——热键
+        提示只存在于冻结前的易变期（同 Ctrl+T 提示纪律）。
         """
         if not self._reasoning_buffer:
             return []
@@ -961,74 +955,260 @@ class StreamingService:
             label = f"{MARK_PENDING} Thinking…"        # ○ 推理进行中
         else:
             label = f"{MARK_INFO} Thought for {self._thinking_elapsed:.1f}s"  # ●
-        if self._done:
-            hint = ""  # done 后 Live 已停、热键不再消费——提示即谎言
-        elif self._reasoning_expanded:
-            hint = " — ctrl+r to collapse"
+        if hints and not self._reasoning_done and not self._done:
+            hint = (" — ctrl+r to collapse" if self._reasoning_expanded
+                    else " — ctrl+r to expand")
         else:
-            hint = " — ctrl+r to expand"
+            hint = ""  # 冻结/done 后热键 no-op——提示即谎言
         indicator = self._deck_line(f"  {label}{hint}", style=DIM)
         if not self._reasoning_expanded:
             return [indicator]
         return [indicator, Text(self._reasoning_buffer, style=DIM), Text("")]
 
-    def _response_view(self, deck_h: int = 0):
-        """响应渲染对象（thinking 块 + 段序列），按内容缓存。
+    # ── 逐行固化管线（取代尾窗 _windowed）────────────────────────
 
-        段序列渲染：文本段过 Markdown；工具段经 _tool_renderables 独立
-        渲染（Text.from_markup，**绕过 Markdown 与 _RICH_TAG** → 状态
-        点红/绿、⎿ 槽线、diff 着色可行）。整体组合为单一 Group 过
-        _windowed：视口预算只算一次，latched 时组高恒 ≡ H−2 的锚点
-        不变量不破。
+    def _body_chunks(self, hints: bool) -> list:
+        """body 有序 chunk 列表 → ``[(kind, meta, renderable)]``。
 
-        自动刷新 5Hz 重建整组，但只要内容未变就直接复用缓存——不重新
-        解析 Markdown（一个 token 可致整段重排，逐帧重解析会放大帧间
-        diff 与 CPU 开销）、不重切视口窗口，帧间差异收敛到 spinner
-        一行。键含段指纹 + 展开态 + thinking 全态 + 终端 (宽, 高) +
-        deck 高度 + 滚动偏移：任一变化即失效重建。
+        kind："thinking" / "text" / "tool"；meta：tool 段携带记录对象
+        （水印/易变视图需要 running 位置与记录本身），其余为状态串。
+        段间空行分隔（防粘连）并入后续 chunk 头部。``hints`` 控制交互
+        提示（ctrl+r / ctrl+t 字样）：**固化渲染恒 False**（提示在固化
+        后是谎言），易变显示渲染传 True。
         """
+        chunks: list = []
+        if self._reasoning_buffer:
+            chunks.append(("thinking", "thinking",
+                           Group(*self._thinking_block(hints))))
+        for kind, payload in self._segments:
+            if kind == "text":
+                clean = _RICH_TAG.sub("", payload)
+                if not clean.strip():
+                    continue
+                rend: Any = Markdown(clean, code_theme="monokai")
+                meta: Any = "text"
+            else:
+                rows = self._tool_renderables(payload, hints=hints)
+                if not rows:
+                    continue
+                rend = Group(*rows) if len(rows) > 1 else rows[0]
+                meta = payload
+            if chunks:
+                rend = Group(Text(""), rend)
+            chunks.append((kind, meta, rend))
+        return chunks
+
+    def _body_lines(self) -> list:
+        """body 渲染行（无 hints 版）+ 每 chunk 行区间，按内容缓存。
+
+        键只含宽度（render_lines 只需宽；窗化已删，高/deck 不再入键）。
+        bounds 元素 ``(kind, meta, start, end)`` 供水印与易变视图使用。
+        """
+        if self._rich is None:
+            return []
         try:
-            width, height = self._rich.width, self._rich.height
+            width = self._rich.width
         except Exception:
-            width = height = None
+            width = None
         key = (
             self._segments_fingerprint(),
             self._tools_expanded,
             self._reasoning_buffer, self._reasoning_expanded,
             self._reasoning_done, self._done,
-            width, height, deck_h, self._scroll_offset,
+            width,
         )
-        if key != self._resp_cache_key:
-            self._resp_cache_key = key
-            parts = self._thinking_block()
-            for kind, payload in self._segments:
-                seg_parts: list = []
-                if kind == "text":
-                    clean = _RICH_TAG.sub("", payload)
-                    if clean.strip():
-                        seg_parts.append(Markdown(clean, code_theme="monokai"))
-                else:
-                    seg_parts.extend(self._tool_renderables(payload))
-                if seg_parts:
-                    if parts:
-                        parts.append(Text(""))  # 段间空行分隔（防粘连）
-                    parts.extend(seg_parts)
-            if not parts:  # 调用门已保证非空，兜底防未来误用
-                parts = [Markdown("")]
-            renderable = Group(*parts) if len(parts) > 1 else parts[0]
-            if self._done:
-                # done：全文渲染，**不经 _windowed 末尾窗口裁剪**——超屏
-                # 内容自然滚出视口进入终端 scrollback，用户上翻即见完整
-                # transcript。流式期的尾窗（↑ …）只为无闪烁跟随最新
-                # token：整区每帧擦重写，超屏即抖，且 Markdown 一个 token
-                # 可致整段重排、中途固化行会失真——只在回合收尾时全文
-                # 落盘一次，两全其美。
-                self._resp_cache_view = renderable
-            else:
-                self._resp_cache_view = self._windowed(
-                    renderable, extra_reserve=deck_h
-                )
-        return self._resp_cache_view
+        if key != self._body_cache_key:
+            self._body_cache_key = key
+            lines: list = []
+            bounds: list = []
+            for kind, meta, rend in self._body_chunks(hints=False):
+                s = len(lines)
+                try:
+                    lines.extend(self._rich.render_lines(rend, pad=False))
+                except Exception:
+                    pass  # fail-open：坏渲染对象不拖垮管线
+                bounds.append((kind, meta, s, len(lines)))
+            self._body_cache_lines = lines
+            self._body_bounds = bounds
+        return self._body_cache_lines
+
+    def _commit_watermark(self, lines: list) -> int:
+        """可固化行上限：前缀稳定部分（贪心换行实测验证）。
+
+        夹取三处（实测的非前缀稳定源）：① 首个 running 工具记录首行
+        （并行工具：状态点 dim→绿、Running…→输出 会变，固化留 stale
+        scrollback）；② 尾部已完成工具连跑保持 volatile（Ctrl+T 作用
+        窗，直到后续段到达并入稳定前缀）；③ 末 text 段仅最后一行
+        volatile，且尾部未闭合表格夹到表格首行（表格列宽随后到的行
+        重排）。done 态 = 全部可固化（flush）。
+        """
+        if self._done:
+            return len(lines)
+        if self._reasoning_buffer and not self._reasoning_done:
+            return 0  # thinking 未冻结：整体 volatile（保 Ctrl+R 窗口）
+        wm = len(lines)
+        bounds = self._body_bounds
+        for kind, meta, s, _e in bounds:
+            if kind == "tool" and getattr(meta, "status", "") == "running":
+                wm = min(wm, s)
+                break  # running 起往后皆 volatile
+        # ② 尾部已完成工具连跑
+        i = len(bounds)
+        while (i and bounds[i - 1][0] == "tool"
+               and getattr(bounds[i - 1][1], "status", "") != "running"):
+            i -= 1
+        if i < len(bounds):
+            wm = min(wm, bounds[i][2])
+        # ③ 末 text 段：末行 volatile + 未闭合表格夹取
+        if bounds and bounds[-1][0] == "text":
+            s = bounds[-1][2]
+            wm = min(wm, max(s, len(lines) - 1))
+            clamp = self._open_table_clamp()
+            if clamp is not None:
+                wm = min(wm, s + clamp)
+        return wm
+
+    def _open_table_clamp(self) -> Optional[int]:
+        """尾部未闭合表格的行夹取（相对末 text 块首行）；无需夹取返 None。
+
+        启发式：末 text 段尾部是顶格的连续 ``|`` 行（尾无空行 = 表格可能
+        还在生长）且不在围栏内 → 渲染表格之前的源前缀定边界行数（仅在
+        开表期间每 tick 多一次前缀渲染）。
+        """
+        if not self._segments or self._segments[-1][0] != "text":
+            return None
+        text = _RICH_TAG.sub("", self._segments[-1][1])
+        src = text.split("\n")
+        i = len(src)
+        while i and src[i - 1].strip().startswith("|"):
+            i -= 1
+        if i == len(src):
+            return None  # 尾部无表格行
+        if sum(1 for ln in src[:i]
+               if ln.lstrip().startswith("```")) % 2:
+            return None  # "| 行"在围栏内 = 代码不是表格
+        try:
+            return len(self._rich.render_lines(
+                Markdown("\n".join(src[:i]), code_theme="monokai"), pad=False))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _copy_line(line) -> Text:
+        """render_lines 行 → Text：只取可见文本段（控制段不得混入重渲）。"""
+        text = Text()
+        for seg in line:
+            if seg.text and not seg.is_control:
+                text.append(seg.text, seg.style)
+        return text
+
+    def _volatile_view(self, extra: int = 0):
+        """Live 区 body = 未固化行（易变尾）。已固化行在 scrollback 不
+        进组——擦重写区从"整尾窗"缩到"易变尾"，闪烁结构性消失。尾部
+        已完成工具块以 hints=True 重渲染（Ctrl+T 窗口）；无易变内容返
+        None（done 态组 = 仅 frame，复用链前提）。
+
+        ``extra``：frame 之上/之下的状态层（plan/queue + perm/fleet/plugin）
+        总行数——易变区可视预算相应收紧（整组高度恒 ≤ 视口，同 HEAD 的
+        ``height - _VIEWPORT_RESERVE - extra`` 公式，funnel WIP 没吃 extra
+        会在浮层在场时撑爆视口，此处补齐）。
+        """
+        lines = self._body_lines()
+        if self._rich is None:
+            return None
+        C = min(self._committed_count, len(lines))
+        bounds = self._body_bounds
+        pre_think = bool(self._reasoning_buffer) and not self._reasoning_done
+        # done 且已全固化 → 无易变体：组退化为仅 frame（复用链前提）。
+        # 已固化行（含已完成工具块）在 done()/_flush_commit() 已落盘，
+        # 绝不能在此重渲成"工具副本 + frame"。
+        if self._done and not pre_think and C >= len(lines):
+            return None
+        i = len(bounds)
+        while (i and bounds[i - 1][0] == "tool"
+               and getattr(bounds[i - 1][1], "status", "") != "running"):
+            i -= 1
+        tail_tools = bounds[i:]
+        copy_end = tail_tools[0][2] if tail_tools else len(lines)
+        # 去重：pre_think（推理未冻结）时首 chunk 是 thinking，其 body 行
+        # 未固化（水印=0）且由下方 _thinking_block(hints=True) 单独渲染——
+        # 跳过该 chunk 的 body 行，否则屏上出现两条指示行（funnel WIP 缺陷）。
+        copy_start = C
+        if pre_think and bounds and bounds[0][0] == "thinking":
+            copy_start = max(C, bounds[0][3])
+        if not pre_think and not tail_tools and C >= copy_end:
+            return None
+        parts: list = []
+        if pre_think:
+            parts.extend(self._thinking_block(hints=True))
+        for line in lines[copy_start:copy_end]:
+            parts.append(self._copy_line(line))
+        for _kind, rec, _s, _e in tail_tools:
+            parts.extend(self._tool_renderables(rec, hints=True))
+        if not parts:
+            return None
+        # 易变区超视口预算 → 裁尾 + ↑ … 标记。**按渲染行数测量**，不能按
+        # renderable 个数（展开 thinking 是一个单对象多行 Text，按对象数
+        # 判不超、整组会撑爆视口把 FRAME 顶掉——funnel WIP 缺陷）。
+        try:
+            height = self._rich.height
+        except Exception:
+            height = 24
+        cap = max(5, height - _VIEWPORT_RESERVE - extra)
+        group = Group(*parts)
+        try:
+            rendered = self._rich.render_lines(group, pad=False)
+        except Exception:
+            rendered = None
+        if rendered is not None and len(rendered) > cap:
+            tail = [Text(_SCROLL_MARKER, style="dim")]
+            tail += [self._copy_line(l) for l in rendered[-(cap - 1):]]
+            return Group(*tail)
+        return group
+
+    def _maybe_commit(self) -> None:
+        """固化漏斗：refresh 覆写（Live 锁内）调用。新稳定行经
+        print-during-Live 提交——Rich 渲染钩子把内容嵌到 Live 区上方
+        （scrollback）并在下方重绘易变区，一步完成"固化 + 重锚"。
+        锁序 Live→console 与 resize 路径一致。
+        """
+        if self._rich is None:
+            return
+        lines = self._body_lines()
+        wm = self._commit_watermark(lines)
+        if wm <= self._committed_count:
+            return
+        new = lines[self._committed_count:wm]
+        # 先记账再 print：print 钩子触发的组重建应看到新水印。
+        # print 内部自取 rich console 锁（锁序 Live→console 与 resize 同）。
+        self._committed_count = wm
+        self._rich.print(Group(*(self._copy_line(l) for l in new)))
+
+    def _flush_commit(self) -> None:
+        """done/cancel：未固化余量全提交（_done 已置 → 水印 = 全部）。
+
+        只打余量、绝不全文重打——"二次打印"的根因修法。Live 在跑则
+        走渲染钩子嵌上方；暂停/无 Live 则普通 print 落 scrollback。
+        """
+        if self._rich is None:
+            return
+        lines = self._body_lines()
+        wm = self._commit_watermark(lines)
+        if wm <= self._committed_count:
+            return
+        new = lines[self._committed_count:wm]
+        self._committed_count = wm
+        self._rich.print(Group(*(self._copy_line(l) for l in new)))
+
+    def _on_width_change(self) -> None:
+        """resize 重锚水印（保 volatile 行数）：旧宽已固化行不重打
+        （无二次打印）；旧易变行在新宽下重新导出（无内容丢失）；边界
+        留宽差缝（与现状 resize 同类可接受）。
+        """
+        k = max(0, len(self._body_cache_lines) - self._committed_count)
+        self._body_cache_key = None  # 宽度入键，强制按新宽重渲染
+        lines = self._body_lines()
+        self._committed_count = max(0, min(len(lines), len(lines) - k))
 
     def _segments_fingerprint(self) -> tuple:
         """段序列指纹（缓存键用）：文本取文本，工具取 (名/参/态/出)。
@@ -1045,13 +1225,16 @@ class StreamingService:
                            payload.is_error))
         return tuple(fp)
 
-    def _tool_renderables(self, record: "_ToolRecord") -> list:
+    def _tool_renderables(self, record: "_ToolRecord",
+                          hints: bool = False) -> list:
         """工具段 → Text.from_markup 行列表（Claude Code 风格）。
 
         头行 ``[{态色}●] name(args)``：running dim、done green、error
-        red。结果 ⎿ 槽线块：折叠 3 行（错误 10 行）+ "… +N lines
-        (ctrl+t to expand)"；Ctrl+T 全局展开（硬上限 200 行）。空输出
-        ``(No output)``。edit_file 结果行级着色（-红 +绿 @@dim）。
+        red。结果 ⎿ 槽线块：折叠 3 行（错误 10 行）+ "… +N lines"；空
+        输出 ``(No output)``。edit_file 结果行级着色（-红 +绿 @@dim）。
+        Ctrl+T 展开（硬上限 200 行）**仅作用于未固化块** → 热键字样
+        只在 ``hints=True``（易变显示渲染）出现；固化渲染（进
+        scrollback）不带字样——提示随内容生命周期（同 thinking 纪律）。
         """
         from ..orchestration.fleet import _tool_call_summary
         from ..ui._style import MARK_INFO, SUCCESS_STYLE, ERROR_STYLE, DIM
@@ -1091,14 +1274,16 @@ class StreamingService:
             rows.append(Text.from_markup(
                 f"[dim]{prefix}[/]{self._result_line_markup(ln, is_edit)}"))
         if not self._tools_expanded and rest:
+            tail = " (ctrl+t to expand)" if hints else ""
             rows.append(Text.from_markup(
-                f"[dim]     … +{rest} lines (ctrl+t to expand)[/]"))
+                f"[dim]     … +{rest} lines{tail}[/]"))
         elif self._tools_expanded:
             if rest:
                 rows.append(Text.from_markup(
                     f"[dim]     … +{rest} more (output too large)[/]"))
+            tail = " · ctrl+t to collapse" if hints else ""
             rows.append(Text.from_markup(
-                f"[dim]     ({len(lines)} lines · ctrl+t to collapse)[/]"))
+                f"[dim]     ({len(lines)} lines{tail})[/]"))
         return rows
 
     @staticmethod
@@ -1115,121 +1300,6 @@ class StreamingService:
             if line.startswith("+"):
                 return f"[green]{escape(line)}[/]"
         return escape(line)
-
-    def _scroll_step(self, key: str) -> int:
-        """滚动步长：方向键 1 行；PgUp/PgDn 半页（至少 1 行）。"""
-        if key in ("\x1b[A", "\x1b[B"):
-            return 1
-        try:
-            height = self._rich.height
-        except Exception:
-            height = 24
-        return max(1, (height - _VIEWPORT_RESERVE) // 2)
-
-    def _refresh_scroll_offset(self) -> None:
-        """派生 _scroll_offset = 窗下被隐藏行数（0 = 跟随末尾）。"""
-        if self._scroll_end is None:
-            self._scroll_offset = 0
-        else:
-            self._scroll_offset = max(
-                0, (self._last_total or 0) - self._scroll_end
-            )
-
-    def _windowed(self, renderable, extra_reserve: int = 0):
-        """只渲染超高一屏响应的**末尾窗口**（自动跟随最新内容），并锁定区高。
-
-        **仅流式期生效**：done() 后的最终渲染走 _response_view 的全文
-        分支（不经本函数），超屏内容滚入终端 scrollback 供上翻回看——
-        transcript 里永不残留 ``↑ …``。本函数的窗口化只服务于流式期
-        的无闪烁跟随。
-
-        Rich ``Live`` 对超屏渲染对象默认裁剪顶部可见区（``vertical_overflow``
-        为 ``ellipsis``）——响应一旦超过一屏，用户只能看到开头加省略号，
-        最新 token 始终不可见，"视图不跟随"。而整组改设 ``visible`` 又会在
-        每次重渲时抖动（SDD §8 记录的 Rich 已知局限，钉底滚动区方案亦已
-        废弃）。折中方案：把 Markdown 渲染成行，若超过"视口 - 框 - spinner"
-        的可用高度，只保留末尾若干行并冠以 ``↑ …`` 标记——最新 token 永远
-        可见、整组永不超过视口、框 4 行末元素不变量不受影响。
-
-        ``extra_reserve``：frame 之上的状态层（deck）额外占用的行数——
-        max_lines 相应缩小。latched 时整组高度 ≡ H−2（与 deck 高度无关：
-        (H−7−d) + spinner 1 + frame 4 + deck d），光标锚点帧间稳定。
-
-        行数一旦触及上限（``_long_mode`` 闩），输出此后恒定补齐到恰好
-        ``max_lines`` 行：单 token 重排使行数在上限附近震荡时组高也不变，
-        Rich Live"上移 N 行 + 重写 N 行"的光标锚点帧间稳定——翻页闪烁
-        的根因修法（短响应仍按内容高度就地显示，框随内容下移的目标 1
-        不受影响：补齐只发生在已进入长响应模式之后）。
-        Keep only the trailing viewport of a too-tall response so the newest
-        tokens stay visible, and pin the region height so Rich's cursor
-        anchor never jitters between refreshes.
-
-        **内容锚定分页**：用户 ↑/PgUp 上翻后，视窗终点（``_scroll_end``）固定
-        为内容行号、不再随 total 前滑——新内容在 "↓ …" 下持续累积，已显示的
-        早段文字稳定可读（修复"边输出边滚走、无法按自己节奏回读"）。历史来自
-        自有正文缓冲 + 本窗口切片（输入框钉底、Live 区不滚动终端，故非终端
-        scrollback）。
-        """
-        try:
-            height = self._rich.height
-        except Exception:
-            return renderable
-        max_lines = max(1, height - _VIEWPORT_RESERVE - extra_reserve)
-        try:
-            lines = self._rich.render_lines(renderable, pad=False)
-        except Exception:
-            return renderable
-
-        total = len(lines)
-        if total >= max_lines:
-            self._long_mode = True  # 闩：触及上限即永不退出
-        self._last_total = total
-
-        # ── 固定画布：内容区恒为 max_lines 行（杜绝高度变化）──────
-        # 关键：即使正文未超屏，也**恒窗口化**——全文顶部对齐 + 底部空行
-        # 补齐到 max_lines。整组高度（content + spinner + frame + decks）
-        # 从回合第一帧起恒定 → Rich Live 相对光标锚点零漂移、终端永不因本组
-        # 滚动 → 已滚进 scrollback 的开头旧行 + 新重画的开头叠加（"开头
-        # 重复"）在物理上不可能发生。
-        #
-        # 长响应后：跟随（_scroll_end None）→ end=total（最新在窗底流入，
-        # 顶部 "↑ …"）；↑/PgUp 锚定（end 固定、**不随 total 前进**，新内容
-        # 在 "↓ …" 下累积）——读者可按自己节奏回看早段。
-        if not self._long_mode:
-            self._scroll_end = None
-            self._scroll_offset = 0
-            end = total
-        else:
-            if self._scroll_end is not None and self._scroll_end >= total:
-                self._scroll_end = None  # 内容缩到锚点内 → 跟随末尾
-            if self._scroll_end is None:
-                end = total
-            else:
-                end = max(max_lines - 1, min(self._scroll_end, total))
-                self._scroll_end = end
-        self._refresh_scroll_offset()
-        # 两趟确定内容预算：标记行（↑ … / ↓ …）各占 1 行，先按无标记
-        # 估 start，再按实际标记数收紧，保证窗口恒 ≤ max_lines 行。
-        start = max(0, end - max_lines)
-        markers = (1 if start > 0 else 0) + (1 if end < total else 0)
-        start = max(0, end - (max_lines - markers))
-
-        window: list = []
-        if start > 0:
-            window.append(Text(_SCROLL_MARKER, style="dim"))
-        for line in lines[start:end]:
-            text = Text()
-            for seg in line:
-                # 只取可见文本段：控制段（光标移动等）不得混入重渲。
-                if seg.text and not seg.is_control:
-                    text.append(seg.text, seg.style)
-            window.append(text)
-        if end < total:
-            window.append(Text(_SCROLL_MARKER_DOWN, style="dim"))
-        # 空行补齐到恰好 max_lines：区域高度恒定 → 锚点帧间稳定。
-        while len(window) < max_lines:
-            window.append(Text(" "))
-        return Group(*window)
 
     @staticmethod
     def _shimmer_spans(label: str, elapsed: float) -> list:
@@ -1265,25 +1335,13 @@ class StreamingService:
         label = "Thinking…" if not self._has_body() else "Answering…"
         # "esc to interrupt" 常驻提示（v0.4.1）：思考与输出阶段都可打断，
         # 能力必须可见——用户报告"不知道能打断"即缺此提示。
-        # 长响应（超屏）后恒提示可回看；已上翻时报告窗下隐藏行数并提示
-        # ↓ 回底恢复跟随——可发现性修复：用户不必先猜 ↑ 才看到提示。
-        if self._long_mode:
-            if self._scroll_offset:
-                scroll_hint = (
-                    f"  ·  ↑/↓ scroll · {self._scroll_offset} hidden · ↓ follow"
-                )
-            else:
-                scroll_hint = "  ·  ↑/PgUp scroll"
-        else:
-            scroll_hint = ""
-        # 硬不变量：spinner 恒占 1 行（no_wrap + ellipsis）——滚动提示加长
-        # 后若折行会多占 1 行、把 FRAME 顶下一行（光标锚点/视口预算被破坏）。
-        text = Text(no_wrap=True, overflow="ellipsis")
+        # （窗内滚动提示已随尾窗删除：scrollback 原生上翻无需热键。）
+        text = Text()
         text.append(f"  {glyph} ", style=ACCENT)
         for seg_text, seg_style in self._shimmer_spans(label, elapsed):
             text.append(seg_text, style=seg_style)
         text.append(
-            f"  ({elapsed:.1f}s)  ·  esc to interrupt{scroll_hint}",
+            f"  ({elapsed:.1f}s)  ·  esc to interrupt",
             style="dim",
         )
         return text

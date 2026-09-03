@@ -317,9 +317,15 @@ class TestResizeAwareLive:
         live.start()
         import time
 
-        time.sleep(0.05)  # 首渲完成、shape 就位
+        # 首渲完成、shape 就位（等 shape 出现，避免事件在 shape 就位前被
+        # check() 消费而丢失——时序脆弱的源头）。
+        deadline = time.monotonic() + 0.5
+        while live._live_render._shape is None and time.monotonic() < deadline:
+            time.sleep(0.005)
         watcher._event.set()
-        time.sleep(0.2)  # 自动刷新线程消费事件
+        deadline = time.monotonic() + 0.5
+        while "\033[J" not in buf.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.005)  # 轮询：自动刷新线程消费事件 → 覆写生效
         live.stop()
         assert "\033[J" in buf.getvalue()  # 线程虚调 refresh → 覆写生效
 
