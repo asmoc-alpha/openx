@@ -222,9 +222,7 @@ class TestPrintFileDiff:
         import io
         buf = io.StringIO()
         mixin = MiscMixin()
-        mixin.config = OpenXConfig(
-            api_key="sk-x", api_base="https://x", model="m"
-        )
+        mixin.config = OpenXConfig(model="m")
         mixin.config.syntax_theme = "monokai"
         mixin._console = RichConsole(file=buf, width=100)
         mixin.print_file_diff("t.py", "a", "b")

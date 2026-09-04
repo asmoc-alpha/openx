@@ -42,17 +42,17 @@ pip install -e .
 pip install openx
 ```
 
-Requires Python ≥ 3.10. On first run, `openx` launches an interactive setup wizard and
-saves your answers to `~/.openx/settings.json`. You can also configure via environment
-variables:
+Requires Python ≥ 3.10. On first run, `openx` launches an interactive setup wizard that
+writes a `default` model group to `~/.openx/settings.json`. Model & provider
+configuration lives only in that file's `modelGroups` block — each group can share a
+key/endpoint and define per-role models (`main`/`exec`/`mini`/`modal`). Keys may
+reference the environment via `env:VAR`:
 
 ```bash
-export OPENAI_API_KEY=sk-your-key-here
-
-# Optional: use a different OpenAI-compatible provider
-export OPENAI_API_BASE=https://api.openai.com/v1
-export OPENX_MODEL=gpt-4o
+export OPENAI_API_KEY=sk-your-key-here   # group's "apiKey": "env:OPENAI_API_KEY"
 ```
+
+See [Configuration](docs/user/guide/configuration.md) for the schema.
 
 ## Quick Start
 

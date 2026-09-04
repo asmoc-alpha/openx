@@ -573,6 +573,8 @@ async def _cmd_config(agent, console, args):
     from ...ui._helpers import mask_key
     from ...ui._style import PROMPT_STYLE
     c = agent.config
+    # 凭据/端点不再在 config 上——展示与提示默认值都读解析后的 provider settings
+    psettings = getattr(agent, "_provider_settings", {})
 
     def _active_group_name() -> str:
         return getattr(agent, "_group_name", "") or c.active_group or "(none)"
@@ -588,8 +590,8 @@ async def _cmd_config(agent, console, args):
             f"\n[bold]Configuration[/bold]\n\n"
             f"  Group:        [cyan]{gname}[/cyan] [dim]({kind})[/dim]\n"
             f"  Main model:   [cyan]{c.model}[/cyan]\n"
-            f"  API Base:     [dim]{c.api_base}[/dim]\n"
-            f"  API Key:      [dim]{mask_key(c.api_key) if c.api_key else '(not set)'}[/dim]\n"
+            f"  API Base:     [dim]{psettings.get('api_base', '')}[/dim]\n"
+            f"  API Key:      [dim]{mask_key(psettings.get('api_key', '')) if psettings.get('api_key') else '(not set)'}[/dim]\n"
             f"  Workspace:    [dim]{c.workspace}[/dim]\n"
             f"  Auto-approve: [{'green' if c.auto_approve else 'red'}]{c.auto_approve}[/]\n"
             f"  Temperature:  {c.temperature}\n"
@@ -632,7 +634,8 @@ async def _cmd_config(agent, console, args):
         raw = OpenXConfig.load_model_groups_raw()
         raw[_active_group_name()] = group_raw
         OpenXConfig.save_model_groups(raw)
-        setattr(c, "api_base" if api_base else "api_key", value)
+        # 无需同步 config 扁平字段（已删除）——_rebuild_llm 会重解析并刷新
+        # agent._provider_settings / config echo
         agent._drop_role_clients()
         agent._rebuild_llm()
         return True
@@ -821,13 +824,14 @@ async def _cmd_config(agent, console, args):
             console.raw.print()
             value = paste_aware_input(console.raw,
                 f"  [{PROMPT_STYLE}]Shared API base URL[/{PROMPT_STYLE}] "
-                f"[dim][{c.api_base}][/dim]: "
+                f"[dim][{psettings.get('api_base', '')}][/dim]: "
             ).strip()
             if value and _edit_active_group(api_base=True, value=value):
                 console.print_success(f"Shared API base set to {value}")
         elif choice == "key":
             console.raw.print()
-            disp = mask_key(c.api_key) if c.api_key else "(not set)"
+            _cur_key = psettings.get("api_key", "")
+            disp = mask_key(_cur_key) if _cur_key else "(not set)"
             value = paste_aware_input(console.raw,
                 f"  [{PROMPT_STYLE}]Shared API key[/{PROMPT_STYLE}] "
                 f"[dim][{disp}][/dim]: "

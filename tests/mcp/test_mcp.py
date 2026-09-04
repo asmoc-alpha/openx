@@ -169,8 +169,6 @@ def _make_agent(tmp_path: Path):
 
     config = OpenXConfig()
     config.workspace = str(tmp_path)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
     config.model = "test-model"
     return OpenXAgent(config)
 
@@ -421,8 +419,6 @@ class TestAgentWiring:
             await parent.startup()
             config = OpenXConfig()
             config.workspace = str(tmp_path)
-            config.api_key = "sk-test"
-            config.api_base = "https://example.com/v1"
             config.model = "test-model"
             child = OpenXAgent(config, parent=parent)
             assert child.tools["mcp__fake__echo"] is parent.tools["mcp__fake__echo"]

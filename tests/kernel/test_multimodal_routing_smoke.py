@@ -57,7 +57,7 @@ def _record_chat(monkeypatch):
     calls: list[str] = []
 
     async def _stub(self, **_kw):
-        calls.append(self._impl.config.model)
+        calls.append(self._impl.settings["model"])
         return {"content": "ok"}
 
     monkeypatch.setattr(LLMClient, "chat", _stub)

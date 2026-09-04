@@ -30,8 +30,6 @@ class TestBuiltinMounted:
 
         config = OpenXConfig()
         config.workspace = str(ws)
-        config.api_key = "sk-test"
-        config.api_base = "https://example.com/v1"
         config.model = "test-model"
         agent = OpenXAgent(config)
         for name in ("read_file", "shell", "grep", "task", "workflow"):

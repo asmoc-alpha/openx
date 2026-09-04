@@ -223,11 +223,11 @@ class OpenXAgent:
         # LLM 重试可见性：每次重试打印一行警告（_notify_retry 内部经弹窗
         # 钩子暂停流式 Live，避免重绘区夹杂输出；钩子缺省 → 零行为变化）
         self.llm.on_retry = self._notify_retry
-        # 把生效绑定投影回 config，供 header/init event/serve 展示
+        # 把生效绑定投影回 config（仅 echo：组名 + main 模型，供 header/
+        # session meta / init event / serve 展示）。凭据不投影——只在
+        # self._provider_settings / LLM 客户端里。
         config.active_group = self._group_name
         config.model = self._provider_settings.get("model") or config.model
-        config.api_key = self._provider_settings.get("api_key") or config.api_key
-        config.api_base = self._provider_settings.get("api_base") or config.api_base
 
         # ── 子代理（child）模式状态（Phase 8，必须在 _build_tools 之前就位）──
         # parent 非 None → 本 agent 是 task 工具派生的子代理：工具集裁剪、
@@ -971,9 +971,9 @@ class OpenXAgent:
         self._provider_settings = settings
         self.llm = LLMClient(self.config, impl=impl, policy_overrides=settings)
         self.llm.on_retry = self._notify_retry
+        # 仅 echo：回写 main 模型与组名（凭据不投影，见 __init__ 注）
+        self.config.active_group = self._group_name
         self.config.model = settings.get("model") or self.config.model
-        self.config.api_key = settings.get("api_key") or self.config.api_key
-        self.config.api_base = settings.get("api_base") or self.config.api_base
         self._drop_role_clients()
         return True
 

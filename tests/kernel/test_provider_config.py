@@ -1,8 +1,9 @@
-"""模型组（modelGroups）测试：解析/迁移、组绑定记账、/model 接线。
+"""模型组（modelGroups）测试：解析、组绑定记账、/model 接线。
 
 覆盖旧 provider_config 的三组语义并平移/扩展为组概念：
-- TestResolveGroup：role_settings 解析（组共享默认、per-role 覆盖、env/
-  config 兜底、retry 晚绑定、失效 activeGroup 回落、is_configured）；
+- TestResolveGroup：role_settings 解析（组共享默认、per-role 覆盖、load()
+  无组=未配置、手写构造=极简内存 default、组缺凭据=空、retry 晚绑定、
+  失效 activeGroup 回落、is_configured）；
 - TestAgentGroupBinding：绑定记账（origin=kernel、payload 含 group/role）、
   switch_group 重建、set_role_model 持久化+回写、retry 组级覆盖；
 - TestModelCommand：/model 列表/切组/改 main 模型/未知报错（StubConsole）。
@@ -13,6 +14,8 @@ settings 写读均走 monkeypatch 的 SETTINGS_PATH（tests/kernel/conftest.py�
 """
 
 from __future__ import annotations
+
+import pytest
 
 from openx.config import OpenXConfig
 from openx.kernel import get_kernel
@@ -71,21 +74,30 @@ def _default_groups() -> dict:
 
 
 class TestResolveGroup:
-    def test_synth_default_when_no_groups(self, kernel_env):
-        """无任何组（手动字段）→ role_settings 合成 default 且回落 main。"""
+    def test_load_without_groups_is_not_configured(self, kernel_env):
+        """load() 配置无 modelGroups → 未配置：is_configured False，role_settings 抛错。"""
         ws, _ = kernel_env
-        cfg = _make_config(
-            ws, api_key="sk-test", api_base="https://example.com/v1", model="m1"
-        )
+        assert not OpenXConfig.is_configured()
+        cfg = _make_config(ws)
+        with pytest.raises(ValueError):
+            cfg.role_settings("main")
+
+    def test_handbuilt_config_synthesizes_minimal_default(self):
+        """settings_loaded=False 手写 config（嵌入/测试）：合成极简 default 组。
+
+        只带 model（无凭据——凭据只来自组配置）。
+        """
+        cfg = OpenXConfig()
+        cfg.model = "m1"
         name, settings = cfg.role_settings("main")
         assert name == "default"
         assert settings["kind"] == "openai-compat"
-        assert settings["api_key"] == "sk-test"
-        assert settings["api_base"] == "https://example.com/v1"
+        assert settings["api_key"] == ""
+        assert settings["api_base"] == ""
         assert settings["model"] == "m1"
-        # exec 缺席 → 整体回落 main 绑定（含 model/creds）
+        # exec 缺席 → 整体回落 main 绑定
         _, ex = cfg.role_settings("exec")
-        assert ex["model"] == "m1" and ex["api_key"] == "sk-test"
+        assert ex["model"] == "m1" and ex["api_key"] == ""
 
     def test_groups_resolve_active_and_role_override(self, kernel_env):
         ws, _ = kernel_env
@@ -102,19 +114,19 @@ class TestResolveGroup:
         assert mini["api_base"] == "https://b-mini/v1"
         assert mini["api_key"] == "sk-2"
 
-    def test_group_main_missing_creds_falls_back_to_config(self, kernel_env):
-        """组级只给 model → 连接字段回落 config（env/CLI 已并入）。"""
+    def test_group_without_creds_gets_empty_connection(self, kernel_env):
+        """组级只给 model → 连接字段为空（不再回落任何扁平字段）。
+
+        temperature/max_tokens 仍回落 cfg 通用默认（运行旋钮，非扁平兼容）。
+        """
         ws, _ = kernel_env
         _write_groups(
             {"g": {"openx-main-model": "m-only"}}, "g"
         )
-        cfg = _make_config(
-            ws, api_key="sk-fb", api_base="https://fb/v1", temperature=0.7,
-            max_tokens=4096,
-        )
+        cfg = _make_config(ws, temperature=0.7, max_tokens=4096)
         _, settings = cfg.role_settings("main", "g")
-        assert settings["api_key"] == "sk-fb"
-        assert settings["api_base"] == "https://fb/v1"
+        assert settings["api_key"] == ""
+        assert settings["api_base"] == ""
         assert settings["model"] == "m-only"
         assert settings["temperature"] == 0.7
         assert settings["max_tokens"] == 4096
@@ -145,14 +157,41 @@ class TestResolveGroup:
         )
         assert OpenXConfig.is_configured()
 
+    def test_env_provider_vars_do_not_leak(self, kernel_env, monkeypatch):
+        """组未声明凭据 → OPENAI_API_KEY/OPENX_MODEL 环境变量不进入 main settings。
+
+        模型/凭据唯一来自 modelGroups；env 只能经组内 ``env:VAR`` 引用。
+        """
+        ws, _ = kernel_env
+        _write_groups({"g": {"openx-main-model": "m-only"}}, "g")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+        monkeypatch.setenv("OPENAI_API_BASE", "https://env/v1")
+        monkeypatch.setenv("OPENX_MODEL", "env-model")
+        cfg = _make_config(ws)
+        _, settings = cfg.role_settings("main", "g")
+        assert settings["api_key"] == ""
+        assert settings["api_base"] == ""
+        assert settings["model"] == "m-only"
+        # 组内显式 env:VAR 引用仍然可用（唯一的外部凭据通道）
+        _write_groups({"g2": {"openx-main-model": "m2",
+                              "apiKey": "env:OPENAI_API_KEY"}}, "g2")
+        cfg2 = _make_config(ws)
+        _, s2 = cfg2.role_settings("main", "g2")
+        assert s2["api_key"] == "sk-env"
+
 
 class TestAgentGroupBinding:
     def test_binding_emits_provider_selected_kernel(self, kernel_env):
         """agent 绑定记 origin=kernel，payload 带 group/role（M5）。"""
         ws, _ = kernel_env
+        _write_groups(
+            {"default": {"kind": "openai-compat", "apiKey": "sk-test",
+                         "apiBase": "https://x/v1", "openx-main-model": "m1"}},
+            "default",
+        )
         sink = Sink()
         get_kernel().attach_ledger(sink, session="s1")
-        agent = _make_agent(ws, api_key="sk-test", api_base="https://x/v1", model="m1")
+        agent = _make_agent(ws)
         assert agent._provider_name == "default"
         assert agent._bind_role == "openx-main-model"
         sel = sink.of("provider_selected")
@@ -171,12 +210,12 @@ class TestAgentGroupBinding:
         sink = Sink()
         get_kernel().attach_ledger(sink, session="s1")
         agent = _make_agent(ws)
-        assert agent.llm._impl.config.model == "m-a"
+        assert agent.llm._impl.settings["model"] == "m-a"
         assert agent.switch_group("alt") is True
         assert agent._provider_name == "alt"
         assert isinstance(agent.llm._impl, OpenAICompatProvider)
-        assert agent.llm._impl.config.model == "m-b"
-        assert agent.config.model == "m-b"  # 投影随切换同步
+        assert agent.llm._impl.settings["model"] == "m-b"
+        assert agent.config.model == "m-b"  # 投影（echo）随切换同步
         sel = sink.of("provider_selected")
         assert [e.payload["origin"] for e in sel] == ["kernel", "user"]
         assert sel[1].payload["group"] == "alt"
@@ -228,7 +267,7 @@ class TestAgentGroupBinding:
         agent = _make_agent(ws)
         assert agent.set_role_model("main", "new-model") is True
         assert agent.config.model == "new-model"
-        assert agent.llm._impl.config.model == "new-model"
+        assert agent.llm._impl.settings["model"] == "new-model"
         raw = OpenXConfig.load_model_groups_raw()
         assert raw["default"]["openx-main-model"] == "new-model"
 
@@ -267,7 +306,10 @@ class TestModelCommand:
         from openx.app.cli import commands
 
         ws, _ = kernel_env
-        agent = _make_agent(ws, api_key="k", api_base="https://x", model="m1")
+        _write_groups(_default_groups(), "default")
+        agent = _make_agent(ws)
+        # 运行中途组被删（磁盘组空）→ /model 列表提示未配置组
+        OpenXConfig.save_model_groups({})
         stub = StubConsole()
         assert await commands.handle_slash_command("model", agent, stub, []) is True
         assert any("No model groups configured" in i for i in stub.infos)
@@ -299,7 +341,7 @@ class TestModelCommand:
             is True
         )
         assert agent._provider_name == "alt"
-        assert agent.llm._impl.config.model == "m-b"
+        assert agent.llm._impl.settings["model"] == "m-b"
         assert SETTINGS_PATH.read_text().count("alt")  # activeGroup 已落盘
         import json
         assert json.loads(SETTINGS_PATH.read_text())["activeGroup"] == "alt"
@@ -309,8 +351,11 @@ class TestModelCommand:
         from openx.app.cli import commands
 
         ws, _ = kernel_env
-        # 无持久化组 → 字面量参数只能走 set_role_model，但无组可持久化 → 报错
-        agent = _make_agent(ws, api_key="k", api_base="https://x", model="m1")
+        _write_groups({"default": {"kind": "openai-compat",
+                                   "openx-main-model": "m1"}}, "default")
+        agent = _make_agent(ws)
+        # 运行中途组从磁盘清掉 → 无组可持久化 → 报错且状态不变
+        OpenXConfig.save_model_groups({})
         stub = StubConsole()
         assert (
             await commands.handle_slash_command("model", agent, stub, ["some-model"])

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from openx.config import OpenXConfig
 from openx.kernel.reasoning.retry import RetryingProvider
 from openx.llm.anthropic import (
     AnthropicProvider,
@@ -217,8 +216,7 @@ class FakeClient:
 
 def _provider(result):
     """AnthropicProvider with fake client; ``result`` = 响应或 FakeStream。"""
-    cfg = OpenXConfig(api_key="sk-test", model="claude-3")
-    p = AnthropicProvider(cfg)
+    p = AnthropicProvider({"api_key": "sk-test", "model": "claude-3"})
     p._client = FakeClient(FakeMessages(result))
     return p
 
@@ -363,8 +361,7 @@ class TestChat:
             def messages(self):
                 return self._calls.pop(0)
 
-        cfg = OpenXConfig(api_key="sk-test", model="claude-3")
-        provider = AnthropicProvider(cfg)
+        provider = AnthropicProvider({"api_key": "sk-test", "model": "claude-3"})
         provider._client = SeqClient(first, second)
         r = RetryingProvider(provider)
         r.policy.base_delay = 0.0

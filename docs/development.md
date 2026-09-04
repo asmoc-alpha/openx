@@ -24,8 +24,9 @@ openx                      # interactive REPL
 openx "fix the failing test"   # single-shot mode
 ```
 
-First run launches the setup wizard (API key, model); answers are saved to
-`~/.openx/settings.json`. See [configuration](user/guide/configuration.md).
+First run launches the setup wizard, which writes a `default` model group to
+`~/.openx/settings.json`. Model & provider config lives only in `modelGroups`; see
+[configuration](user/guide/configuration.md).
 
 ## Tests
 

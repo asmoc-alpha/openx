@@ -13,7 +13,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/quit`（别名 `/exit`、`/q`） | 退出 OpenX |
 | `/help` | 显示全部可用命令 |
 | `/clear` | 清屏并清空对话历史 |
-| `/model <name>` | 切换 LLM 模型（如 `/model gpt-4o`） |
+| `/model [<组>]` / `/model <组>:<角色>` | 列出/切换模型组，或设置某角色模型（main/exec/mini/modal） |
 | `/workspace <path>` | 更换工作区目录 |
 | `/auto-approve` | 开关自动批准模式 |
 | `/mode [mode]` | 查看或切换权限模式（manual / auto / plan） |
@@ -34,7 +34,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/compact` | 压缩历史以释放上下文 |
 | `/git` | 显示 git status |
 | `/diff` | 显示 git diff |
-| `/config` | 显示配置；交互式修改模型、API key、API base URL |
+| `/config` | 显示/编辑激活模型组（模型、共享 API key/base、逐角色模型） |
 | `/tips` | 显示使用技巧 |
 | `/release-notes`（别名 `/release`） | 浏览 release notes——选择版本查看，或 `/release <version>` |
 

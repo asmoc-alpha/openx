@@ -11,7 +11,7 @@ openx/
 ├── openx/
 │   ├── main.py            # CLI 入口：参数、setup wizard、信任检查、会话、分发
 │   ├── agent.py           # 核心 agent loop（流式 + 非流式、plan mode、subagents）
-│   ├── config.py          # 配置：settings.json + config 文件 + 环境变量合并
+│   ├── config.py          # 配置：modelGroups（模型/凭据）+ 项目非模型旋钮
 │   ├── permissions.py     # 权限分级 + 已存储的 allow/deny 规则
 │   ├── memory.py          # 持久记忆（~/.openx/memory/）
 │   ├── instructions.py    # OPENX.md 加载（全局 / 项目 / 子目录）

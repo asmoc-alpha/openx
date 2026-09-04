@@ -40,15 +40,13 @@ pip install -e .
 pip install openx
 ```
 
-需要 Python ≥ 3.10。首次运行时，`openx` 会启动交互式 setup wizard，并把答案保存到 `~/.openx/settings.json`。也可以通过环境变量配置：
+需要 Python ≥ 3.10。首次运行时，`openx` 会启动交互式 setup wizard，写入一个 `default` 模型组到 `~/.openx/settings.json`。模型/凭据配置**只**在该文件的 `modelGroups` 块里——每个组共享一套 key/端点，并可定义逐角色模型（`main`/`exec`/`mini`/`modal`）。key 可用 `env:VAR` 引用环境变量：
 
 ```bash
-export OPENAI_API_KEY=sk-your-key-here
-
-# 可选：使用其他 OpenAI 兼容 provider
-export OPENAI_API_BASE=https://api.openai.com/v1
-export OPENX_MODEL=gpt-4o
+export OPENAI_API_KEY=sk-your-key-here   # 组里写 "apiKey": "env:OPENAI_API_KEY"
 ```
+
+schema 见 [配置](docs/user/guide/configuration.zh.md)。
 
 ## 快速开始
 

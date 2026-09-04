@@ -1,11 +1,12 @@
 """Configuration management for OpenX.
 
-Supports config from:
-0. ~/.openx/settings.json (env section — new!)
-1. Environment variables
-2. ~/.openx/config.json
-3. .openx.json (project-level)
-4. Command-line arguments
+模型/凭据配置**唯一**来自 ``~/.openx/settings.json`` 的 ``modelGroups`` /
+``activeGroup``（解析见 :mod:`openx.model_groups`）。OpenXConfig 本身只承载
+非模型配置（权限/UI/指令/重试默认等）与两个解析后 echo（``model`` /
+``active_group``），不再读取任何扁平旧结构（settings ``env`` 段、
+``~/.openx/config.json``、``.openx.json``、``OPENAI_API_KEY`` 等直读）。
+本模块同时负责 settings.json 各顶层键的读写（modelGroups/mcpServers/
+hooks/plugins/trusted_dirs）。
 """
 
 # ── 独立调试支持：允许直接运行本文件（python openx/.../xxx.py）──────
@@ -37,27 +38,23 @@ class OpenXConfig:
     """OpenX configuration."""
 
     # ── LLM settings ─────────────────────────────────────────────
-    # No hardcoded defaults — must be set via settings.json, env, or CLI.
-    api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
-    api_base: str = field(
-        default_factory=lambda: os.environ.get("OPENAI_API_BASE", "")
-    )
-    model: str = field(
-        default_factory=lambda: os.environ.get("OPENX_MODEL", "")
-    )
+    # model 只是「解析后 echo」（供 header/会话元展示），不是配置输入——
+    # 模型/凭据/端点唯一来自 modelGroups（经 role_settings 解析的 settings
+    # dict），此处无 env/文件默认。
+    model: str = ""   # 激活组 main 模型 echo（main/agent 解析后回写）
     max_tokens: int = 8192
     temperature: float = 0.0
 
     # ── 模型组（modelGroups）──────────────────────────────────────
-    # active_group 是当前绑定组的投影（agent 构造/切组时回写），供 UI 展示。
+    # active_group 是当前绑定组名的投影（agent 构造/切组时回写），供 UI 展示。
     # cli_*_override 为临时 CLI 覆盖（main.py 置位），仅对 main 角色生效。
     active_group: str = ""
     cli_model_override: Optional[str] = None
     cli_api_key_override: Optional[str] = None
     cli_api_base_override: Optional[str] = None
-    # load() 置位：手动构造的 OpenXConfig（测试/嵌入，字段直给）不读全局
-    # modelGroups——保持与旧 resolve_provider 相同的隔离（避免真实 ~/.openx
-    # 泄漏进单测）。由 load() 产出、或经 save/ensure 消费的实例才走文件组。
+    # load() 置位 True：实例必须走文件 modelGroups，无组即未配置（role_settings
+    # 抛错，CLI 路径由 is_configured 门拦下）。手动构造（测试/嵌入）保持 False，
+    # 不读全局 modelGroups（避免真实 ~/.openx 泄漏进单测），无组走内存合成。
     settings_loaded: bool = False
 
     # ── Retry settings ───────────────────────────────────────────
@@ -134,26 +131,13 @@ class OpenXConfig:
         SETTINGS_PATH.write_text(json.dumps(data, indent=2))
 
     @staticmethod
-    def load_settings() -> dict:
-        """Load env settings from ~/.openx/settings.json."""
-        return OpenXConfig._load_full_settings().get("env", {})
-
-    @staticmethod
-    def save_settings(env: dict) -> None:
-        """Save env settings, preserving other top-level keys."""
-        data = OpenXConfig._load_full_settings()
-        data["env"] = env
-        OpenXConfig._save_full_settings(data)
-
-    @staticmethod
     def is_configured() -> bool:
         """Check if a model group with an active main binding is configured.
 
-        先跑一次迁移（存量 env/providers/models 折成模型组），再判定激活组
-        的 main 角色是否带 model（api_key 可经运行时 env 兜底，启动校验
-        另行要求）。无任何组时返回 False（交给 setup 向导 / 内存合成）。
+        纯读判定（不再触发任何迁移）：settings.json 的 ``modelGroups`` 是否
+        含激活组的 main 角色且带 model（api_key 是否齐全由启动校验另行
+        要求）。无任何组时返回 False（交给 setup 向导）。
         """
-        OpenXConfig.ensure_model_groups()
         data = OpenXConfig._load_full_settings()
         groups_raw = data.get("modelGroups") or {}
         active = data.get("activeGroup") or ""
@@ -214,22 +198,6 @@ class OpenXConfig:
         data = OpenXConfig._load_full_settings()
         data["activeGroup"] = name
         OpenXConfig._save_full_settings(data)
-
-    @staticmethod
-    def ensure_model_groups() -> list[str]:
-        """modelGroups 缺失且存在旧结构时，自动迁移并落盘一次。
-
-        返回迁移说明（无迁移返回空列表）。已含 modelGroups 或没有任何
-        旧结构（留给内存合成兜底）时不动文件。
-        """
-        data = OpenXConfig._load_full_settings()
-        if data.get("modelGroups"):
-            return []
-        new_data, notes = _mg.migrate_legacy(data)
-        if not notes:
-            return []
-        OpenXConfig._save_full_settings(new_data)
-        return notes
 
     # ── Plugin management（微内核 P1）─────────────────────────
 
@@ -292,63 +260,32 @@ class OpenXConfig:
 
     @classmethod
     def load(cls, workspace: Optional[str] = None) -> "OpenXConfig":
-        """Load config from all sources, merging in priority order.
-
-        Priority (lowest → highest):
-        0. settings.json env values
-        1. ~/.openx/config.json
-        2. .openx.json (project-level)
-        3. Environment variable overrides
+        """加载配置。模型/凭据**不在此处读取**——只经 ``modelGroups`` 由
+        ``role_settings()`` 解析。这里只合并非模型项目配置与运行旋钮：
+        项目 ``<workspace>/.openx/settings.json``（顶层键，排除 model/
+        active_group）+ 非 provider 环境变量（auto_approve/web_search）。
+        无 modelGroups 时 ``is_configured()`` 为 False（首启走向导）；
+        ``role_settings()`` 会抛错而非静默合成。
         """
-        # 存量结构（扁平 env / providers / profiles）首次加载时迁移为模型组
-        OpenXConfig.ensure_model_groups()
-
         config = cls()
         config.settings_loaded = True
 
         if workspace:
             config.workspace = workspace
 
-        # 0. settings.json env
-        settings_env = cls.load_settings()
-        if settings_env.get("OPENX_API_KEY"):
-            config.api_key = settings_env["OPENX_API_KEY"]
-        if settings_env.get("OPENX_BASE_URL"):
-            config.api_base = settings_env["OPENX_BASE_URL"]
-        if settings_env.get("OPENX_DEFAULT_MODEL"):
-            config.model = settings_env["OPENX_DEFAULT_MODEL"]
-
-        # 1. Global user config
-        global_config = Path.home() / ".openx" / "config.json"
-        if global_config.exists():
-            try:
-                config._merge(json.loads(global_config.read_text()))
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        # 2. Project-level config (.openx/settings.json)
+        # 项目级 config (.openx/settings.json)：只并非模型键
+        # （allowed_commands / auto_approve / ...）；模型/凭据不在项目层设。
         project_settings = Path(config.workspace) / ".openx" / "settings.json"
         if project_settings.exists():
             try:
-                config._merge(json.loads(project_settings.read_text()))
+                config._merge(
+                    json.loads(project_settings.read_text()),
+                    exclude={"model", "active_group"},
+                )
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # 2b. Legacy project config (.openx.json, deprecated)
-        legacy_project = Path(config.workspace) / ".openx.json"
-        if legacy_project.exists():
-            try:
-                config._merge(json.loads(legacy_project.read_text()))
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        # 3. Environment variable overrides (highest priority)
-        if os.environ.get("OPENAI_API_KEY"):
-            config.api_key = os.environ["OPENAI_API_KEY"]
-        if os.environ.get("OPENAI_API_BASE"):
-            config.api_base = os.environ["OPENAI_API_BASE"]
-        if os.environ.get("OPENX_MODEL"):
-            config.model = os.environ["OPENX_MODEL"]
+        # 环境变量：只覆盖非 provider 旋钮（模型/凭据唯一来自模型组）
         if os.environ.get("OPENX_AUTO_APPROVE"):
             config.auto_approve = os.environ["OPENX_AUTO_APPROVE"].lower() == "true"
         if os.environ.get("OPENX_WEB_SEARCH"):
@@ -356,15 +293,20 @@ class OpenXConfig:
 
         return config
 
-    def _merge(self, data: dict) -> None:
-        """Merge a config dict into this instance."""
+    def _merge(self, data: dict, exclude: frozenset = frozenset()) -> None:
+        """Merge a config dict into this instance.
+
+        ``exclude`` 里的键跳过（用于阻止项目文件注入解析后 echo/模型键）。
+        未知键（无对应属性）忽略；列表字段改为追加而非替换。
+        """
         for key, value in data.items():
-            if hasattr(self, key):
-                if isinstance(value, list) and isinstance(getattr(self, key), list):
-                    # For lists, extend (don't replace)
-                    getattr(self, key).extend(value)
-                else:
-                    setattr(self, key, value)
+            if key in exclude or not hasattr(self, key):
+                continue
+            if isinstance(value, list) and isinstance(getattr(self, key), list):
+                # For lists, extend (don't replace)
+                getattr(self, key).extend(value)
+            else:
+                setattr(self, key, value)
 
     # ── 模型组解析（modelGroups，唯一咽喉点）────────────────────
 
@@ -380,17 +322,13 @@ class OpenXConfig:
         return out
 
     def _synthesize_default_group(self) -> "_mg.ModelGroup":
-        """无任何组时的内存合成 default 组（不落盘）。
+        """手写/嵌入构造（settings_loaded=False）的极简内存组（不落盘）。
 
-        保留「手动设 config 字段 / 无 settings 文件」用法（测试与嵌入），
-        main 绑定 = 本 config 的 model/key/base。
+        仅测试与嵌入式构造在无磁盘组时走这里：main 绑定 = ``self.model``
+        echo（可能空），kind=openai-compat，**不带任何凭据**——凭据只来自
+        组配置，这里不再兜底。load() 产出的配置不合成（见 resolve_group）。
         """
-        g = _mg.ModelGroup(
-            name="default",
-            kind="openai-compat",
-            api_key=self.api_key or None,
-            api_base=self.api_base or None,
-        )
+        g = _mg.ModelGroup(name="default", kind="openai-compat")
         g.roles[_mg.MAIN_ROLE] = _mg.RoleBinding(_mg.MAIN_ROLE, self.model or "")
         return g
 
@@ -402,20 +340,30 @@ class OpenXConfig:
         return groups, active
 
     def active_group_name(self) -> str:
-        """当前生效的组名（self.active_group 投影 > activeGroup > 首个 > default）。"""
+        """当前生效的组名（self.active_group 投影 > activeGroup > 首个）；无组返回 ""。"""
         groups, active = self._file_groups()
+        if not groups:
+            return ""  # 未配置：load() 路径由 is_configured / role_settings 拦下
         if self.active_group and self.active_group in groups:
             return self.active_group
         if active in groups:
             return active
-        if groups:
-            return next(iter(groups))
-        return "default"
+        return next(iter(groups))
 
     def resolve_group(self, name: Optional[str] = None) -> "_mg.ModelGroup":
-        """解析指定（或当前激活）模型组；无组时返回内存合成 default。"""
+        """解析指定（或当前激活）模型组。
+
+        文件无组时：手写构造（settings_loaded=False）合成极简 default 组；
+        load() 产出的配置（settings_loaded=True）视为**未配置**——抛
+        ValueError 及早暴露（CLI 首启已被 is_configured 门拦下走向导）。
+        """
         groups, active = self._file_groups()
         if not groups:
+            if self.settings_loaded:
+                raise ValueError(
+                    "no modelGroups configured in ~/.openx/settings.json — "
+                    "run 'openx' to launch the setup wizard"
+                )
             return self._synthesize_default_group()
         target = name or self.active_group or active
         if target not in groups:
@@ -438,26 +386,10 @@ class OpenXConfig:
             self, group, role_key, self._cli_overrides()
         )
 
-    def save_global(self) -> None:
-        """Save global config."""
-        global_dir = Path.home() / ".openx"
-        global_dir.mkdir(parents=True, exist_ok=True)
-        config_file = global_dir / "config.json"
-
-        data = {
-            "api_key": self.api_key,
-            "api_base": self.api_base,
-            "model": self.model,
-            "temperature": self.temperature,
-            "auto_approve": self.auto_approve,
-        }
-        config_file.write_text(json.dumps(data, indent=2))
-
-
 if __name__ == "__main__":
     import tempfile
 
-    # OpenXConfig.load：workspace 指向临时目录（不调用 save_global，不写真实 home）
+    # OpenXConfig.load：workspace 指向临时目录（不写真实 home）
     with tempfile.TemporaryDirectory() as _td:
         _cfg = OpenXConfig.load(workspace=_td)
         print(f"workspace     = {_cfg.workspace}")

@@ -464,8 +464,6 @@ async def test_context_plugin_reaches_system_prompt(kernel_env):
     ws, _ = kernel_env
     config = OpenXConfig()
     config.workspace = str(ws)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
     config.model = "test-model"
     agent = OpenXAgent(config)
     k = get_kernel()

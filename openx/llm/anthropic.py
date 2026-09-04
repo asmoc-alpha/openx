@@ -352,7 +352,7 @@ class AnthropicProvider(LLMProvider):
                 "anthropic SDK not installed; run `pip install openx[anthropic]`"
             )
         return AsyncAnthropic(
-            api_key=self.config.api_key,
+            api_key=self.settings.get("api_key", ""),
             timeout=120.0,
             # SDK 内置重试关闭：重试统一归内核（双层重试会乘等待时间）
             max_retries=0,
@@ -365,8 +365,8 @@ class AnthropicProvider(LLMProvider):
     ) -> dict[str, Any]:
         system, anth_messages = messages_to_anthropic(messages)
         params: dict[str, Any] = {
-            "model": self.config.model,
-            "max_tokens": self.config.max_tokens,
+            "model": self.settings.get("model", ""),
+            "max_tokens": self.settings.get("max_tokens", 8192),
             "messages": anth_messages,
         }
         if system:

@@ -151,13 +151,22 @@ class FakeCompletions:
 
 
 def _make_client(outcomes, max_retries: int = 3, base_delay: float = 0.0):
-    """构造挂 Fake 的 LLMClient（不触发真实网络）。"""
-    cfg = OpenXConfig(
-        api_key="sk-test", api_base="https://api.test/v1", model="fake-model"
-    )
+    """构造挂 Fake 的 LLMClient（不触发真实网络）。
+
+    凭据/模型经 policy_overrides（解析出的 settings dict）给实现；config 只
+    承载 retry 晚绑定字段。
+    """
+    cfg = OpenXConfig()
     cfg.max_retries = max_retries
     cfg.retry_base_delay = base_delay
-    llm = LLMClient(cfg)
+    llm = LLMClient(
+        cfg,
+        policy_overrides={
+            "api_key": "sk-test",
+            "api_base": "https://api.test/v1",
+            "model": "fake-model",
+        },
+    )
     completions = FakeCompletions(outcomes)
     llm._client = Obj(chat=Obj(completions=completions))
     return llm, completions
@@ -506,10 +515,11 @@ class TestCachedTokenExtraction:
     def test_parse_response_exposes_cached(self):
         from openx.llm.openai_compat import OpenAICompatProvider
 
-        cfg = OpenXConfig()
-        cfg.api_key = "sk-test"
-        cfg.api_base = "https://example.com/v1"
-        cfg.model = "test-model"
+        provider = OpenAICompatProvider({
+            "api_key": "sk-test",
+            "api_base": "https://example.com/v1",
+            "model": "test-model",
+        })
         raw = Obj(
             choices=[Obj(message=Obj(content="hi", tool_calls=None))],
             usage=Obj(
@@ -517,7 +527,7 @@ class TestCachedTokenExtraction:
                 prompt_tokens_details=Obj(cached_tokens=4),
             ),
         )
-        result = OpenAICompatProvider(cfg)._parse_response(raw)
+        result = provider._parse_response(raw)
         assert result["usage"] == {
             "prompt_tokens": 11, "completion_tokens": 7, "cached_tokens": 4,
         }

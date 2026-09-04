@@ -152,8 +152,6 @@ def _make_agent(tmp_path, monkeypatch=None, responses=()):
     from openx.agent import OpenXAgent
     config = OpenXConfig()
     config.workspace = str(tmp_path)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
     config.model = "test-model"
     agent = OpenXAgent(config)
     agent.llm = FakeLLM(responses)
@@ -196,8 +194,6 @@ class TestDefaultMode:
         parent.set_mode("auto")
         config = OpenXConfig()
         config.workspace = str(tmp_path)
-        config.api_key = "sk-test"
-        config.api_base = "https://example.com/v1"
         config.model = "test-model"
         child = OpenXAgent(config, parent=parent)
         assert child.mode == "auto"
@@ -487,8 +483,6 @@ class TestInstructionsInjection:
         parent = _make_agent(tmp_path)
         config = OpenXConfig()
         config.workspace = str(tmp_path)
-        config.api_key = "sk-test"
-        config.api_base = "https://example.com/v1"
         config.model = "test-model"
         child = OpenXAgent(config, parent=parent)
         assert MANUAL_MODE_INSTRUCTIONS not in child._system_prompt

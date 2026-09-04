@@ -1,8 +1,8 @@
-"""模型组（modelGroups）配置：schema 解析 / 旧配置迁移 / per-role 解析。
+"""模型组（modelGroups）配置：schema 解析 / 序列化 / per-role 解析。
 
-模型组是 OpenX 的唯一模型配置入口（替换旧的扁平 ``model/api_key/api_base``
-与 ``providers``/``active_provider``/``models`` profiles）。每个组可定义至多
-四个角色模型：
+模型组是 OpenX 的**唯一**模型配置入口——模型、凭据、端点只经 settings.json
+的 ``modelGroups``/``activeGroup`` 表达（不再读取任何扁平旧结构）。每个组可
+定义至多四个角色模型：
 
 - ``openx-main-model``：主推理模型（规划/拆解/设计，主回合）；
 - ``openx-exec-model``：执行模型（子代理/任务委派）；
@@ -10,9 +10,10 @@
 - ``openx-modal-model``：多模模型（带图回合）。
 
 一个组可整体共享一套 apiKey/apiBase，也允许逐角色覆盖（含换 kind/端点/key）。
-组内 main 必填，exec/mini/modal 缺席时运行时回落 main 绑定。
+组内 main 必填，exec/mini/modal 缺席时运行时回落 main 绑定。凭据字段支持
+``env:VAR`` 间接（运行时从进程环境取值）——这是唯一允许的外部凭据来源。
 
-本模块**只做纯逻辑**（不 import config、不碰文件 I/O）：解析/校验/迁移/
+本模块**只做纯逻辑**（不 import config、不碰文件 I/O）：解析/校验/序列化/
 解析合并都以 ``dict`` 或鸭子类型对象进出；settings.json 的读写由
 :mod:`openx.config` 的 ``OpenXConfig`` 委托调用（其 ``SETTINGS_PATH`` 是
 测试 monkeypatch 点，I/O 必须留在那里）。
@@ -286,129 +287,11 @@ def to_raw(group: ModelGroup) -> dict:
     return out
 
 
-# ── 迁移（旧结构 -> modelGroups，纯 dict → dict） ────────────────
-
-# settings.json ``env`` 里与模型相关的旧键（迁移后删除）
-_LEGACY_ENV_KEYS = ("OPENX_API_KEY", "OPENX_BASE_URL", "OPENX_DEFAULT_MODEL")
-
-
-def _group_from_flat(key: str, base: str, model: str) -> dict:
-    g: dict[str, Any] = {"kind": "openai-compat", "openx-main-model": model}
-    if key:
-        g["apiKey"] = key
-    if base:
-        g["apiBase"] = base
-    return g
-
-
-def _group_from_provider(name: str, inst: dict) -> dict:
-    g: dict[str, Any] = {
-        "kind": inst.get("kind") or "openai-compat",
-        "openx-main-model": str(inst.get("model") or ""),
-    }
-    for src, dst in (("api_key", "apiKey"), ("api_base", "apiBase")):
-        v = inst.get(src)
-        if v:
-            g[dst] = v
-    for k in ("temperature", "max_tokens", "max_retries", "retry_base_delay"):
-        if k in inst and inst[k] is not None:
-            g[k] = inst[k]
-    return g
-
-
-def migrate_legacy(data: dict) -> tuple[dict, list[str]]:
-    """旧 settings.json 结构 -> modelGroups/activeGroup。
-
-    返回 ``(新 data, 迁移说明列表)``；``modelGroups`` 已存在时原样返回
-    （幂等）。迁移源优先级：扁平 env 三件套 < providers < models profiles；
-    各来源映射成独立组（名字见内），冲突时靠前的来源优先。
-    """
-    if not isinstance(data, dict):
-        return data, []
-    if data.get("modelGroups"):
-        return data, []
-    notes: list[str] = []
-    groups: dict[str, dict] = {}
-    env = data.get("env") or {}
-    providers = data.get("providers") or {}
-    profiles = data.get("models") or {}
-    active_group: Optional[str] = None
-
-    # 1) 扁平 env 三件套（存量最深、保底）
-    flat_key = str(env.get("OPENX_API_KEY") or "").strip()
-    flat_base = str(env.get("OPENX_BASE_URL") or "").strip()
-    flat_model = str(env.get("OPENX_DEFAULT_MODEL") or "").strip()
-    if flat_model:
-        groups["default"] = _group_from_flat(flat_key, flat_base, flat_model)
-        active_group = "default"
-        notes.append(
-            "migrated flat env config into model group 'default' "
-            f"(main={flat_model})"
-        )
-
-    # 2) providers：每个实例保留为独立组（1:1 对应 /model <组> 切换）
-    for pname, inst in providers.items():
-        if not isinstance(inst, dict):
-            continue
-        if pname in groups:  # 名字冲突：扁平 default 优先，其余跳过保活
-            notes.append(f"skipped provider '{pname}' (group name taken)")
-            continue
-        groups[pname] = _group_from_provider(pname, inst)
-        if data.get("active_provider") == pname:
-            active_group = pname
-    if providers:
-        notes.append(
-            f"migrated {len(groups)} provider instance(s) into model groups"
-        )
-
-    # 3) models profiles：每个折成独立组
-    for mname, prof in profiles.items():
-        if not isinstance(prof, dict):
-            continue
-        if mname in groups:
-            notes.append(f"skipped model profile '{mname}' (group name taken)")
-            continue
-        g: dict[str, Any] = {
-            "kind": "openai-compat",
-            "openx-main-model": str(prof.get("model") or ""),
-        }
-        for src, dst in (("api_key", "apiKey"), ("api_base", "apiBase")):
-            v = prof.get(src)
-            if v:
-                g[dst] = v
-        if prof.get("model"):
-            groups[mname] = g
-            if active_group is None:
-                active_group = mname
-            notes.append(f"migrated model profile '{mname}' into a model group")
-
-    if not groups:
-        return data, []  # 无任何存量：不写空 groups，留给内存合成兜底
-
-    out = dict(data)
-    # 写进规范 raw（camel），并清掉旧键
-    out["modelGroups"] = {n: _canonicalize_raw(g) for n, g in groups.items()}
-    if active_group and active_group in out["modelGroups"]:
-        out["activeGroup"] = active_group
-    else:
-        out["activeGroup"] = next(iter(out["modelGroups"]))
-    out.pop("providers", None)
-    out.pop("active_provider", None)
-    out.pop("models", None)
-    if env:
-        kept_env = {k: v for k, v in env.items() if k not in _LEGACY_ENV_KEYS}
-        if kept_env:
-            out["env"] = kept_env
-        else:
-            out.pop("env", None)
-    return out, notes
-
-
 def _canonicalize_raw(g: dict) -> dict:
     """把 snake 键归一成 camel（api_key->apiKey 等），供落盘与保存路径统一。
 
-    ``migrate_legacy`` 与保存侧可能带 snake 键（provider/profile 旧字段），
-    归一后 settings 里只存 camel 规范形。角色对象同样递归归一。
+    保存侧可能带 snake 键；归一后 settings 里只存 camel 规范形。角色对象
+    同样递归归一。
     """
     def _one(v: Any) -> Any:
         if not isinstance(v, dict):
@@ -459,23 +342,24 @@ def resolve_role_settings(
 ) -> dict:
     """把 (组, 角色) 解析成 provider 工厂读的设置 dict。
 
-    优先级：role 显式 > group 默认 > ``cfg``（env/CLI 已并入的全局兜底）。
+    优先级：role 显式 > group 默认。凭据/端点只来自组（含 ``env:VAR`` 展开），
+    没有任何 config 扁平兜底——模型配置唯一入口就是模型组。
     - model：main 角色还会被 CLI ``cli['model']`` 临时覆盖（历史 ``-m`` 最大）；
-      非 main 角色不回落到 ``cfg.model``（那是主模型语义，缺席已整体回落 main）。
-    - api_key/base 逐级合并并展开 ``env:VAR``。
-    - retry 字段只在组/角色显式声明时进 dict（策略对象仍晚绑定读 config）。
+      main 模型由 parse 保证非空，CLI 覆盖是最上层。
+    - temperature/max_tokens/retry 在组/角色未声明时回落 ``cfg`` 通用默认
+      （这些是运行期旋钮，不是扁平旧结构兼容）。
     """
     b = resolve_binding(group, role_key)
     cli = cli or {}
 
     kind = b.kind or group.kind or "openai-compat"
 
-    api_key = _pick_secret(b.api_key, group.api_key, getattr(cfg, "api_key", ""))
-    api_base = _pick_secret(b.api_base, group.api_base, getattr(cfg, "api_base", ""))
+    api_key = _pick_secret(b.api_key, group.api_key)
+    api_base = _pick_secret(b.api_base, group.api_base)
 
     if role_key == MAIN_ROLE:
         cli_model = cli.get("model")
-        model = cli_model or b.model or getattr(cfg, "model", "") or ""
+        model = cli_model or b.model or ""
         api_key = cli.get("api_key") or api_key
         api_base = cli.get("api_base") or api_base
     else:
@@ -511,7 +395,7 @@ def resolve_role_settings(
 
 
 if __name__ == "__main__":
-    # 独立自检：解析 + env:VAR 展开 + 迁移三类旧结构
+    # 独立自检：解析 + env:VAR 展开 + per-role 解析（凭据/模型只来自组）
     _raw = {
         "kind": "openai-compat",
         "openx-main-model": "m1",
@@ -529,31 +413,20 @@ if __name__ == "__main__":
     _only = ModelGroup(name="o", roles={MAIN_ROLE: RoleBinding(MAIN_ROLE, "mm")})
     assert resolve_binding(_only, "openx-exec-model").model == "mm"
 
-    # 迁移
+    # per-role 解析：凭据/模型只来自组；temperature/max_tokens 回落 cfg 默认
     class _Cfg:
-        api_key = ""; api_base = ""; model = ""; temperature = 0.0; max_tokens = 100
-
-    _mig = {"env": {"OPENX_BASE_URL": "https://x", "OPENX_DEFAULT_MODEL": "dm"},
-            "trusted_dirs": ["/a"]}
-    _new, _notes = migrate_legacy(_mig)
-    assert _new["modelGroups"]["default"]["openx-main-model"] == "dm"
-    assert _new["activeGroup"] == "default"
-    # env 里 LLM 键已移除（此处 env 全被清空 → 整节删除）
-    assert "OPENX_DEFAULT_MODEL" not in str(_new)
-    assert _new["trusted_dirs"] == ["/a"]
-    # 幂等：已含 modelGroups 不再迁移
-    _again, _n2 = migrate_legacy(_new)
-    assert _again is _new and _n2 == []
-    _p = {"providers": {"a": {"kind": "anthropic", "api_key": "k", "model": "cl1"},
-                        "b": {"kind": "openai-compat", "api_key": "k2",
-                              "api_base": "https://b", "model": "bm"}},
-          "active_provider": "b"}
-    _pv, _ = migrate_legacy(_p)
-    assert set(_pv["modelGroups"]) == {"a", "b"} and _pv["activeGroup"] == "b"
-    assert _pv["modelGroups"]["a"]["kind"] == "anthropic"
+        temperature = 0.0
+        max_tokens = 100
 
     _s = resolve_role_settings(_Cfg(), _g, "openx-mini-model")
     assert _s["model"] == "m3" and _s["kind"] == "openai-compat"
+    # mini 自带 env: 间接 key 未设 → 空（不回落任何扁平字段）
+    assert _s["api_key"] == ""
+    # 缺组级 key/base → 空；CLI 覆盖最上层
+    _only_grp = ModelGroup(name="k", roles={MAIN_ROLE: RoleBinding(MAIN_ROLE, "mm")})
+    _no_cred = resolve_role_settings(_Cfg(), _only_grp, MAIN_ROLE)
+    assert _no_cred["api_key"] == "" and _no_cred["api_base"] == ""
+    assert _no_cred["model"] == "mm"
     _cli_ovr = {"model": "clivm"}
     assert resolve_role_settings(_Cfg(), _g, MAIN_ROLE, _cli_ovr)["model"] == "clivm"
     print("openx/model_groups.py OK ✓")

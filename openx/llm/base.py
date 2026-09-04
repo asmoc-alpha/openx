@@ -69,8 +69,10 @@ class LLMProvider(ABC):
     _CONN_ERROR_TYPES: tuple = ()
     _STATUS_ERROR_TYPE: Optional[type] = None
 
-    def __init__(self, config: Any) -> None:
-        self.config = config
+    def __init__(self, settings: dict) -> None:
+        # settings = (组, 角色) 解析出的 provider 设置 dict（model_groups
+        # resolve_role_settings 产出）；凭据/模型不经过任何 OpenXConfig 字段。
+        self.settings = settings
         self._client: Optional[Any] = None
 
     # ── 抽象钩子：协议特有面 ─────────────────────────────

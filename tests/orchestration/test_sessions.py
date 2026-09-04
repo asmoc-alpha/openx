@@ -68,8 +68,6 @@ def _make_agent(tmp_path, responses, session_store=None, session_id=None):
 
     config = OpenXConfig()
     config.workspace = str(tmp_path)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
     config.model = "test-model"
     agent = OpenXAgent(
         config, session_store=session_store, session_id=session_id,

@@ -23,7 +23,7 @@ openx                      # 交互式 REPL
 openx "fix the failing test"   # 单次模式
 ```
 
-首次运行会启动 setup wizard（API key、模型），答案保存在 `~/.openx/settings.json`。参见[配置](user/guide/configuration.zh.md)。
+首次运行会启动 setup wizard，写入一个 `default` 模型组到 `~/.openx/settings.json`。模型/凭据配置只存在于 `modelGroups`；参见[配置](user/guide/configuration.zh.md)。
 
 ## 测试
 

@@ -312,29 +312,20 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
         args.resume = None
 
-    # ── First-run check: settings.json ──────────────────────────
-    # If any required field is missing (no settings, no env, no CLI),
-    # launch the interactive setup wizard.
-    has_settings = OpenXConfig.is_configured()
-    has_env = all(
-        os.environ.get(k, "").strip()
-        for k in ("OPENAI_API_KEY", "OPENAI_API_BASE", "OPENX_MODEL")
-    )
-    has_cli = bool(args.api_key)
-
-    if not has_settings and not has_env and not has_cli:
-        # Not configured — launch interactive setup wizard（向导直接写 modelGroups）
+    # ── First-run check: modelGroups ─────────────────────────────
+    # 模型/凭据只来自 settings.json 的 modelGroups；未配置（无激活组）→
+    # 启动交互向导。CLI --api-key/--api-base/--model 只是对既有组的临时
+    # 覆盖，不能替代组本身（故不再把 env/CLI 当作"已配置"）。
+    if not OpenXConfig.is_configured():
         asyncio.run(run_setup_wizard())
 
-    # Build config (picks up settings.json modelGroups + env vars + CLI args)
+    # Build config (project settings + 非 provider env；模型组经 role_settings)
     config = OpenXConfig.load(workspace=args.workspace)
 
-    # CLI 临时覆盖：仅 main 角色生效（-m 最大）；api_key/base 也回填兜底
+    # CLI 临时覆盖：仅 main 角色生效（-m 最大），作为对组解析结果的覆盖
     if args.api_key:
-        config.api_key = args.api_key
         config.cli_api_key_override = args.api_key
     if args.api_base:
-        config.api_base = args.api_base
         config.cli_api_base_override = args.api_base
     if args.model:
         config.cli_model_override = args.model
@@ -358,11 +349,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)
 
-    # 把生效的 main 绑定投影回 config（header/会话 meta/init event 用）
+    # 把生效的 main 绑定投影回 config（仅 echo：组名 + 模型；凭据不投影）
     config.active_group = active_group
     config.model = main_settings.get("model") or config.model
-    config.api_key = main_settings.get("api_key") or config.api_key
-    config.api_base = main_settings.get("api_base") or config.api_base
 
     if args.max_rounds:
         config.max_tool_rounds = args.max_rounds

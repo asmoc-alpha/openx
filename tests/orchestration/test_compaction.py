@@ -49,8 +49,6 @@ def _make_agent(tmp_path, responses, max_history_tokens=100_000):
     from openx.agent import OpenXAgent
     config = OpenXConfig()
     config.workspace = str(tmp_path)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
     config.model = "test-model"
     config.max_history_tokens = max_history_tokens  # 先设再构造：history 同步拿到上限
     agent = OpenXAgent(config)

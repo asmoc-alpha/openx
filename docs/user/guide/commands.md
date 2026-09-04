@@ -14,7 +14,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/quit` (aliases `/exit`, `/q`) | Exit OpenX |
 | `/help` | Show all available commands |
 | `/clear` | Clear screen and conversation history |
-| `/model <name>` | Switch LLM model (e.g., `/model gpt-4o`) |
+| `/model [<group>]` / `/model <group>:<role>` | List/switch model groups or set a role's model (`main`/`exec`/`mini`/`modal`) |
 | `/workspace <path>` | Change workspace directory |
 | `/auto-approve` | Toggle auto-approve mode |
 | `/mode [mode]` | Show or switch permission mode (manual / auto / plan) |
@@ -35,7 +35,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/compact` | Summarize history to free up context |
 | `/git` | Show git status |
 | `/diff` | Show git diff |
-| `/config` | Show configuration; interactively change model, API key, API base URL |
+| `/config` | Show/edit the active model group (model, shared API key/base, per-role models) |
 | `/tips` | Show usage tips |
 | `/release-notes` (alias `/release`) | Browse release notes — pick a version to view, or `/release <version>` |
 

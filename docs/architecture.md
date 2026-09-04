@@ -13,7 +13,7 @@ openx/
 ├── openx/
 │   ├── main.py            # CLI entry: args, setup wizard, trust, sessions, dispatch
 │   ├── agent.py           # Core agent loop (stream + non-stream, plan mode, subagents)
-│   ├── config.py          # Config: settings.json + config files + env merge
+│   ├── config.py          # Config: modelGroups (model/provider) + project non-model knobs
 │   ├── permissions.py     # Permission tiers + stored allow/deny rules
 │   ├── memory.py          # Persistent memory (~/.openx/memory/)
 │   ├── instructions.py    # OPENX.md loading (global / project / subdir)

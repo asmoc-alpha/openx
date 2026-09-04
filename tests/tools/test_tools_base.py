@@ -14,13 +14,14 @@ class TestConfig:
 
     def test_default_config(self):
         config = OpenXConfig()
-        # No hardcoded defaults for LLM settings — must be configured
+        # 模型为解析后 echo，默认为空；凭据/端点字段已不在 config 上
         assert config.model == ""
-        assert config.api_key == ""
-        assert config.api_base == ""
+        assert config.active_group == ""
         assert config.temperature == 0.0
         assert config.max_tool_rounds == 30
         assert not config.auto_approve
+        assert not hasattr(config, "api_key")
+        assert not hasattr(config, "api_base")
 
     def test_merge_config(self):
         config = OpenXConfig()

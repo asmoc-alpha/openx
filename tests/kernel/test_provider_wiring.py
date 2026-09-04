@@ -26,9 +26,7 @@ def _make_agent(ws):
 
     config = OpenXConfig()
     config.workspace = str(ws)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
-    config.model = "test-model"
+    config.model = "test-model"  # echo → 手写构造的内存 default 组 main 模型
     return OpenXAgent(config)
 
 
@@ -70,8 +68,8 @@ class TestProviderRegistry:
             "model": "m1",
         })
         assert isinstance(impl, OpenAICompatProvider)
-        assert impl.config.api_key == "sk-x"
-        assert impl.config.model == "m1"
+        assert impl.settings["api_key"] == "sk-x"
+        assert impl.settings["model"] == "m1"
 
     def test_build_provider_default_kind(self, kernel_env):
         """settings 缺 kind -> openai-compat（缺省实现）。"""
@@ -108,7 +106,7 @@ class TestAgentWiring:
         agent = _make_agent(ws)
         assert isinstance(agent.llm, LLMClient)
         assert isinstance(agent.llm._impl, OpenAICompatProvider)
-        assert agent.llm._impl.config.model == "test-model"
+        assert agent.llm._impl.settings["model"] == "test-model"
 
     def test_agent_llm_retry_policy_late_bound(self, kernel_env):
         ws, _ = kernel_env

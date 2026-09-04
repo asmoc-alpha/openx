@@ -1,19 +1,18 @@
-"""modelGroups 配置模块测试：schema 解析 / 迁移 / 角色路由单测。
+"""modelGroups 配置模块测试：schema 解析 / 角色路由单测。
 
 覆盖：
 - parse/validate：简写字符串 vs 完整对象、main 必填、未知键警告、组名
   正则、``env:VAR`` 展开、kind 默认；
-- 迁移：扁平 env 三件套、providers+active_provider、models profiles 三类
-  旧结构 -> modelGroups；无关顶层键保留；幂等；已有 modelGroups 跳过；
 - 路由单测：mini 缺席 client_for==self.llm、mini 声明则独立 LLMClient、
   modal 缺席回落 main、_has_image 判定。
+
+（旧扁平结构 env/providers/profiles 的迁移已在代码层移除——模型/凭据只经
+modelGroups，无迁移用例。）
 
 运行：``python -m pytest tests/kernel/test_model_groups.py -q``
 """
 
 from __future__ import annotations
-
-import json
 
 import pytest
 
@@ -65,74 +64,6 @@ class TestParse:
         assert mg.role_short("openx-modal-model") == "modal"
 
 
-# ── 迁移 ──────────────────────────────────────────────────────────
-
-
-class TestMigrate:
-    def test_flat_env_trio(self):
-        data = {
-            "env": {
-                "OPENX_API_KEY": "sk-1", "OPENX_BASE_URL": "https://a/v1",
-                "OPENX_DEFAULT_MODEL": "m1", "OPENX_AUTO_APPROVE": "true",
-            },
-            "trusted_dirs": ["/x"],
-        }
-        new, notes = mg.migrate_legacy(data)
-        assert new["modelGroups"]["default"]["openx-main-model"] == "m1"
-        assert new["activeGroup"] == "default"
-        assert new["modelGroups"]["default"]["apiKey"] == "sk-1"
-        # LLM 三件套删除、无关 env 键保留
-        assert new["env"] == {"OPENX_AUTO_APPROVE": "true"}
-        assert new["trusted_dirs"] == ["/x"]
-
-    def test_providers_each_becomes_group(self):
-        data = {
-            "providers": {
-                "ds": {"kind": "openai-compat", "api_key": "k1",
-                       "api_base": "https://ds/v1", "model": "dm"},
-                "cl": {"kind": "anthropic", "api_key": "k2", "model": "cm"},
-            },
-            "active_provider": "cl",
-        }
-        new, _ = mg.migrate_legacy(data)
-        assert set(new["modelGroups"]) == {"ds", "cl"}
-        assert new["activeGroup"] == "cl"
-        assert new["modelGroups"]["ds"]["apiKey"] == "k1"
-        assert new["modelGroups"]["cl"]["kind"] == "anthropic"
-        assert "providers" not in new and "active_provider" not in new
-
-    def test_model_profiles_folded(self):
-        data = {"models": {"gpt": {"model": "gpt-4o", "api_base": "https://o/v1"}}}
-        new, notes = mg.migrate_legacy(data)
-        assert new["modelGroups"]["gpt"]["openx-main-model"] == "gpt-4o"
-        assert new["modelGroups"]["gpt"]["apiBase"] == "https://o/v1"
-        assert "models" not in new
-        assert notes  # 有迁移说明
-
-    def test_already_modelgroups_is_noop(self):
-        data = {"modelGroups": {"g": {"openx-main-model": "m"}}, "activeGroup": "g"}
-        new, notes = mg.migrate_legacy(data)
-        assert new is data and notes == []
-
-    def test_idempotent_and_preserves_unrelated(self, tmp_path, monkeypatch):
-        import openx.config as cfg
-        from openx.config import OpenXConfig
-
-        settings = tmp_path / "settings.json"
-        monkeypatch.setattr(cfg, "SETTINGS_PATH", settings)
-        settings.write_text(json.dumps({
-            "env": {"OPENX_BASE_URL": "https://a", "OPENX_DEFAULT_MODEL": "m"},
-            "mcpServers": {"srv": {}},
-        }))
-        notes1 = OpenXConfig.ensure_model_groups()
-        assert notes1  # 只迁移一次
-        notes2 = OpenXConfig.ensure_model_groups()
-        assert notes2 == []
-        data = json.loads(settings.read_text())
-        assert data["mcpServers"] == {"srv": {}}
-        assert data["modelGroups"]["default"]["openx-main-model"] == "m"
-
-
 # ── 角色路由单测（agent 层） ──────────────────────────────────────
 
 
@@ -177,9 +108,9 @@ class TestRoleRouting:
         agent = _agent_for(ws, _group_with_mini("m-mini"))
         mini = agent.client_for("mini")
         assert mini is not agent.llm
-        assert mini._impl.config.model == "m-mini"
+        assert mini._impl.settings["model"] == "m-mini"
         # main 仍是 m-main
-        assert agent.llm._impl.config.model == "m-main"
+        assert agent.llm._impl.settings["model"] == "m-main"
         # 缓存命中同一实例
         assert agent.client_for("mini") is mini
 

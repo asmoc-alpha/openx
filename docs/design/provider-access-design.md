@@ -118,6 +118,11 @@ base bundle 从单插件扩为**内置插件列表**（kernel 加载处由写死
 
 ## 6. 配置：多 provider 与迁移（P-C）
 
+> ⚠️ **已废弃（superseded）**：§6 的 `active_provider`+`providers` 扁平实例与
+> 迁移规则已被 modelGroups 取代（见 `docs/user/guide/configuration.md`）。代码不再
+> 读取或迁移这些旧结构——模型/凭据只经 `settings.json` 的 `modelGroups` 表达。以下
+> 仅作历史设计存档。
+
 ```json
 {
   "active_provider": "deepseek",

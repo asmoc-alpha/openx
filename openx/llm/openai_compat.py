@@ -91,8 +91,8 @@ class OpenAICompatProvider(LLMProvider):
 
     def _make_client(self) -> AsyncOpenAI:
         return AsyncOpenAI(
-            api_key=self.config.api_key,
-            base_url=self.config.api_base,
+            api_key=self.settings.get("api_key", ""),
+            base_url=self.settings.get("api_base", ""),
             timeout=120.0,
             # SDK 内置重试关闭：重试统一归内核（需覆盖流中断、注入可见性
             # 回调、遵循 max_retries），双层重试会把等待时间乘起来且对
@@ -106,10 +106,10 @@ class OpenAICompatProvider(LLMProvider):
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "model": self.config.model,
+            "model": self.settings.get("model", ""),
             "messages": messages,
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "temperature": self.settings.get("temperature", 0.0),
+            "max_tokens": self.settings.get("max_tokens", 8192),
         }
         if tools:
             params["tools"] = tools
@@ -361,8 +361,11 @@ class LLMClient:
     ):
         self.config = config
         # impl 注入点（模型接入层 M2）：内核 providers 注册表解析出的实现；
-        # None -> 直接构造 openai-compat 实现（未过内核的直连路径）。
-        self._impl = impl if impl is not None else OpenAICompatProvider(config)
+        # None -> 用 policy_overrides（= 解析出的 settings dict）直接构造
+        # openai-compat 实现（未过内核的直连路径；凭据在 settings 里）。
+        self._impl = (
+            impl if impl is not None else OpenAICompatProvider(policy_overrides or {})
+        )
         self._retrying = RetryingProvider(
             self._impl,
             policy=_ConfigPolicy(config, policy_overrides),
@@ -415,8 +418,12 @@ class LLMClient:
 
 if __name__ == "__main__":
     from ..config import OpenXConfig as _Cfg
-    cfg = _Cfg(api_key="sk-selftest", api_base="http://127.0.0.1:1/v1", model="fake-model")
-    llm = LLMClient(cfg)  # AsyncOpenAI 惰性创建，实例化绝不联网
+    cfg = _Cfg()
+    llm = LLMClient(  # AsyncOpenAI 惰性创建，实例化绝不联网
+        cfg, policy_overrides={"api_key": "sk-selftest",
+                               "api_base": "http://127.0.0.1:1/v1",
+                               "model": "fake-model"}
+    )
     assert llm._client is None  # 未触发 .client 属性 -> 绝无网络请求
     done = StreamDone(response={"role": "assistant", "content": "hi"}, token_count=3, input_tokens=7)
     assert done.response["content"] == "hi" and done.token_count == 3 and done.input_tokens == 7
@@ -432,5 +439,5 @@ if __name__ == "__main__":
     ok, ra = _classify_error(ValueError("boom"))
     assert not ok and ra is None                   # 非 API 错误不可重试
     print(f"retry policy: delay(0)={d0:.2f}s delay(3)={d3:.2f}s cap={MAX_RETRY_DELAY}s ✓")
-    print(f"LLMClient ready (model={llm.config.model!r}, offline, no requests sent)")
+    print(f"LLMClient ready (model={llm._impl.settings.get('model')!r}, offline, no requests sent)")
     print("openx/llm/openai_compat.py OK ✓")

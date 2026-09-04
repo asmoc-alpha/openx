@@ -25,8 +25,6 @@ def _make_agent(ws):
 
     config = OpenXConfig()
     config.workspace = str(ws)
-    config.api_key = "sk-test"
-    config.api_base = "https://example.com/v1"
     config.model = "test-model"
     return OpenXAgent(config)
 
