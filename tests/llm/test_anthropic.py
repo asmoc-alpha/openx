@@ -345,6 +345,7 @@ class TestChat:
 
     async def test_retrying_provider_retries_transient(self):
         """内核 RetryingProvider 认识 anthropic 的瞬态契约（M1 集成）。"""
+        pytest.importorskip("anthropic")  # 可选依赖：缺失整测跳过（CI 无 SDK）
         from anthropic import APIConnectionError
         import httpx
 
