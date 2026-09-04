@@ -145,6 +145,10 @@ base bundle 从单插件扩为**内置插件列表**（kernel 加载处由写死
 
 ## 7. Anthropic 原生适配（决断：同批做）
 
+> 📌 **已演进**：Anthropic 实现现为 **anthropic-compat**（Anthropic-format 兼容协议，
+> 不只官方 Claude）——base URL 可经组/角色的 `apiBase` 指向任意兼容端点（如 DeepSeek），
+> 留空默认 Anthropic 官方；旧 kind `anthropic` 注册为别名。见 `docs/user/guide/configuration.md`。
+
 新增 `llm/anthropic.py`：`AnthropicProvider` 实现 Provider 接口，
 **在边界做消息格式双向转换**，系统其余部分继续说 OpenAI 格式：
 

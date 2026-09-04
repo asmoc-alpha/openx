@@ -49,6 +49,10 @@ class OpenXConfig:
     # active_group 是当前绑定组名的投影（agent 构造/切组时回写），供 UI 展示。
     # cli_*_override 为临时 CLI 覆盖（main.py 置位），仅对 main 角色生效。
     active_group: str = ""
+    # 项目默认组：项目 <workspace>/.openx/settings.json 的 "activeGroup"（只选
+    # 组名；组的定义仍在全局 modelGroups）。本工作区启动时优先于全局
+    # activeGroup；会话内 /model 切换走 active_group echo，下次启动回到此默认。
+    project_active_group: str = ""
     cli_model_override: Optional[str] = None
     cli_api_key_override: Optional[str] = None
     cli_api_base_override: Optional[str] = None
@@ -263,7 +267,8 @@ class OpenXConfig:
         """加载配置。模型/凭据**不在此处读取**——只经 ``modelGroups`` 由
         ``role_settings()`` 解析。这里只合并非模型项目配置与运行旋钮：
         项目 ``<workspace>/.openx/settings.json``（顶层键，排除 model/
-        active_group）+ 非 provider 环境变量（auto_approve/web_search）。
+        active_group）的合并 + 该项目 ``activeGroup`` 作为**项目默认组**选择
+        + 非 provider 环境变量（auto_approve/web_search）。
         无 modelGroups 时 ``is_configured()`` 为 False（首启走向导）；
         ``role_settings()`` 会抛错而非静默合成。
         """
@@ -273,14 +278,16 @@ class OpenXConfig:
         if workspace:
             config.workspace = workspace
 
-        # 项目级 config (.openx/settings.json)：只并非模型键
-        # （allowed_commands / auto_approve / ...）；模型/凭据不在项目层设。
+        # 项目级 config (.openx/settings.json)：合并非模型旋钮（allowed_commands
+        # 等，排除 model/active_group echo）；另读 activeGroup 作为本工作区的
+        # 项目默认组（只选组名，组的定义仍在全局 modelGroups）。
         project_settings = Path(config.workspace) / ".openx" / "settings.json"
         if project_settings.exists():
             try:
-                config._merge(
-                    json.loads(project_settings.read_text()),
-                    exclude={"model", "active_group"},
+                project_data = json.loads(project_settings.read_text())
+                config._merge(project_data, exclude={"model", "active_group"})
+                config.project_active_group = (
+                    str(project_data.get("activeGroup") or "").strip()
                 )
             except (json.JSONDecodeError, OSError):
                 pass
@@ -339,16 +346,23 @@ class OpenXConfig:
             return {}, ""
         return groups, active
 
+    def _pick_active(self, groups: dict, active: str) -> str:
+        """解析当前生效组名：会话内切组 echo > 项目默认 > 全局 activeGroup。
+
+        只返回存在于 ``groups`` 里的名字；候选都无匹配时回落首个（无组给 ""）。
+        """
+        candidates = (self.active_group, self.project_active_group, active)
+        for name in candidates:
+            if name and name in groups:
+                return name
+        return next(iter(groups), "")
+
     def active_group_name(self) -> str:
-        """当前生效的组名（self.active_group 投影 > activeGroup > 首个）；无组返回 ""。"""
+        """当前生效的组名（echo 切组 > 项目默认 > 全局 activeGroup > 首个）。"""
         groups, active = self._file_groups()
         if not groups:
             return ""  # 未配置：load() 路径由 is_configured / role_settings 拦下
-        if self.active_group and self.active_group in groups:
-            return self.active_group
-        if active in groups:
-            return active
-        return next(iter(groups))
+        return self._pick_active(groups, active)
 
     def resolve_group(self, name: Optional[str] = None) -> "_mg.ModelGroup":
         """解析指定（或当前激活）模型组。
@@ -365,7 +379,7 @@ class OpenXConfig:
                     "run 'openx' to launch the setup wizard"
                 )
             return self._synthesize_default_group()
-        target = name or self.active_group or active
+        target = name or self._pick_active(groups, active)
         if target not in groups:
             target = active if active in groups else next(iter(groups))
         return groups[target]

@@ -84,7 +84,7 @@ Agent 请遵循 [docs/AGENTS.md](docs/AGENTS.md)。
 
 - 更多工具（lint、测试框架、包管理器）
 - Notebook 编辑支持
-- Anthropic 原生 API 格式（目前仅 OpenAI 兼容）
+- 更多 provider 协议族（内置 openai-compat 与 anthropic-compat）
 - HTTP/SSE MCP 传输（目前仅 stdio）
 - 插件系统
 

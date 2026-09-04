@@ -57,6 +57,23 @@ class TestProviderRegistry:
         })
         assert type(impl).__name__ == "AnthropicProvider"
 
+    def test_anthropic_compat_kind_resolves_with_base(self, kernel_env):
+        """canonical kind anthropic-compat 解析出同一实现，且 api_base 进 settings。"""
+        pytest.importorskip("anthropic")
+        ws, _ = kernel_env
+        k = get_kernel()
+        k.ensure_loaded(str(ws))
+        entry = k.registry("providers").get("anthropic-compat")
+        assert entry is not None and entry.plugin == "builtin-providers"
+        impl = resolve_provider_impl(k, {
+            "kind": "anthropic-compat",
+            "api_key": "sk-x",
+            "api_base": "https://api.deepseek.com/anthropic",
+            "model": "claude-3",
+        })
+        assert type(impl).__name__ == "AnthropicProvider"
+        assert impl.settings["api_base"] == "https://api.deepseek.com/anthropic"
+
     def test_build_provider_returns_impl(self, kernel_env):
         ws, _ = kernel_env
         k = get_kernel()

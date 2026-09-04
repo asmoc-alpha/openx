@@ -1,7 +1,11 @@
-"""Anthropic 原生 provider 实现（模型接入层 M4）。
+"""Anthropic 兼容协议 provider 实现（模型接入层 M4）。
+
+Anthropic-format 是一族协议（不只官方 Claude）：DeepSeek 等也提供兼容端点，
+客户端 base URL 取 settings 的 ``api_base``（组/角色可配 ``apiBase``）；留空则
+回落 SDK 默认（环境变量 ``ANTHROPIC_BASE_URL`` > https://api.anthropic.com）。
 
 职责边界：本模块**只做协议适配**--在边界把 OpenAI 消息格式与 Anthropic
-原生格式双向转换，系统其余部分继续说 OpenAI 格式。重试归内核（kernel/
+协议格式双向转换，系统其余部分继续说 OpenAI 格式。重试归内核（kernel/
 retry.py），接口形状归内核（kernel/provider.py）：
 
 - **入（OpenAI -> Anthropic）**：system 消息抽为 ``system`` 参数；
@@ -353,6 +357,9 @@ class AnthropicProvider(LLMProvider):
             )
         return AsyncAnthropic(
             api_key=self.settings.get("api_key", ""),
+            # Anthropic 兼容端点：api_base 可配（如 DeepSeek 的 /anthropic）；
+            # 空 → None → SDK 默认（env ANTHROPIC_BASE_URL > 官方）。
+            base_url=self.settings.get("api_base") or None,
             timeout=120.0,
             # SDK 内置重试关闭：重试统一归内核（双层重试会乘等待时间）
             max_retries=0,

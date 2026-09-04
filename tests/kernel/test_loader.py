@@ -90,7 +90,8 @@ class TestReload:
         # 无用户插件时仅剩 base bundle 内置插件（builtin-tools/builtin-providers）
         assert [i.source for i in k.inventory()] == ["base-bundle", "base-bundle"]
         assert len(k.registry("tools")) == 1       # core-tools 工厂
-        # providers：openai-compat 恒在；anthropic 视 SDK 可选注册（M4）
+        # providers：openai-compat 恒在；anthropic-compat（+旧别名 anthropic）
+        # 视 SDK 可选注册
         providers = k.registry("providers")
         assert providers.get("openai-compat") is not None
         try:
@@ -98,7 +99,9 @@ class TestReload:
         except ImportError:
             assert len(providers) == 1
         else:
-            assert len(providers) == 2
+            assert len(providers) == 3
+            assert providers.get("anthropic-compat") is not None
+            assert providers.get("anthropic") is not None
         assert instantiate_tools(k, None, include_builtin=False) == {}
 
     def test_half_loaded_state_retries(self, kernel_env, monkeypatch):

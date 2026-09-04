@@ -336,7 +336,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         print("Error: No API key configured.", file=sys.stderr)
         print("Run 'openx' to launch the setup wizard.", file=sys.stderr)
         sys.exit(1)
-    # api_base 仅 openai-compat 必需；anthropic 原生无 base URL 概念。
+    # api_base 仅 openai-compat 必需；anthropic-compat base 可选（留空=官方，
+    # 兼容端点经组/角色的 apiBase 配置）。
     if (
         main_settings.get("kind") == "openai-compat"
         and not main_settings.get("api_base", "").strip()

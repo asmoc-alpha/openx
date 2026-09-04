@@ -51,7 +51,7 @@ A role value is either a model-string shorthand or an object:
 ```json
 "openx-exec-model": {
   "model": "claude-sonnet-5",
-  "kind": "anthropic",
+  "kind": "anthropic-compat",
   "apiKey": "env:ANTHROPIC_API_KEY",
   "temperature": 0.2,
   "max_tokens": 4096,
@@ -63,6 +63,11 @@ A role value is either a model-string shorthand or an object:
 A role object may override `kind`/`apiKey`/`apiBase` (even switching provider/endpoint
 for one role) and request tuning. Roles that are absent fall back to the group's `main`
 binding (model + credentials).
+
+`anthropic-compat` speaks the Anthropic-format protocol — many vendors expose it (e.g.
+DeepSeek's `https://api.deepseek.com/anthropic`). Point it at any compatible endpoint by
+setting `apiBase`; leave it out to default to Anthropic's official endpoint. The legacy
+kind `anthropic` is still accepted as an alias.
 
 ### Secrets via `env:VAR`
 
@@ -90,14 +95,23 @@ Provider model / key / base must be configured in a model group (optionally via
 ## Project settings (`<workspace>/.openx/settings.json`)
 
 The project-level file may set non-model knobs such as `allowed_commands`
-(pre-approved shell commands). It cannot set the model or credentials — those belong
-to model groups in the global `~/.openx/settings.json`.
+(pre-approved shell commands). It cannot define models or credentials — those belong
+to model groups in the global `~/.openx/settings.json` — but it **can pick which of
+those global groups this workspace should start with** via `activeGroup`:
 
 ```json
 {
-  "allowed_commands": ["npm", "npx", "docker", "make"]
+  "allowed_commands": ["npm", "npx", "docker", "make"],
+  "activeGroup": "work"
 }
 ```
+
+Group definitions stay global; only the *selection* is per-workspace. Activation order:
+a `/model` switch during the session (current group) > this project default > the global
+`activeGroup`. Launching openx in a project with a default group always starts on that
+group; switching away with `/model` lasts for the session (it still writes the global
+`activeGroup`) and the project default re-applies next launch. A default naming a group
+that doesn't exist falls back to the global active group.
 
 ## CLI overrides
 

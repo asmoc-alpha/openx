@@ -49,7 +49,7 @@
 ```json
 "openx-exec-model": {
   "model": "claude-sonnet-5",
-  "kind": "anthropic",
+  "kind": "anthropic-compat",
   "apiKey": "env:ANTHROPIC_API_KEY",
   "temperature": 0.2,
   "max_tokens": 4096,
@@ -60,6 +60,10 @@
 
 角色对象可覆盖 `kind`/`apiKey`/`apiBase`（甚至单个角色换 provider/端点）与请求参数。
 缺席的角色运行时回落该组 `main` 绑定（模型与凭据一并继承）。
+
+`anthropic-compat` 讲 Anthropic-format 协议——不少厂商都提供这类兼容端点（如 DeepSeek 的
+`https://api.deepseek.com/anthropic`）。设 `apiBase` 即指向任意兼容端点；留空默认走
+Anthropic 官方。旧 kind `anthropic` 仍作别名接受。
 
 ### 凭据经 `env:VAR`
 
@@ -85,14 +89,21 @@ provider 的模型/key/base 必须在模型组里配置（可经 `env:VAR`），
 
 ## 项目配置（`<workspace>/.openx/settings.json`）
 
-项目级文件可设 `allowed_commands` 等非模型旋钮（预批准匹配的 shell 命令）。它不能设
-模型/凭据——那些属于全局 `~/.openx/settings.json` 的模型组。
+项目级文件可设 `allowed_commands` 等非模型旋钮（预批准匹配的 shell 命令）。它不能定义
+模型/凭据——那些属于全局 `~/.openx/settings.json` 的模型组——但可以经 `activeGroup`
+**指定本工作区默认用哪个全局组**：
 
 ```json
 {
-  "allowed_commands": ["npm", "npx", "docker", "make"]
+  "allowed_commands": ["npm", "npx", "docker", "make"],
+  "activeGroup": "work"
 }
 ```
+
+组的定义仍在全局，这里只做**按工作区的选择**。激活优先级：会话内 `/model` 切换
+（当前组）> 项目默认组 > 全局 `activeGroup`。带默认组的项目每次启动都落在该默认组；
+会话内用 `/model` 切走只影响本次（仍写全局 `activeGroup`），下次启动回到项目默认。
+默认组指向不存在的组名时回落全局激活组。
 
 ## CLI 覆盖
 

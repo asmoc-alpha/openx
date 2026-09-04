@@ -15,6 +15,8 @@ settings 写读均走 monkeypatch 的 SETTINGS_PATH（tests/kernel/conftest.py�
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from openx.config import OpenXConfig
@@ -53,6 +55,14 @@ def _make_agent(ws, **overrides):
     from openx.agent import OpenXAgent
 
     return OpenXAgent(_make_config(ws, **overrides))
+
+
+def _set_project_default(ws, group: str) -> None:
+    """写项目 .openx/settings.json 的 activeGroup（项目默认组）。"""
+    p = ws / ".openx" / "settings.json"
+    data = json.loads(p.read_text()) if p.exists() else {}
+    data["activeGroup"] = group
+    p.write_text(json.dumps(data))
 
 
 def _default_groups() -> dict:
@@ -178,6 +188,38 @@ class TestResolveGroup:
         cfg2 = _make_config(ws)
         _, s2 = cfg2.role_settings("main", "g2")
         assert s2["api_key"] == "sk-env"
+
+    def test_project_default_group_wins_at_startup(self, kernel_env):
+        """项目 .openx/settings.json 的 activeGroup 覆盖全局激活（启动优先）。"""
+        ws, _ = kernel_env
+        _write_groups(_default_groups(), "default")  # 全局 active = default
+        _set_project_default(ws, "alt")
+        cfg = _make_config(ws)
+        assert cfg.project_active_group == "alt"
+        name, settings = cfg.role_settings("main")
+        assert name == "alt"
+        assert settings["model"] == "m-b"  # alt 组的 main 模型
+        assert cfg.active_group_name() == "alt"
+
+    def test_project_default_unknown_falls_back_global(self, kernel_env):
+        """项目默认组名不存在 → 回落全局激活组（不报错）。"""
+        ws, _ = kernel_env
+        _write_groups(_default_groups(), "default")
+        _set_project_default(ws, "no-such-group")
+        cfg = _make_config(ws)
+        name, settings = cfg.role_settings("main")
+        assert name == "default"
+        assert settings["model"] == "m-a"
+
+    def test_session_switch_overrides_project_default(self, kernel_env):
+        """会话内切组（echo）优先于项目默认；下次启动才回到默认。"""
+        ws, _ = kernel_env
+        _write_groups(_default_groups(), "default")
+        _set_project_default(ws, "alt")
+        cfg = _make_config(ws)
+        cfg.active_group = "default"  # 模拟 /model 会话内切走
+        name, _ = cfg.role_settings("main")
+        assert name == "default"
 
 
 class TestAgentGroupBinding:

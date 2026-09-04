@@ -1,7 +1,8 @@
 """First-run interactive setup wizard.
 
-Prompts for provider type (OpenAI-compatible / Anthropic), then the
-connection fields, and saves to ``~/.openx/settings.json``.
+Prompts for provider type (OpenAI-compatible / Anthropic-compatible), then
+the connection fields, and writes a ``default`` model group to
+``~/.openx/settings.json``.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ async def run_setup_wizard() -> dict:
         ptype = console._interactive_select(
             [
                 ("OpenAI-compatible (OpenAI / DeepSeek / local endpoints)", "openai"),
-                ("Anthropic (Claude)", "anthropic"),
+                ("Anthropic-compatible (Claude / DeepSeek / …)", "anthropic"),
             ],
             default_index=0,
             prompt="Provider type:",
@@ -56,24 +57,36 @@ async def run_setup_wizard() -> dict:
     env: dict[str, str] = {}
 
     if ptype == "anthropic":
-        # ── Anthropic 原生：key + model（无 base URL 概念）────────
+        # ── Anthropic 兼容协议：key + 可选 base URL + model ──────
+        # base URL 可指任意 Anthropic-format 端点（DeepSeek 等）；留空 =
+        # Anthropic 官方。
+        _base_label = (
+            "API Base URL (blank = Anthropic official; "
+            "e.g. https://api.deepseek.com/anthropic)"
+        )
         env["OPENX_API_KEY"] = console.prompt_setup_field(
-            step=1, total=2, label="Anthropic API Key", default="",
+            step=1, total=3, label="Anthropic API Key", default="",
+        )
+        env["OPENX_BASE_URL"] = console.prompt_setup_field(
+            step=2, total=3, label=_base_label, default="",
         )
         env["OPENX_DEFAULT_MODEL"] = console.prompt_setup_field(
-            step=2, total=2, label="Default Model",
+            step=3, total=3, label="Default Model",
             default=_ANTHROPIC_DEFAULT_MODEL,
         )
-        env["OPENX_BASE_URL"] = ""
-        kind = "anthropic"
+        kind = "anthropic-compat"
         while not console.print_setup_summary(env):
             console.raw.print("\n[dim]Let's try again...[/dim]")
             env["OPENX_API_KEY"] = console.prompt_setup_field(
-                step="*", total=2, label="Anthropic API Key",
+                step="*", total=3, label="Anthropic API Key",
                 default=env["OPENX_API_KEY"],
             )
+            env["OPENX_BASE_URL"] = console.prompt_setup_field(
+                step="*", total=3, label=_base_label,
+                default=env["OPENX_BASE_URL"],
+            )
             env["OPENX_DEFAULT_MODEL"] = console.prompt_setup_field(
-                step="*", total=2, label="Default Model",
+                step="*", total=3, label="Default Model",
                 default=env["OPENX_DEFAULT_MODEL"],
             )
     else:

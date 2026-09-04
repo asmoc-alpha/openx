@@ -239,6 +239,42 @@ def _text_stream(texts):
     return _stream(*events)
 
 
+class _FakeAsyncAnthropic:
+    """记录构造参数的 AsyncAnthropic 替身（离线，无需真实 SDK）。"""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class TestBaseUrlConfigurable:
+    """Anthropic 兼容协议：AnthropicProvider 尊重 settings.api_base。
+
+    base_url 来自解析后的 settings（组/角色的 apiBase）；留空传 None → SDK
+    默认（env ANTHROPIC_BASE_URL > 官方端点）。
+    """
+
+    def test_base_url_passed_when_configured(self, monkeypatch):
+        import openx.llm.anthropic as anth_mod
+
+        monkeypatch.setattr(anth_mod, "AsyncAnthropic", _FakeAsyncAnthropic)
+        p = AnthropicProvider({
+            "api_key": "sk",
+            "api_base": "https://api.deepseek.com/anthropic",
+            "model": "deepseek-chat",
+        })
+        client = p._make_client()
+        assert client.kwargs["base_url"] == "https://api.deepseek.com/anthropic"
+        assert client.kwargs["api_key"] == "sk"
+
+    def test_base_url_none_when_unset(self, monkeypatch):
+        import openx.llm.anthropic as anth_mod
+
+        monkeypatch.setattr(anth_mod, "AsyncAnthropic", _FakeAsyncAnthropic)
+        p = AnthropicProvider({"api_key": "sk", "model": "claude-3", "api_base": ""})
+        client = p._make_client()
+        assert client.kwargs["base_url"] is None
+
+
 class TestStreamMapping:
     async def test_text_deltas_and_done(self):
         p = _provider(_text_stream(["hello ", "world"]))

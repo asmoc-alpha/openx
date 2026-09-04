@@ -92,7 +92,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and PR guidelines. PRs welcome!
 
 - More tools (linting, testing frameworks, package managers)
 - Notebook editing support
-- Anthropic-native API format (currently OpenAI-compatible only)
+- More provider protocol families — openai-compat & anthropic-compat are built in
 - HTTP/SSE MCP transport (currently stdio only)
 - Plugin system
 
