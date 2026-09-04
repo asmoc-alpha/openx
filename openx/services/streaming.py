@@ -79,13 +79,20 @@ _REFRESH_PER_SECOND = 5
 _MIN_FORCE_REFRESH = 0.2
 
 # 渲染响应窗口时为组内"非响应"部分预留的行数：4 行输入框 + 1 行 spinner
-# + 2 行余量。余量让整组始终低于视口底边两行：Rich Live 的相对光标计算
-# 对"顶满视口"的渲染区极其敏感（SDD §8 记录的 Rich 已知抖动局限），
-# 留出余量后重渲永不触底、永不滚屏。
-# Rows reserved for frame (4) + spinner (1) + slack (2): keep the whole
-# group below the viewport bottom so Rich's relative cursor math never
-# has to cope with a region touching the screen edge (known jitter).
-_VIEWPORT_RESERVE = 7
+# + 2 行正文/框间距（_BODY_FRAME_GAP）+ 2 行余量。余量让整组始终低于视口
+# 底边两行：Rich Live 的相对光标计算对"顶满视口"的渲染区极其敏感
+# （SDD §8 记录的 Rich 已知抖动局限），留出余量后重渲永不触底、永不滚屏。
+# Rows reserved for frame (4) + spinner (1) + body/frame gap (2) + slack
+# (2): keep the whole group below the viewport bottom so Rich's relative
+# cursor math never has to cope with a region touching the screen edge.
+_VIEWPORT_RESERVE = 9
+
+# 正文（含 detail 视图）与输入框之间的固定空行数——流式期插在 body 与
+# spinner 之间，done() 后随固化余量打进 scrollback，两种形态下正文与
+# 框恒隔 2 行（用户界面需求）。
+# Blank rows between the response body and the input frame (streaming:
+# between body and spinner; after done(): printed into scrollback).
+_BODY_FRAME_GAP = 2
 
 # running 工具长输出裁尾时易变区首行的"上文在易变区外"标记
 # （固化行在 scrollback，终端原生上翻可见，无需标记）。
@@ -374,6 +381,12 @@ class StreamingService:
         self._reasoning_expanded = False
         self._reasoning_done = False
         self._thinking_elapsed = 0.0
+        # 跨轮重印状态每轮清空：新一轮思考结束（done/cancel）才重新
+        # 落值，Ctrl+R 就地重印永不作用于上上轮的陈旧几何。
+        self._console._last_replay = None
+        self._console._replay_expanded = False
+        self._console._replay_block_rows = 0
+        self._console._replay_windowed = False
         # 固化管线每轮归零（实例本就每轮新建，双保险）
         self._committed_count = 0
         self._body_cache_key = None
@@ -571,6 +584,13 @@ class StreamingService:
         # 固化行早已在 scrollback，余量 = 易变尾（≤ 末行 + 未冻结
         # thinking + 尾部工具块），通常只有几行。
         self._flush_commit()
+        self._save_replay(_BODY_FRAME_GAP)
+        # done 态组退化为仅 frame、易变区间距行随之消失——正文与框的
+        # _BODY_FRAME_GAP 空行改在此处打进 scrollback（与流式期同款式）。
+        if (self._rich is not None
+                and (self._has_body() or self._reasoning_buffer)):
+            for _ in range(_BODY_FRAME_GAP):
+                self._rich.print(Text(""))
         if self._live:
             if not self._live.is_started:
                 # done-while-paused（弹窗未结束/异常路径）：Live 已被
@@ -681,12 +701,19 @@ class StreamingService:
         弹窗位置越界上移，吞掉框上方的既有对话。
         """
         self._done = True
+        # 被打断的回合：未冻结的推理阶段先兜底冻结（指示行拿到静态
+        # 耗时，重印语义与正常 done 一致）
+        if self._reasoning_buffer and not self._reasoning_done:
+            self._reasoning_done = True
+            self._thinking_elapsed = time.monotonic() - self._t0
         # stop() 会停掉 Live——须在停之前读 is_started 判别 frame 在屏否
         frame_on_screen = self._live is not None and self._live.is_started
         if self._live:
             # 部分回答保真：未固化余量提交进 scrollback（旧行为经 stop
             # 内全文重渲染保留部分回答——新管线只打余量，等价无重打）
             self._flush_commit()
+            # 打断回合无 done 尾距（frame 被擦、下轮 prompt 全新绘制）
+            self._save_replay(0)
             self._live.stop()
             self._live = None
         self._stop_capture(keep_queue=True)
@@ -912,13 +939,20 @@ class StreamingService:
             plugin_deck, plugin_h = None, 0
         extra = deck_h + perm_h + fleet_deck_h + plugin_h  # 额外行 → 视口预算
 
+        body_added = False
         if self._focus > 0 and snap:
             parts.append(self._detail_view(snap[self._focus - 1], extra))
+            body_added = True
         else:
             # body = 未固化行（易变尾）；已固化行在 scrollback，不进组
             vol = self._volatile_view(extra)
             if vol is not None:
                 parts.append(vol)
+                body_added = True
+        # 正文与框（经 spinner）恒隔 _BODY_FRAME_GAP 行；done 态易变体为空、
+        # 间距改由 done() 打进 scrollback 的余量尾部承担（见 done()）。
+        if body_added and not self._done:
+            parts.extend(Text("") for _ in range(_BODY_FRAME_GAP))
 
         if not self._done:
             parts.append(self._spinner_text(elapsed))
@@ -936,7 +970,8 @@ class StreamingService:
         self._last_deck_h = perm_h + fleet_deck_h + plugin_h  # 框下总行数
         return Group(*parts)
 
-    def _thinking_block(self, hints: bool = False) -> list:
+    def _thinking_block(self, hints: bool = False,
+                        think_rows: Optional[int] = None) -> list:
         """thinking 块部件列表（置于正文 Markdown 之前）。
 
         折叠态 = 单行静态指示行；展开态 = 指示行 + 全文（纯文本 dim，
@@ -948,21 +983,45 @@ class StreamingService:
         ``hints``：易变显示渲染传 True、固化渲染传 False。**冻结
         （_reasoning_done）即随下一 tick 固化进 scrollback**——热键
         提示只存在于冻结前的易变期（同 Ctrl+T 提示纪律）。
+
+        ``think_rows``：展开态的推理行预算（仅易变显示传）。超预算时
+        保留**最近** N 行（推理在增长，最新内容才是焦点——同日志滚屏）
+        + 头部 "↑ … +N more" 标记；预算给足时全文照显。固化渲染传
+        None = 全文进 scrollback（transcript 完整）。
         """
         if not self._reasoning_buffer:
             return []
         if not self._reasoning_done:
             label = f"{MARK_PENDING} Thinking…"        # ○ 推理进行中
+            hint = ""
+            if hints and not self._done:
+                hint = (" — ctrl+r to collapse" if self._reasoning_expanded
+                        else " — ctrl+r to expand")
         else:
-            label = f"{MARK_INFO} Thought for {self._thinking_elapsed:.1f}s"  # ●
-        if hints and not self._reasoning_done and not self._done:
-            hint = (" — ctrl+r to collapse" if self._reasoning_expanded
-                    else " — ctrl+r to expand")
-        else:
-            hint = ""  # 冻结/done 后热键 no-op——提示即谎言
+            # 冻结指示行 ctrl+r 提示**常驻**（用户界面需求）：done() 后
+            # idle 输入框处的 Ctrl+R 经 _last_replay 就地重印实现展开/收起
+            # （见 ui/_components/prompt.py），提示恒为真；仅"冻结→done"
+            # 之间的几秒流式窗口是善意谎言（该窗口热键仍 no-op）。
+            suffix = (" (ctrl+r to collapse)" if self._reasoning_expanded
+                      else " (ctrl+r to expand)")
+            label = (f"{MARK_INFO} Thought for {self._thinking_elapsed:.1f}s"
+                     + suffix)  # ●
+            hint = ""
         indicator = self._deck_line(f"  {label}{hint}", style=DIM)
         if not self._reasoning_expanded:
             return [indicator]
+        if think_rows is not None:
+            src = self._reasoning_buffer.split("\n")
+            if len(src) > think_rows:
+                kept = src[-think_rows:]
+                hidden = len(src) - think_rows
+                return [
+                    indicator,
+                    self._deck_line(f"  {_SCROLL_MARKER} +{hidden} more"
+                                    " thoughts", style=DIM),
+                    Text("\n".join(kept), style=DIM),
+                    Text(""),
+                ]
         return [indicator, Text(self._reasoning_buffer, style=DIM), Text("")]
 
     # ── 逐行固化管线（取代尾窗 _windowed）────────────────────────
@@ -1138,29 +1197,45 @@ class StreamingService:
             copy_start = max(C, bounds[0][3])
         if not pre_think and not tail_tools and C >= copy_end:
             return None
+        # 视口预算前置：pre_think 展开时 thinking 需按预算窗化（保最近
+        # 推理），不能等整体超限再裁尾——thinking 在组首，裁尾保尾会把
+        # 指示行与全文全裁掉，Ctrl+R 展开视觉上零反馈（"打不开"）。
+        try:
+            height = self._rich.height
+        except Exception:
+            height = 24
+        cap = max(5, height - _VIEWPORT_RESERVE - extra)
         parts: list = []
         if pre_think:
-            parts.extend(self._thinking_block(hints=True))
+            think_budget = max(1, cap - 4) if self._reasoning_expanded else None
+            parts.extend(self._thinking_block(hints=True,
+                                              think_rows=think_budget))
         for line in lines[copy_start:copy_end]:
             parts.append(self._copy_line(line))
-        for _kind, rec, _s, _e in tail_tools:
+        for j, (_kind, rec, _s, _e) in enumerate(tail_tools):
+            # 块间分隔空行与固化渲染对齐（_body_chunks 的 if chunks: 给每个
+            # 非首 chunk 头部并入 Text("")）——分隔行计入该 chunk 行区间、
+            # 被 copy_end 排除在拷贝区外，此处重渲必须自行补上，否则流式
+            # 期尾部工具块粘连、固化后才冒出间距（两种形态不一致）。
+            if i + j > 0:
+                parts.append(Text(""))
             parts.extend(self._tool_renderables(rec, hints=True))
         if not parts:
             return None
         # 易变区超视口预算 → 裁尾 + ↑ … 标记。**按渲染行数测量**，不能按
         # renderable 个数（展开 thinking 是一个单对象多行 Text，按对象数
         # 判不超、整组会撑爆视口把 FRAME 顶掉——funnel WIP 缺陷）。
-        try:
-            height = self._rich.height
-        except Exception:
-            height = 24
-        cap = max(5, height - _VIEWPORT_RESERVE - extra)
         group = Group(*parts)
         try:
             rendered = self._rich.render_lines(group, pad=False)
         except Exception:
             rendered = None
         if rendered is not None and len(rendered) > cap:
+            if pre_think and self._reasoning_expanded:
+                # 展开的 thinking 是用户主动焦点 → 保头（指示行 + 最近推理
+                # 窗已在组首），而非默认保尾。窗化后极少触发，纯防御。
+                head = [self._copy_line(l) for l in rendered[:cap]]
+                return Group(*head)
             tail = [Text(_SCROLL_MARKER, style="dim")]
             tail += [self._copy_line(l) for l in rendered[-(cap - 1):]]
             return Group(*tail)
@@ -1199,6 +1274,32 @@ class StreamingService:
         new = lines[self._committed_count:wm]
         self._committed_count = wm
         self._rich.print(Group(*(self._copy_line(l) for l in new)))
+
+    def _save_replay(self, gap: int) -> None:
+        """回合结束（done/cancel）落重印状态到 console（回答后 Ctrl+R
+        就地展开/收起 thinking 的数据源，见 prompt.py::_replay_toggle）。
+
+        必须恰在 _flush_commit 之后调用（body 行已终态）。tail 是指示行
+        所在 thinking 块之后的全部 body 行（含块间分隔空行）——重印 =
+        指示行 (+ 思考全文 + 分隔空行) + tail (+ gap 空行) 从指示行原
+        位置向下重排；_replay_block_rows 记账当前屏上从指示行到 tail
+        末行的总行数（重印的光标上移标尺）。
+        """
+        if self._rich is None or not self._reasoning_buffer:
+            return
+        bounds = self._body_bounds
+        t_end = bounds[0][3] if bounds and bounds[0][0] == "thinking" else 0
+        lines = self._body_cache_lines
+        self._console._last_replay = {
+            "thinking": (self._reasoning_buffer, self._thinking_elapsed),
+            "tail": [self._copy_line(l) for l in lines[t_end:]],
+            "gap": gap,
+        }
+        self._console._replay_expanded = self._reasoning_expanded
+        # 屏上块行数 = 指示行到 tail 末行（重印擦除的标尺）
+        self._console._replay_block_rows = len(lines)
+        # 新回合重印数据落位 → 窗口闩归零（下一轮从精确整块路径起算）
+        self._console._replay_windowed = False
 
     def _on_width_change(self) -> None:
         """resize 重锚水印（保 volatile 行数）：旧宽已固化行不重打

@@ -77,6 +77,8 @@ class DisplayMixin:
         self._console.print()
         md = Markdown(text, code_theme=self.config.syntax_theme)
         self._console.print(md)
+        # 与流式分支同款留白：正文与下一轮输入框之间恒隔 2 行。
+        self._console.print()
         self._console.print()
 
     def print_code(self, code: str, language: str = "python") -> None:

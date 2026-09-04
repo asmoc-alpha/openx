@@ -381,3 +381,62 @@ class TestAutoRefreshThread:
         h.console.print_user_prompt()
         h.flush()
         assert ANSWER in h.screen_text()
+
+
+# ── (h) 长回答 + thinking：done 后 Ctrl+R 重印与下一轮提示的整合 ──
+
+
+class TestReplayIntegration:
+    def test_long_answer_idle_toggle_then_next_round(
+        self, monkeypatch, tmp_path
+    ):
+        """真实流式（reasoning + 长正文）→ done → 回答后 Ctrl+R 展开/收起：
+        展开可见思考、收起复原、固化头部行零重打（不产生"前半部分重复"），
+        且下一轮提示复用链完好。"""
+        from openx.llm import StreamReasoning
+
+        h = LifecycleHarness(monkeypatch, tmp_path)
+        svc = h.start_stream()
+        svc.feed(StreamReasoning("planning the approach carefully"))
+        for i in range(1, 61):
+            svc.feed(f"response line {i}\n\n")
+        svc.done()
+        h.flush()
+        assert h.console._last_replay is not None
+
+        # Ctrl+R 发生在 _read_line_interactive 内（光标在输入行）——
+        # 罐头键盘在读行前先 toggle 两次（展开→收起），再模拟 Enter。
+        toggled = {}
+
+        def _read_with_toggle() -> str:
+            c = h.console
+            c._replay_toggle([], None, 0, 0)          # 展开
+            toggled["expand"] = h.buf.getvalue()
+            h.flush()
+            toggled["expand_text"] = h.screen_text()
+            c._replay_toggle([], None, 0, 0)          # 收起
+            toggled["all"] = toggled["expand"] + h.buf.getvalue()
+            h.flush()
+            toggled["collapse_text"] = h.screen_text()
+            sys.stdout.write("next question\r\n")   # 回显 + Enter 到底线行
+            return "next question"
+
+        h.monkeypatch.setattr(
+            h.console, "_read_line_interactive", _read_with_toggle
+        )
+        h.console.print_user_prompt()
+
+        assert "planning the approach" in toggled["expand_text"], \
+            "展开必须可见思考内容"
+        assert "Thought for" in toggled["expand_text"]
+        assert "planning the approach" not in toggled["collapse_text"]
+        # 固化进 scrollback 的头部行绝不因 toggle 重打（重复根因判据）
+        import re
+        for n in (1, 2, 10, 20):
+            assert not re.search(
+                rf"response line {n}(?!\d)", toggled["all"]
+            ), f"头部行 {n} 被 toggle 重打 → scrollback 重复"
+
+        # 下一轮提示复用链完好、长回答尾部留屏
+        h.flush()
+        assert "response line 60" in h.screen_text()

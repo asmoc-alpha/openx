@@ -221,3 +221,72 @@ class TestHintLifecycle:
             "固化后提示应消失（不可重打）"
         )
         assert "final words" in text_after
+
+
+# ── ⑦ 工具块间距：流式易变形态与固化形态一致（用户报告观感问题）──
+
+
+class TestToolBlockSpacing:
+    def _feed_two_tools(self, h):
+        h.svc.start()
+        h.svc.feed(ToolStartEvent(name="grep", arguments="foo"))
+        h.svc.feed(ToolResultEvent(
+            name="grep", output="g1\ng2", is_error=False))
+        h.svc.feed(ToolStartEvent(name="read_file", arguments="a.txt"))
+        h.svc.feed(ToolResultEvent(
+            name="read_file", output="r1\nr2", is_error=False))
+        h.svc._live.refresh()
+        h.flush()
+
+    @staticmethod
+    def _block_rows():
+        # 头行 + ⎿ 结果两行 = 3 行/块（输出 2 行 ≤ 折叠上限 3）
+        return 3
+
+    def _assert_gap(self, h, expect_blank: int = 1):
+        rows = [r.rstrip() for r in h.rows()]
+        grep_y = next(
+            y for y, r in enumerate(rows) if "●" in r and "grep" in r)
+        read_y = next(
+            y for y, r in enumerate(rows) if "●" in r and "read_file" in r)
+        assert read_y == grep_y + self._block_rows() + expect_blank, (
+            f"块间距应为 {expect_blank} 空行：grep@{grep_y} "
+            f"read@{read_y}\n" + "\n".join(rows))
+        for k in range(1, self._block_rows()):
+            assert rows[grep_y + k] != "", "块内不应有空行"
+
+    def test_streaming_volatile_tools_have_gap(self, deterministic_live):
+        """流式期两个尾部已完成工具块之间恰 1 空行——用户报告：输出过程
+        中工具之间没有间距。"""
+        h = Harness()
+        self._feed_two_tools(h)
+        self._assert_gap(h)
+
+    def test_done_keeps_same_gap(self, deterministic_live):
+        """done 固化后间距与流式期一致（不再"完成后才冒出间距"）。"""
+        h = Harness()
+        self._feed_two_tools(h)
+        before = [r.rstrip() for r in h.rows()]
+        h.svc.done()
+        h.flush()
+        self._assert_gap(h)
+        # 逐行比较：固化形态的块区与流式期逐字一致（间距不跳变）
+        rows = [r.rstrip() for r in h.rows()]
+        grep_y = next(
+            y for y, r in enumerate(rows) if "●" in r and "grep" in r)
+        grep_y_b = next(
+            y for y, r in enumerate(before) if "●" in r and "grep" in r)
+        assert rows[grep_y:grep_y + 8] == before[grep_y_b:grep_y_b + 8]
+
+    def test_first_tool_block_has_no_leading_gap(self, deterministic_live):
+        """首个块（无 thinking/前文）顶格——与固化渲染 if chunks: 语义一致，
+        不多出前导空行。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(ToolStartEvent(name="grep", arguments="foo"))
+        h.svc.feed(ToolResultEvent(
+            name="grep", output="g1", is_error=False))
+        h.svc._live.refresh()
+        h.flush()
+        ne = h.nonempty()
+        assert ne and "grep" in ne[0][1], f"首块应顶格：{ne[:3]}"

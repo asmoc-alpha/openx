@@ -240,7 +240,8 @@ def test_plugin_deck_budget_folds_overflow(kernel_env):
     k.ensure_loaded(str(ws))
 
     svc = _svc(UiPanelCollector(k))
-    svc._rich = SimpleNamespace(height=16)  # 预算 = 16-7-5 = 4 行
+    # _VIEWPORT_RESERVE=9（含正文/框 2 行间距）→ 18-9-5 = 4 行预算
+    svc._rich = SimpleNamespace(height=18)
     group, h = svc._plugin_deck_renderable()
     assert h == 5  # 4 行 + "+N more"
     assert group.renderables[-1].plain.strip() == "+4 more"

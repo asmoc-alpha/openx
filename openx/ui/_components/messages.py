@@ -100,6 +100,8 @@ class MessagesMixin:
             "Type anything to chat with the agent",
             "The agent can read/write files, run commands, search code",
             "Esc interrupts · Ctrl+C exits",
+            "Ctrl+R expands or collapses the model's thinking — during the "
+            "answer and at the input frame after it ends",
             "Place an OPENX.md file in your project for custom instructions",
             "Use /init to create a starter OPENX.md template",
         ]:
@@ -135,6 +137,10 @@ class MessagesMixin:
             "[cyan]▸[/cyan] While the agent works, the panel under the input "
             "frame shows its plan and running sub-agents — press "
             "[bold]Ctrl+O[/bold] to view a sub-agent's progress.\n"
+            "[cyan]▸[/cyan] Thinking models leave a [bold]Thought for Ns[/bold] "
+            "line — press [bold]Ctrl+R[/bold] to expand or collapse the "
+            "reasoning, both while it answers and at the input frame after "
+            "the answer ends.\n"
             "[cyan]▸[/cyan] The agent works best with specific, concrete requests — "
             "tell it [italic]what[/italic] to do rather than [italic]how[/italic].\n"
             "[cyan]▸[/cyan] Place an [bold]OPENX.md[/bold] file in your project "

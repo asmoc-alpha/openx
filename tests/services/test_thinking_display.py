@@ -177,7 +177,7 @@ class TestThinkingDisplay:
         text = h.screen_text()
         assert "final answer" in text
         assert "Thought for" in text          # 折叠指示留屏
-        assert "ctrl+r" not in text           # done 后无热键提示
+        assert "(ctrl+r to expand)" in text   # 常驻提示（done 后重印兑现）
         assert "secret plans" not in text     # 折叠态：正文不上屏
 
     def test_done_freezes_expanded_state(self, deterministic_live):
@@ -193,7 +193,7 @@ class TestThinkingDisplay:
         text = h.screen_text()
         assert "final answer" in text
         assert "secret plans" in text         # 展开态：全文留屏（transcript）
-        assert "ctrl+r" not in text
+        assert "(ctrl+r to collapse)" in text  # 展开定格 → 收起提示常驻
 
     def test_reasoning_only_turn_done_latches(self, deterministic_live):
         """纯 thinking 回合（无正文）：done() 兜底冻结 → Thought for。"""
@@ -215,6 +215,97 @@ class TestThinkingDisplay:
         y_indicator = next(y for y, t in ne if "Thought for" in t)
         y_answer = next(y for y, t in ne if "the reply" in t)
         assert y_indicator < y_answer
+
+    def test_done_saves_replay_state_on_console(self, deterministic_live):
+        """done() 落重印状态到 console._last_replay（回答结束后 idle
+        Ctrl+R 就地展开的数据源）：thinking 对 + 指示行之外的全部 body 行。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(StreamReasoning("deep thought"))
+        h.svc.feed("answer body")
+        h.svc.done()
+        replay = h.svc._console._last_replay
+        text, elapsed = replay["thinking"]
+        assert text == "deep thought"
+        assert elapsed > 0
+        tail_plain = " ".join(t.plain for t in replay["tail"])
+        assert "answer body" in tail_plain   # tail 可独立重印
+        assert replay["gap"] == 2
+        assert h.svc._console._replay_expanded is False
+        # 折叠态块行数 = 指示行 + 块间空行 + 正文行（tail 计入标尺）
+        assert h.svc._console._replay_block_rows == len(replay["tail"]) + 1
+
+    def test_cancel_saves_replay_state(self, deterministic_live):
+        """被打断的回合：已流入的部分思考同样可重印（无 done 尾距）。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(StreamReasoning("partial cogitation"))
+        h.svc.cancel()
+        replay = h.svc._console._last_replay
+        text, _ = replay["thinking"]
+        assert text == "partial cogitation"
+        assert replay["gap"] == 0
+
+    def test_start_clears_replay_state(self, deterministic_live):
+        """每轮 start() 清空：Ctrl+R 就地重印绝不作用于上上轮。"""
+        h = Harness()
+        h.svc._console._last_replay = {"bogus": True}
+        h.svc._console._replay_expanded = True
+        h.svc._console._replay_block_rows = 7
+        h.svc.start()
+        assert h.svc._console._last_replay is None
+        assert h.svc._console._replay_expanded is False
+        assert h.svc._console._replay_block_rows == 0
+
+    def test_no_thinking_turn_leaves_replay_none(
+        self, deterministic_live
+    ):
+        """无 reasoning 的回合：done 后 _last_replay 仍为 None（Ctrl+R
+        静默忽略的数据前提）。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed("plain answer")
+        h.svc.done()
+        assert h.svc._console._last_replay is None
+
+    def test_frozen_indicator_carries_permanent_hint(self, deterministic_live):
+        """冻结指示行常驻 (ctrl+r to expand) 提示（用户界面需求）：
+        折叠/done 后仍随行上屏，done 后热键经重印兑现。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(StreamReasoning("some thinking"))
+        h.svc.feed("answer")
+        h.svc.done()
+        h.flush()
+        text = h.screen_text()
+        assert "Thought for" in text
+        assert "(ctrl+r to expand)" in text
+
+    def test_stream_gap_between_body_and_spinner(self, deterministic_live):
+        """流式期正文与框（经 spinner）恒隔 2 空行（_BODY_FRAME_GAP）。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed("body line here")
+        h.refresh()
+        rows = [r.rstrip() for r in h.rows()]
+        body_y = next(y for y, r in enumerate(rows) if "body line here" in r)
+        spin_y = next(
+            y for y, r in enumerate(rows) if "esc to interrupt" in r)
+        assert spin_y - body_y == 3          # 中间恰 2 空行
+        assert rows[body_y + 1] == "" and rows[body_y + 2] == ""
+
+    def test_done_gap_between_body_and_frame(self, deterministic_live):
+        """done 后留屏形态：正文与 FRAME 之间恰 2 空行。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed("the answer body")
+        h.svc.done()
+        h.flush()
+        rows = [r.rstrip() for r in h.rows()]
+        body_y = next(y for y, r in enumerate(rows) if "the answer body" in r)
+        frame_y = next(y for y, r in enumerate(rows) if "FRAME" in r)
+        assert frame_y - body_y == 3         # 中间恰 2 空行
+        assert rows[body_y + 1] == "" and rows[body_y + 2] == ""
 
     def test_start_resets_thinking_state(self, deterministic_live):
         """每轮 start() 归零 thinking 状态（不跨轮延续）。"""
@@ -304,3 +395,80 @@ class TestEventContract:
         h.svc.feed("answer")
         assert h.svc._reasoning_done is True
         assert h.svc._thinking_elapsed > 0
+
+
+# ── 超长 thinking 的 Ctrl+R 窗口（上下文过多仍可展开/折叠）────────
+
+
+class TestThinkingOversizedWindow:
+    def test_expand_shows_window_when_thinking_exceeds_screen(
+        self, deterministic_live
+    ):
+        """thinking 超一屏时 Ctrl+R 展开仍可见：指示行在屏 + 最近推理窗口
+        （头部截断带 +N more thoughts 标记）——用户报告：上下文过多时
+        展开打开不了（截窗保尾曾把指示行与全文全裁掉）。"""
+        h = Harness()  # 24 行屏
+        h.svc.start()
+        h.svc.feed(StreamReasoning(
+            "\n".join(f"thought line {i}" for i in range(1, 61))))
+        h.press("\x12")  # 展开
+        h.refresh()
+        text = h.screen_text()
+        assert "Thinking…" in text, "指示行必须在屏（展开反馈的锚点）"
+        assert "ctrl+r to collapse" in text
+        assert "thought line 60" in text, "最近推理必须可见（窗口保尾）"
+        assert "thought line 1" not in text, "头部应被窗掉"
+        assert "more thoughts" in text, "截断标记"
+        # 框锚定不漂移
+        frame_y = max(y for y, t in h.nonempty() if "FRAME" in t)
+        assert frame_y <= 23
+
+    def test_collapse_after_oversized_expand(self, deterministic_live):
+        """超长展开后再折叠：回到单行指示、全文撤下、框仍在屏内。
+
+        （流式 Live 区顶锚定：折叠后区高收缩、框随之上移是正常形态——
+        断言的是内容正确性与框在屏内，而非两态框位相同。）
+        """
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(StreamReasoning(
+            "\n".join(f"thought line {i}" for i in range(1, 61))))
+        h.press("\x12")
+        h.refresh()
+        h.press("\x12")  # 折叠
+        h.refresh()
+        text = h.screen_text()
+        assert "ctrl+r to expand" in text
+        assert "thought line 60" not in text
+        assert "more thoughts" not in text
+        frame_y2 = max(y for y, t in h.nonempty() if "FRAME" in t)
+        assert frame_y2 <= 23
+
+    def test_short_thinking_not_windowed(self, deterministic_live):
+        """屏内放得下的 thinking 展开照旧全文显示（无截断标记）。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(StreamReasoning("line a\nline b\nline c"))
+        h.press("\x12")
+        h.refresh()
+        text = h.screen_text()
+        assert "line a" in text and "line c" in text
+        assert "more thoughts" not in text
+
+
+class TestThinkingTranscriptComplete:
+    def test_done_commits_full_oversized_thinking(self, deterministic_live):
+        """done() 固化超长 thinking：transcript 全量落盘（窗化只作用于
+        流式易变显示，固化渲染恒全文——历史完整性优先）。"""
+        h = Harness()
+        h.svc.start()
+        lines = [f"deep thought {i}" for i in range(1, 61)]
+        h.svc.feed(StreamReasoning("\n".join(lines)))
+        h.press("\x12")  # 展开
+        h.refresh()
+        h.svc.feed("the answer")
+        h.svc.done()
+        raw = h.buf.getvalue()
+        assert "deep thought 1" in raw, "固化必须含思考头部"
+        assert "deep thought 60" in raw, "固化必须含思考尾部"
+        assert "the answer" in raw

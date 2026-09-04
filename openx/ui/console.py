@@ -97,6 +97,19 @@ class Console(
         # print_user_prompt 暂存 token 数，供 resize 重绘渲染准确状态行
         self._input_tokens_view = 0
         self._output_tokens_view = 0
+        # ── thinking 就地重印（回答结束后 Ctrl+R 展开/收起）──────────
+        # _last_replay：{"thinking": (text, elapsed), "tail": [Text 行],
+        # "gap": int}——StreamingService done()/cancel() 经 _save_replay
+        # 落值、start() 清空；_replay_expanded 为当前屏上展开态，
+        # _replay_block_rows 是指示行到 tail 末行占用的物理行数（重印后
+        # 实测更新，供下一次 toggle 的光标上移距离）。
+        self._last_replay = None
+        self._replay_expanded = False
+        self._replay_block_rows = 0
+        # 窗口闩：本回合的重印一旦走过窗口路径（块超一屏），后续 toggle
+        # 永久锁定窗口路径——tail 已部分在 scrollback、部分被窗口擦除，
+        # 整块重印会二次打印 scrollback 行（见 prompt._replay_toggle）。
+        self._replay_windowed = False
 
     # ── state accessors ─────────────────────────────────────────
 
