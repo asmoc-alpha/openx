@@ -4,6 +4,27 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.1 — Model groups & Anthropic-compatible protocol
+
+### Configuration: model groups
+
+- Added model groups as the single model/provider config — `modelGroups` (+ `activeGroup`) in `~/.openx/settings.json`, replacing the legacy single model, flat `api_key`/`api_base`, providers and profiles forms
+- Added per-group, per-role models — `main`/`exec`/`mini`/`modal` bindings (`openx-main-model` & friends), each able to override kind / endpoint / credentials; roles that are absent fall back to the group's main
+- Added `/model <group>` and `/model <group>:<role>` to switch groups or set a role's model; `/config` views and edits the active group
+- Added `env:VAR` indirection for `apiKey`/`apiBase` inside groups — the only external credential channel
+- Added the first-run setup wizard, which writes a `default` model group
+
+### Providers & routing
+
+- Added `anthropic-compat` — the anthropic kind now points at any Anthropic-format endpoint via `apiBase` (e.g. DeepSeek) and defaults to Anthropic's official API when blank; the legacy `anthropic` kind remains as an alias
+- Added project-scoped group selection — a project's `.openx/settings.json` `activeGroup` picks which group that workspace starts on
+- Added multi-modal routing — image-bearing turns use the group's `modal` model when declared, falling back to `main` otherwise
+
+### CLI & Web
+
+- Removed the `--model`/`-m`, `--api-key`, `--api-base`, `--max-rounds` and `--temperature` launch flags — models and tuning live in model groups or project settings; `--image`/`-i` is retained for one-shot image analysis
+- Added the web UI — `openx serve` exposes a browser interface to the same agent
+
 ## 0.1.0 — First public release
 
 OpenX is an agentic coding CLI in Python — chat with your codebase using any

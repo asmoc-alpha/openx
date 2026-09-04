@@ -53,7 +53,7 @@ schema 见 [配置](docs/user/guide/configuration.zh.md)。
 ```bash
 openx                                          # 交互式 REPL
 openx "add type hints to all functions in src/"   # 单次模式
-openx --model gpt-4o --workspace /path/to/project "explain this codebase"
+openx --workspace /path/to/project "explain this codebase"
 openx --continue                               # 恢复最近一次会话
 openx "fix the failing test" --output-format json   # headless / CI
 ```

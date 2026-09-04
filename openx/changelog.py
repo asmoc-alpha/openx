@@ -24,7 +24,7 @@ _BULLET = re.compile(r"^[-*]\s+(?P<text>.+?)\s*$")
 # Used only when the packaged CHANGELOG.md is missing/unreadable, so the
 # startup panel and /release-notes never crash on a broken install.
 _FALLBACK: list[tuple[str, str, list[str]]] = [
-    ("0.1.0", "First public release", ["See openx/CHANGELOG.md"]),
+    ("0.1.1", "Model groups & Anthropic-compatible protocol", ["See openx/CHANGELOG.md"]),
 ]
 
 

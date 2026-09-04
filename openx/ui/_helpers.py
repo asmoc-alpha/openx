@@ -57,7 +57,7 @@ def get_version() -> str:
         from openx import __version__
         return __version__
     except ImportError:
-        return "0.1.0"
+        return "0.1.1"
 
 
 def cell_to_ansi(text: Text) -> str:

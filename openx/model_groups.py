@@ -338,32 +338,23 @@ def resolve_role_settings(
     cfg: Any,
     group: ModelGroup,
     role_key: str,
-    cli: Optional[dict] = None,
 ) -> dict:
     """把 (组, 角色) 解析成 provider 工厂读的设置 dict。
 
-    优先级：role 显式 > group 默认。凭据/端点只来自组（含 ``env:VAR`` 展开），
-    没有任何 config 扁平兜底——模型配置唯一入口就是模型组。
-    - model：main 角色还会被 CLI ``cli['model']`` 临时覆盖（历史 ``-m`` 最大）；
-      main 模型由 parse 保证非空，CLI 覆盖是最上层。
+    优先级：role 显式 > group 默认。凭据/端点/模型只来自组（含 ``env:VAR``
+    展开），没有任何 config 扁平兜底与 CLI 覆盖——模型配置唯一入口就是模型组
+    （main 模型由 parse 保证非空）。
     - temperature/max_tokens/retry 在组/角色未声明时回落 ``cfg`` 通用默认
       （这些是运行期旋钮，不是扁平旧结构兼容）。
     """
     b = resolve_binding(group, role_key)
-    cli = cli or {}
 
     kind = b.kind or group.kind or "openai-compat"
 
     api_key = _pick_secret(b.api_key, group.api_key)
     api_base = _pick_secret(b.api_base, group.api_base)
 
-    if role_key == MAIN_ROLE:
-        cli_model = cli.get("model")
-        model = cli_model or b.model or ""
-        api_key = cli.get("api_key") or api_key
-        api_base = cli.get("api_base") or api_base
-    else:
-        model = b.model or ""
+    model = b.model or ""
 
     settings: dict[str, Any] = {
         "kind": kind,
@@ -422,11 +413,9 @@ if __name__ == "__main__":
     assert _s["model"] == "m3" and _s["kind"] == "openai-compat"
     # mini 自带 env: 间接 key 未设 → 空（不回落任何扁平字段）
     assert _s["api_key"] == ""
-    # 缺组级 key/base → 空；CLI 覆盖最上层
+    # 缺组级 key/base → 空（无 config/CLI 扁平兜底）
     _only_grp = ModelGroup(name="k", roles={MAIN_ROLE: RoleBinding(MAIN_ROLE, "mm")})
     _no_cred = resolve_role_settings(_Cfg(), _only_grp, MAIN_ROLE)
     assert _no_cred["api_key"] == "" and _no_cred["api_base"] == ""
     assert _no_cred["model"] == "mm"
-    _cli_ovr = {"model": "clivm"}
-    assert resolve_role_settings(_Cfg(), _g, MAIN_ROLE, _cli_ovr)["model"] == "clivm"
     print("openx/model_groups.py OK ✓")

@@ -105,11 +105,12 @@ provider 的模型/key/base 必须在模型组里配置（可经 `env:VAR`），
 会话内用 `/model` 切走只影响本次（仍写全局 `activeGroup`），下次启动回到项目默认。
 默认组指向不存在的组名时回落全局激活组。
 
-## CLI 覆盖
+## 已移除的 CLI 参数
 
-`openx --model <m> --api-key <k> --api-base <u>` 只对当次运行的**激活组 main 角色**
-做临时覆盖，不落盘、也不能替代已配置的组。完全没有配置任何组时，openx 会启动
-setup 向导。
+启动参数 `--model`/`--api-key`/`--api-base`（以及 `--max-rounds`/`--temperature`）
+已移除——模型/凭据/端点只在模型组里配，请求调参归组/角色或项目文件。运行期用
+`/model`、`/config`；项目也可用 `activeGroup` 选组。完全没有配置任何组时，openx
+会启动 setup 向导。
 
 ## 重试
 

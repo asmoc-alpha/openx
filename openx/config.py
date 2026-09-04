@@ -47,15 +47,11 @@ class OpenXConfig:
 
     # ── 模型组（modelGroups）──────────────────────────────────────
     # active_group 是当前绑定组名的投影（agent 构造/切组时回写），供 UI 展示。
-    # cli_*_override 为临时 CLI 覆盖（main.py 置位），仅对 main 角色生效。
     active_group: str = ""
     # 项目默认组：项目 <workspace>/.openx/settings.json 的 "activeGroup"（只选
     # 组名；组的定义仍在全局 modelGroups）。本工作区启动时优先于全局
     # activeGroup；会话内 /model 切换走 active_group echo，下次启动回到此默认。
     project_active_group: str = ""
-    cli_model_override: Optional[str] = None
-    cli_api_key_override: Optional[str] = None
-    cli_api_base_override: Optional[str] = None
     # load() 置位 True：实例必须走文件 modelGroups，无组即未配置（role_settings
     # 抛错，CLI 路径由 is_configured 门拦下）。手动构造（测试/嵌入）保持 False，
     # 不读全局 modelGroups（避免真实 ~/.openx 泄漏进单测），无组走内存合成。
@@ -317,17 +313,6 @@ class OpenXConfig:
 
     # ── 模型组解析（modelGroups，唯一咽喉点）────────────────────
 
-    def _cli_overrides(self) -> dict:
-        """当前临时 CLI 覆盖（仅 main 角色消费）。"""
-        out: dict = {}
-        if self.cli_model_override:
-            out["model"] = self.cli_model_override
-        if self.cli_api_key_override:
-            out["api_key"] = self.cli_api_key_override
-        if self.cli_api_base_override:
-            out["api_base"] = self.cli_api_base_override
-        return out
-
     def _synthesize_default_group(self) -> "_mg.ModelGroup":
         """手写/嵌入构造（settings_loaded=False）的极简内存组（不落盘）。
 
@@ -391,14 +376,11 @@ class OpenXConfig:
 
         角色可为长键或别名（main/exec/mini/modal）。dict 键与 provider 工厂
         读取一致（kind/api_key/api_base/model/temperature/max_tokens，retry
-        字段仅在组/角色显式声明时出现）——消费方零改动。CLI 临时覆盖仅对
-        main 角色生效（历史 ``-m`` 最大的语义保留）。
+        字段仅在组/角色显式声明时出现）——消费方零改动。
         """
         role_key = _mg.canonical_role(role) or role
         group = self.resolve_group(group_name)
-        return group.name, _mg.resolve_role_settings(
-            self, group, role_key, self._cli_overrides()
-        )
+        return group.name, _mg.resolve_role_settings(self, group, role_key)
 
 if __name__ == "__main__":
     import tempfile

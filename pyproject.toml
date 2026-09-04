@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openx"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenX - An open-source agentic coding CLI inspired by Claude Code"
 readme = "README.md"
 license = {text = "MIT"}

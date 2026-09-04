@@ -113,11 +113,13 @@ group; switching away with `/model` lasts for the session (it still writes the g
 `activeGroup`) and the project default re-applies next launch. A default naming a group
 that doesn't exist falls back to the global active group.
 
-## CLI overrides
+## Removed CLI flags
 
-`openx --model <m> --api-key <k> --api-base <u>` temporarily override the **main** role
-of the active group for that run only; they do not persist and do not replace a
-configured group. With no configured group at all, openx runs the setup wizard instead.
+Launch-time `--model`/`--api-key`/`--api-base` (plus `--max-rounds`/`--temperature`) have
+been removed — model, credentials and endpoint are configured only through model groups,
+and request tuning lives with the group/role or the project file. At runtime use
+`/model` and `/config`; a project may also pick its group via `activeGroup`. With no
+group configured at all, openx runs the setup wizard instead.
 
 ## Retries
 

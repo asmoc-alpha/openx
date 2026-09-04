@@ -26,8 +26,6 @@ class TestBasics:
         assert args.prompt is None
         assert args.output_format == "text"
         assert args.auto_approve is False
-        assert args.max_rounds == 30
-        assert args.temperature == 0.0
 
     def test_single_shot_prompt(self):
         """单次模式：位置参数作为 prompt。"""
@@ -41,24 +39,12 @@ class TestBasics:
 
 
 class TestFlags:
-    def test_short_and_long_model(self):
-        """--model/-m 与 --auto-approve/-y 的长短写法等价。"""
-        short = parse_args(["-m", "gpt-4o", "-y"])
-        assert short.model == "gpt-4o"
+    def test_auto_approve_short_and_long(self):
+        """--auto-approve/-y 长短写法等价。"""
+        short = parse_args(["-y"])
         assert short.auto_approve is True
-
-        long = parse_args(["--model", "gpt-4o", "--auto-approve"])
-        assert long.model == "gpt-4o"
+        long = parse_args(["--auto-approve"])
         assert long.auto_approve is True
-
-    def test_model_not_given_is_none(self):
-        """不传 --model → None（默认模型由 config 层处理）。"""
-        assert parse_args([]).model is None
-
-    def test_api_key_and_base(self):
-        args = parse_args(["--api-key", "sk-123", "--api-base", "http://localhost:8000/v1"])
-        assert args.api_key == "sk-123"
-        assert args.api_base == "http://localhost:8000/v1"
 
     def test_no_stream(self):
         assert parse_args(["--no-stream"]).no_stream is True
@@ -71,14 +57,6 @@ class TestFlags:
 
 
 class TestTypeConversion:
-    def test_int_and_float(self):
-        """类型转换：--max-rounds int、--temperature float。"""
-        args = parse_args(["--max-rounds", "10", "--temperature", "0.7"])
-        assert args.max_rounds == 10
-        assert isinstance(args.max_rounds, int)
-        assert args.temperature == 0.7
-        assert isinstance(args.temperature, float)
-
     def test_repeatable_image(self):
         """--image 可重复，累积为列表。"""
         args = parse_args(["--image", "a.png", "--image", "b.png"])
@@ -138,15 +116,16 @@ class TestErrorHandling:
             parse_args(["--nonexistent"])
         assert exc_info.value.code == 2
 
-    def test_max_rounds_requires_int(self):
-        """--max-rounds 传非整数 → SystemExit(code=2)。"""
-        with pytest.raises(SystemExit) as exc_info:
-            parse_args(["--max-rounds", "abc"])
-        assert exc_info.value.code == 2
-
-    def test_temperature_requires_float(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--temperature", "not-a-number"])
+    def test_removed_launch_flags_rejected(self):
+        """已移除的启动参数应被 argparse 拒绝（模型配置只在模型组）。"""
+        for argv in (
+            ["--model", "x"], ["-m", "x"],
+            ["--api-key", "k"], ["--api-base", "u"],
+            ["--max-rounds", "5"], ["--temperature", "0.5"],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                parse_args(argv)
+            assert exc_info.value.code == 2
 
     def test_help_exits_zero(self):
         """--help 打印帮助并以 0 退出。"""
@@ -183,7 +162,7 @@ class TestServeArgs:
         assert _rewrite_serve_argv(["serve", "--port", "9000"]) == ["--serve", "--port", "9000"]
         assert _rewrite_serve_argv(["serve"]) == ["--serve"]
         # 非 serve 子命令：原样返回
-        assert _rewrite_serve_argv(["--model", "gpt-4o", "fix it"]) == ["--model", "gpt-4o", "fix it"]
+        assert _rewrite_serve_argv(["fix it"]) == ["fix it"]
         assert _rewrite_serve_argv(None) == []
         assert _rewrite_serve_argv([]) == []
 

@@ -59,7 +59,7 @@ See [Configuration](docs/user/guide/configuration.md) for the schema.
 ```bash
 openx                                          # interactive REPL
 openx "add type hints to all functions in src/"   # single-shot mode
-openx --model gpt-4o --workspace /path/to/project "explain this codebase"
+openx --workspace /path/to/project "explain this codebase"
 openx --continue                               # resume the most recent session
 openx "fix the failing test" --output-format json   # headless / CI
 ```

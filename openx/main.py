@@ -3,7 +3,6 @@
 Usage:
     openx                    # Interactive REPL mode
     openx "fix the bug"      # Single-shot mode
-    openx --model gpt-4o     # Specify model
     openx --help             # Show help
 """
 
@@ -61,17 +60,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 Examples:
   openx                          Start interactive REPL
   openx "fix all type errors"    Single-shot mode
-  openx --model gpt-4o           Use a specific model
+  openx --image shot.png "what's in this?"   Single-shot with an image
   openx --workspace /my/project  Set workspace
   openx --auto-approve           Skip permission prompts
   openx --continue               Resume the latest session for this workspace
   openx --resume [SESSION_ID]    Resume a session (no id: interactive picker)
 
-Environment:
-  OPENAI_API_KEY     API key (required)
-  OPENAI_API_BASE    API base URL (default: https://api.openai.com/v1)
-  OPENX_MODEL        Default model (default: gpt-4o)
+Model & provider config lives in model groups (~/.openx/settings.json); manage
+them interactively with /model and /config. Environment:
   OPENX_AUTO_APPROVE Set to 'true' to skip all prompts
+  OPENX_WEB_SEARCH   'ddg' | 'bing' | 'auto' (web-search backend)
 """,
     )
 
@@ -81,38 +79,14 @@ Environment:
         help="Single-shot prompt. If omitted, starts interactive REPL.",
     )
     parser.add_argument(
-        "--model", "-m",
-        help="LLM model to use (default: gpt-4o)",
-    )
-    parser.add_argument(
         "--workspace", "-w",
         default=os.getcwd(),
         help="Workspace directory (default: current directory)",
     )
     parser.add_argument(
-        "--api-key",
-        help="API key (overrides OPENAI_API_KEY env var)",
-    )
-    parser.add_argument(
-        "--api-base",
-        help="API base URL (overrides OPENAI_API_BASE env var)",
-    )
-    parser.add_argument(
         "--auto-approve", "-y",
         action="store_true",
         help="Skip all permission prompts",
-    )
-    parser.add_argument(
-        "--max-rounds",
-        type=int,
-        default=30,
-        help="Maximum tool-call rounds per message (default: 30)",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="LLM temperature (default: 0.0)",
     )
     parser.add_argument(
         "--image", "-i",
@@ -314,21 +288,12 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     # ── First-run check: modelGroups ─────────────────────────────
     # 模型/凭据只来自 settings.json 的 modelGroups；未配置（无激活组）→
-    # 启动交互向导。CLI --api-key/--api-base/--model 只是对既有组的临时
-    # 覆盖，不能替代组本身（故不再把 env/CLI 当作"已配置"）。
+    # 启动交互向导（env/CLI 不再被当作"已配置"）。
     if not OpenXConfig.is_configured():
         asyncio.run(run_setup_wizard())
 
     # Build config (project settings + 非 provider env；模型组经 role_settings)
     config = OpenXConfig.load(workspace=args.workspace)
-
-    # CLI 临时覆盖：仅 main 角色生效（-m 最大），作为对组解析结果的覆盖
-    if args.api_key:
-        config.cli_api_key_override = args.api_key
-    if args.api_base:
-        config.cli_api_base_override = args.api_base
-    if args.model:
-        config.cli_model_override = args.model
 
     # 解析激活组 main 绑定并做启动校验（无组/字段缺 → 向导重来）
     active_group, main_settings = config.role_settings("main")
@@ -354,10 +319,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     config.active_group = active_group
     config.model = main_settings.get("model") or config.model
 
-    if args.max_rounds:
-        config.max_tool_rounds = args.max_rounds
-    if args.temperature is not None:
-        config.temperature = args.temperature
     if args.auto_approve:
         config.auto_approve = True
     config.stream = not args.no_stream
