@@ -47,24 +47,122 @@ function renderMarkdown(text) {
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
 
-  // 4. 行首结构：标题 / 无序列表
+  // 4. 行首结构：标题
   html = html.replace(/^#{1,6} (.*)$/gm, (m, body) => {
     const level = m.match(/^#+/)[0].length;
     return `<h${Math.min(level, 6)}>${body}</h${Math.min(level, 6)}>`;
   });
-  html = html.replace(/^[-*+] (.*)$/gm, "<li>$1</li>");
-  html = html.replace(/(?:<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
 
-  // 5. 恢复代码块
+  // 5. 无序 / 有序列表 + 引用（逐行连续分组，行首含转义后的 &gt;）
+  html = _blockLists(html);
+
+  // 6. GFM 表格（管道分隔；紧随的表头分隔行触发）
+  html = _renderTables(html);
+
+  // 7. 分割线（单独成行的 --- / *** / ___；表格分隔行已被第 6 步消化）
+  html = html.replace(/^(\s*)(?:-{3,}|\*{3,}|_{3,})(\s*)$/gm, "<hr>");
+
+  // 8. 恢复代码块
   html = html.replace(PH_RE, (m, i) => blocks[Number(i)]);
 
-  // 6. 段落（空行分段；段内换行 → <br>；块级标签不再套 <p>）
+  // 9. 段落（空行分段；段内换行 → <br>；块级标签不再套 <p>）
   const parts = html.split(/\n{2,}/).filter((p) => p.trim().length);
   if (!parts.length) return "";
   return parts
-    .map((p) => (/^(<h\d|<ul|<pre|<ol|<blockquote)/.test(p.trim()) ? p
+    .map((p) => (/^(<h\d|<ul|<pre|<ol|<blockquote|<table|<div)/.test(p.trim()) ? p
       : `<p>${p.replace(/\n/g, "<br>")}</p>`))
     .join("\n");
+}
+
+/* ── 迷你 markdown 辅助：列表/引用分组、表格 ─────────────────── */
+
+/** 连续的行首结构：- / 1. / > 各自成组；其余行原样保留。 */
+function _blockLists(html) {
+  const lines = String(html).split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    const ulM = /^[-*+] (.*)$/.exec(ln);
+    const olM = /^\d{1,3}[.)] (.*)$/.exec(ln);
+    const qM = /^&gt;\s?(.*)$/.exec(ln);
+    if (ulM || olM || qM) {
+      const tag = ulM ? "ul" : olM ? "ol" : "blockquote";
+      const items = [];
+      const next = tag === "blockquote" ? /^&gt;\s?(.*)$/ : tag === "ol" ? /^\d{1,3}[.)] (.*)$/ : /^[-*+] (.*)$/;
+      while (i < lines.length) {
+        const m = next.exec(lines[i]);
+        if (!m) break;
+        items.push(tag === "blockquote" ? m[1] : `<li>${m[1]}</li>`);
+        i++;
+      }
+      out.push(`<${tag}>\n${items.join("\n")}\n</${tag}>`);
+    } else {
+      out.push(ln);
+      i++;
+    }
+  }
+  return out.join("\n");
+}
+
+/** 单元格去首尾管道后 split；cell 已是转义+行内化的 HTML。 */
+function _tableCells(line) {
+  let t = String(line).trim();
+  if (t.charAt(0) === "|") t = t.slice(1);
+  if (t.charAt(t.length - 1) === "|") t = t.slice(0, -1);
+  return t.split("|").map((s) => s.trim());
+}
+
+/** 表头分隔行：--- / :--- / :---: / ---:（逐格判定，防单 "---" 误判表格）。 */
+function _isDelimiterRow(line) {
+  const cells = _tableCells(line);
+  if (cells.length === 1 && !/\|/.test(line) && /^-{2,}$/.test(line.trim())) return false;
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+
+function _tableAlign(cell) {
+  const c = String(cell).trim();
+  const l = c.charAt(0) === ":";
+  const r = c.charAt(c.length - 1) === ":";
+  return l && r ? "center" : r ? "right" : l ? "left" : "";
+}
+
+/** 管道表格 → <table>（含可选对齐）；其它行原样。 */
+function _renderTables(text) {
+  const lines = String(text).split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const cur = lines[i];
+    const nxt = lines[i + 1];
+    if (nxt !== undefined && cur.indexOf("|") !== -1 && _isDelimiterRow(nxt)) {
+      const header = _tableCells(cur);
+      const aligns = _tableCells(nxt).map(_tableAlign);
+      const rows = [];
+      let j = i + 2;
+      while (j < lines.length && lines[j].indexOf("|") !== -1 && !_isDelimiterRow(lines[j])) {
+        rows.push(_tableCells(lines[j]));
+        j++;
+      }
+      const attr = (idx) => (aligns[idx] ? ` align="${aligns[idx]}"` : "");
+      const head = `<thead><tr>${header
+        .map((c, idx) => `<th${attr(idx)}>${c}</th>`)
+        .join("")}</tr></thead>`;
+      const body = rows.length
+        ? `<tbody>${rows
+            .map((r) => `<tr>${header
+              .map((_, idx) => `<td${attr(idx)}>${r[idx] !== undefined ? r[idx] : ""}</td>`)
+              .join("")}</tr>`)
+            .join("")}</tbody>`
+        : "";
+      out.push(`<div class="table-wrap"><table>${head}${body}</table></div>`);
+      i = j;
+    } else {
+      out.push(cur);
+      i++;
+    }
+  }
+  return out.join("\n");
 }
 
 // ── 命名空间：API / 提示 ───────────────────────────────────────

@@ -65,7 +65,7 @@ class OpenXConfig:
     retry_base_delay: float = 1.0
 
     # ── Agent settings ───────────────────────────────────────────
-    max_tool_rounds: int = 30  # max back-and-forth tool calls per message
+    max_tool_rounds: int = 100  # max back-and-forth tool calls per message
     workspace: str = field(default_factory=lambda: os.getcwd())
 
     # ── Permission settings ──────────────────────────────────────
@@ -288,11 +288,21 @@ class OpenXConfig:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # 环境变量：只覆盖非 provider 旋钮（模型/凭据唯一来自模型组）
+        # 环境变量：只覆盖非 provider 旋钮（模型/凭据唯一来自模型组）。
+        # OPENX_MAX_TOOL_ROUNDS 是全局兜底——项目 .openx/settings.json 的
+        # 同名键在项目合并段已生效，这里再覆盖一次（env 优先）。非法值忽略。
         if os.environ.get("OPENX_AUTO_APPROVE"):
             config.auto_approve = os.environ["OPENX_AUTO_APPROVE"].lower() == "true"
         if os.environ.get("OPENX_WEB_SEARCH"):
             config.web_search_provider = os.environ["OPENX_WEB_SEARCH"].lower()
+        _rounds = os.environ.get("OPENX_MAX_TOOL_ROUNDS")
+        if _rounds:
+            try:
+                _rounds_val = int(_rounds)
+            except ValueError:
+                _rounds_val = 0
+            if _rounds_val > 0:
+                config.max_tool_rounds = _rounds_val
 
         return config
 

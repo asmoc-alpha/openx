@@ -17,6 +17,8 @@ const Chat = {
     this.bindSend();
     this.bindInterrupt();
     this.bindWelcomeChips();
+    this.bindPickers();
+    this.setStreaming(false);
   },
 
   /**
@@ -33,6 +35,8 @@ const Chat = {
    * 任何 user/assistant 渲染都会触发——首条消息起即出局。
    */
   hideWelcome() {
+    // 离开空态 = 进入会话态：先把输入框从问候区挪回 #chat 底部贴底
+    this._dockComposer();
     const hero = document.getElementById("welcome-hero");
     if (!hero || hero.classList.contains("is-hidden")) return;
     hero.classList.add("is-fading");
@@ -59,6 +63,279 @@ const Chat = {
     if (!hero) return;
     hero.classList.add("is-hidden", "is-fading");
     hero.style.display = "none";
+  },
+
+  // ── 空态 / 会话态：居中大输入框 <-> 贴底输入框 ─────────────────
+  // #composer 元素随状态在两个父容器间物理搬移：
+  //   空态 → #welcome-hero（问候区，居中大输入框）
+  //   会话 → #chat（消息之下、贴底）
+  _heroEl() { return document.getElementById("welcome-hero"); },
+
+  /** 把 #composer 从问候区挪回 #chat 底部（贴底；#panels 之后）。 */
+  _dockComposer() {
+    const comp = $("composer");
+    const chat = $("chat");
+    if (comp && chat && comp.parentNode !== chat) chat.appendChild(comp);
+  },
+
+  /** 把 #composer 放进问候区（插到副标题与能力芯片之间，保持居中）。 */
+  _placeComposerInHero() {
+    const hero = this._heroEl();
+    const comp = $("composer");
+    if (!hero || !comp || comp.parentNode === hero) return;
+    const chips = hero.querySelector(".welcome-chips");
+    hero.insertBefore(comp, chips);
+  },
+
+  /**
+   * 进入空态：问候区可见 + 输入框居中 + 重置输入区 + 刷新目录/模型选择。
+   * 新建对话 / 切工作区 / 启动空会话时调用（幂等）。
+   */
+  enterEmpty() {
+    const hero = this._heroEl();
+    if (!hero) return;
+    this._placeComposerInHero();
+    const inp = $("input");
+    if (inp) inp.value = "";
+    const att = $("composer-attachments");
+    if (att) { att.hidden = true; att.innerHTML = ""; }
+    const bar = $("turn-bar");
+    if (bar) bar.hidden = true;
+    this._dirClose();
+    hero.classList.remove("is-hidden", "is-fading");
+    hero.style.display = "";
+    this.refreshPickers();
+  },
+
+  // ── 空态输入框内的目录/模型组选择 ─────────────────────────────
+  bindPickers() {
+    const ws = $("ws-picker");
+    if (ws) ws.addEventListener("change", () => this.onPickWorkspace());
+    const mp = $("model-picker");
+    if (mp) mp.addEventListener("change", () => this.onPickModel());
+
+    // 本地目录浏览器（弹窗内导航；绑定一次）
+    const up = $("dir-up");
+    if (up) up.addEventListener("click", () => this._dirUp());
+    const close = $("dir-close");
+    if (close) close.addEventListener("click", () => this._dirClose());
+    const cancel = $("dir-cancel");
+    if (cancel) cancel.addEventListener("click", () => this._dirClose());
+    const choose = $("dir-choose");
+    if (choose) choose.addEventListener("click", () => this._dirChoose());
+    const list = $("dir-list");
+    if (list) list.addEventListener("click", (e) => {
+      const item = e.target.closest("[data-dir]");
+      if (item && item.dataset.dir) this._dirEnter(item.dataset.dir);
+    });
+  },
+
+  _busyGuard() {
+    if (typeof AppState === "undefined") return false;
+    if (AppState.streaming) { OX.toast("当前回合仍在进行，先打断或等待完成", "err"); return true; }
+    return false;
+  },
+
+  async refreshPickers() {
+    const ws = $("ws-picker");
+    const mp = $("model-picker");
+    if (!ws && !mp) return;
+
+    if (ws) {
+      try {
+        const groups = (await OX.get("/api/workspaces")) || [];
+        const curWs = (typeof AppState !== "undefined" && AppState.workspace) || "";
+        const activePath = (groups.find((g) => g.active) || {}).workspace || curWs || "";
+        let html = `<option value="" disabled ${activePath ? "" : "selected"}>选择工作目录…</option>`;
+        for (const g of groups) {
+          const p = g.workspace || "";
+          if (!p) continue;
+          const base = String(p).split("/").filter(Boolean).pop() || p;
+          const sel = p === activePath ? "selected" : "";
+          html += `<option value="${escapeHtml(p)}" ${sel} title="${escapeHtml(p)}">${escapeHtml(base)}${p === activePath ? " · 当前" : ""}</option>`;
+        }
+        html += `<option value="__browse__">📁 浏览本地目录…</option>`;
+        ws.innerHTML = html;
+      } catch (_) { /* 服务未就绪：空选项，稍后重进空态会再刷 */ }
+    }
+
+    if (mp) {
+      try {
+        const data = (await OX.get("/api/models")) || {};
+        const cur = ((data.current || {}).group) || data.active || "";
+        let html = `<option value="" disabled ${cur ? "" : "selected"}>选择模型组…</option>`;
+        for (const g of (data.groups || [])) {
+          const label = g.name + (g.main ? ` · ${g.main}` : "");
+          html += `<option value="${escapeHtml(g.name)}" ${g.name === cur ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        }
+        mp.innerHTML = html;
+      } catch (_) { /* 同上 */ }
+    }
+  },
+
+  onPickWorkspace() {
+    const sel = $("ws-picker");
+    if (!sel || !sel.value) return;
+    if (this._busyGuard()) { sel.value = ""; return; }
+    const v = sel.value;
+    if (v === "__browse__") { sel.value = ""; this.openDirPicker(); return; }
+    this.switchWorkspace(v);
+  },
+
+  // ── 本地目录浏览器（serve 枚举子目录，联动选择而非手填） ─────
+  _dirStartPath() {
+    return (typeof AppState !== "undefined" && AppState.workspace) || "/";
+  },
+
+  async openDirPicker() {
+    const ov = $("dir-overlay");
+    if (!ov) return;
+    ov.hidden = false;
+    await this._dirOpen(this._dirStartPath());
+  },
+
+  _dirClose() {
+    const ov = $("dir-overlay");
+    if (ov) ov.hidden = true;
+    this._dirData = null;
+  },
+
+  async _dirOpen(path) {
+    const ov = $("dir-overlay");
+    if (ov) ov.hidden = false;
+    let data;
+    try {
+      data = await OX.get("/api/dirs?path=" + encodeURIComponent(path || ""));
+    } catch (err) {
+      OX.toast("无法读取目录：" + err.message, "err");
+      this._dirClose();
+      return;
+    }
+    if (!data) return;
+    this._dirData = data;
+    this._dirRender(data);
+  },
+
+  async _dirEnter(path) {
+    await this._dirOpen(path);
+  },
+
+  async _dirUp() {
+    const d = this._dirData;
+    if (d && d.parent) await this._dirOpen(d.parent);
+  },
+
+  async _dirChoose() {
+    const d = this._dirData;
+    if (!d) return;
+    if (this._busyGuard()) return;
+    const path = d.path;
+    this._dirClose();
+    await this.switchWorkspace(path);
+  },
+
+  /** 面包屑：/a/b/c → [{/,/},{a,/a},{b,/a/b},{c,/a/b/c}]（点击跳转）。 */
+  _dirCrumbs(path) {
+    const p = String(path);
+    const segs = p.split("/").filter(Boolean);
+    const out = [];
+    if (p.startsWith("/")) out.push({ label: "/", path: "/" });
+    let acc = p.startsWith("/") ? "/" : "";
+    for (const s of segs) {
+      acc = acc.endsWith("/") ? acc + s : acc + "/" + s;
+      out.push({ label: s, path: acc });
+    }
+    return out;
+  },
+
+  _dirRender(d) {
+    const pathEl = $("dir-path");
+    const cur = $("dir-current");
+    const choose = $("dir-choose");
+    const up = $("dir-up");
+    if (pathEl) {
+      pathEl.innerHTML = "";
+      pathEl.title = d.path || "";
+      const crumbs = this._dirCrumbs(d.path);
+      crumbs.forEach((c, i) => {
+        if (i) {
+          const sep = el("span", "seg-sep");
+          sep.textContent = "/";
+          pathEl.appendChild(sep);
+        }
+        const seg = el("span", "seg");
+        seg.textContent = c.label;
+        seg.title = c.path;
+        seg.onclick = () => this._dirOpen(c.path);
+        pathEl.appendChild(seg);
+      });
+    }
+    const list = $("dir-list");
+    const empty = $("dir-empty");
+    if (list) {
+      list.innerHTML = "";
+      for (const item of (d.dirs || [])) {
+        const li = el("li", "dir-item");
+        const ic = el("span", "di-ic");
+        ic.textContent = "▸";
+        const nm = el("span", "di-name");
+        nm.textContent = item.name;
+        nm.title = item.path;
+        li.append(ic, nm);
+        li.dataset.dir = item.path;
+        list.appendChild(li);
+      }
+      if (empty) empty.hidden = (d.dirs || []).length > 0;
+    }
+    if (cur) cur.textContent = d.path || "";
+    if (choose) choose.disabled = !d.path;
+    if (up) up.hidden = !d.parent;
+  },
+
+  /** 切工作目录：后端会在该目录重开新会话并重根 tools。 */
+  async switchWorkspace(path) {
+    try {
+      await OX.post("/api/workspace/switch", { workspace: path });
+    } catch (err) {
+      OX.toast("切换目录失败：" + err.message, "err");
+      return;
+    }
+    try {
+      const info = await OX.get("/api/info");
+      if (typeof AppState !== "undefined" && info) {
+        AppState.workspace = info.workspace || "";
+        AppState.sessionId = info.session_id || "";
+        AppState.model = info.model || "";
+      }
+    } catch (_) { /* info 读失败不阻断 */ }
+    if (typeof Sidebar !== "undefined") {
+      Sidebar.activeSession = (typeof AppState !== "undefined" && AppState.sessionId) || "";
+      await Sidebar.reload();
+      Sidebar.renderAll();
+    }
+    if (typeof updateBreadcrumb === "function") updateBreadcrumb();
+    this.enterEmpty();
+    OX.toast("已切换到工作区：" + path, "ok");
+  },
+
+  /** 切模型组：影响后续消息（当前空会话保留）。 */
+  async onPickModel() {
+    const sel = $("model-picker");
+    if (!sel || !sel.value) return;
+    if (this._busyGuard()) { sel.value = ""; return; }
+    const group = sel.value;
+    try {
+      const data = await OX.post("/api/models/switch", { group });
+      if (data && data.current && typeof AppState !== "undefined") {
+        AppState.model = data.current.model || "";
+      }
+    } catch (err) {
+      OX.toast("切换模型组失败：" + err.message, "err");
+      this.refreshPickers();
+      return;
+    }
+    if (typeof updateBreadcrumb === "function") updateBreadcrumb();
+    OX.toast("已切换到模型组 → " + group, "ok");
   },
 
   /**
@@ -104,7 +381,26 @@ const Chat = {
   },
 
   bindSend() {
-    $("send-btn").onclick = () => this.submit();
+    $("send-btn").onclick = () => {
+      if (typeof AppState !== "undefined" && AppState.streaming) {
+        AppState.send({ type: "interrupt" });   // 回答中点击 = 停止
+      } else {
+        this.submit();
+      }
+    };
+  },
+
+  /**
+   * 流式状态 → 发送钮：空闲显示 "→"（发送）；回答中变 "■"（停止）并脉冲动画。
+   * 由 app.js 的 showTurnBar(true|false) 驱动（见 showTurnBar 委托）。
+   */
+  setStreaming(on) {
+    const btn = $("send-btn");
+    if (!btn) return;
+    btn.classList.toggle("streaming", Boolean(on));
+    btn.title = on ? "停止生成" : "发送 (Enter)";
+    btn.setAttribute("aria-label", on ? "停止生成" : "发送");
+    btn.textContent = on ? "■" : "→";
   },
 
   bindInterrupt() {
@@ -122,15 +418,20 @@ const Chat = {
 
   // ── 渲染：单条消息 ────────────────────────────────
   clearAll() {
-    $("messages").innerHTML = "";
-    $("messages").classList.remove("streaming");
+    const host = $("messages");
+    // 只移除消息 / 元 / 思考节点；#day-divider 与 #welcome-hero 常驻，
+    // 让「新建对话」能稳定回到空态（hero 隐藏只靠 .is-hidden）。
+    for (const c of Array.from(host.children)) {
+      if (c.id === "welcome-hero" || c.id === "day-divider") continue;
+      c.remove();
+    }
+    host.classList.remove("streaming");
     this.streamBuf = "";
     this.lastAssistant = null;
     this.lastTool = null;
     this.thinkingBody = null;
-    // 清屏 = 进入「无消息」状态：拉回欢迎页（多用于新建会话、清空、刷新当前会话）。
-    // replay 路径会立刻 appendUser，所以 hidden 状态不会持续太久。
-    this.showWelcome();
+    // 清屏 = 进入「无消息」空态：输入框回居中、问候可见。
+    this.enterEmpty();
   },
 
   appendUser(text) {
@@ -154,7 +455,13 @@ const Chat = {
     if (!this.thinkingBody) {
       const wrap = el("div", "thinking");
       const toggle = el("button", "thinking-toggle");
-      toggle.textContent = "💭 Thinking…";
+      toggle.type = "button";
+      const caret = el("span", "caret");
+      caret.textContent = "▸";
+      const dot = el("span", "t-dot");
+      const label = el("span", "t-label");
+      label.textContent = "思考";
+      toggle.append(caret, dot, label);
       toggle.onclick = () => wrap.classList.toggle("open");
       const body = el("div", "thinking-body");
       wrap.append(toggle, body);
@@ -165,9 +472,10 @@ const Chat = {
   },
 
   /**
-   * 创建一个助手卡片（标签行 + 正文 + 工具区 + 附件）。
+   * 创建一个助手卡片（标签行 + 正文 + 附件）。
    * 后续 text_delta 注入到 .assistant-body；
-   * tool_use / tool_result 注入到 .tool-cards 容器；
+   * tool_use / tool_result 进入「本轮工具调用」折叠区（.turn-fold），
+   * 折叠区在首个工具出现时才动态插到正文之前（叙事=先工具、后回答）；
    * 流结束不删除任何内容，由 reducer 标记状态。
    */
   createAssistantCard(opts = {}) {
@@ -198,15 +506,15 @@ const Chat = {
     head.appendChild(meta);
 
     const body = el("div", "assistant-body");
-    const tools = el("div", "tool-cards");
     const attachments = el("div", "attachments");
 
-    card.append(head, body, tools, attachments);
+    card.append(head, body, attachments);
 
     const msg = el("div", "msg assistant");
     msg.appendChild(card);
     $("messages").appendChild(msg);
-    this.lastAssistant = { card, body, tools, attachments };
+    // fold / tools 惰性创建（见 _ensureToolFold）
+    this.lastAssistant = { card, body, attachments, fold: null, tools: null };
     this.autoscroll();
     return card;
   },
@@ -227,8 +535,37 @@ const Chat = {
     this.autoscroll();
   },
 
+  /**
+   * 惰性建「本轮工具调用」折叠区，插到正文前。运行中保持展开，
+   * 回合收尾由 finalizeTurn 收起成一行汇总。
+   */
+  _ensureToolFold() {
+    const a = this.lastAssistant;
+    if (!a || a.fold) return;
+    const fold = el("div", "turn-fold");
+    const headBtn = el("button", "turn-fold-head");
+    headBtn.type = "button";
+    const caret = el("span", "fold-caret");
+    caret.textContent = "▸";
+    const dot = el("span", "fold-dot");
+    const label = el("span", "fold-label");
+    label.textContent = "工具调用";
+    const status = el("span", "fold-status");
+    status.textContent = "运行中";
+    headBtn.append(caret, dot, label, status);
+    const tools = el("div", "tool-cards");
+    fold.append(headBtn, tools);
+    headBtn.onclick = () => fold.classList.toggle("closed");
+    a.card.insertBefore(fold, a.body);
+    a.fold = fold;
+    a.tools = tools;
+    this.autoscroll();
+  },
+
   appendToolStart(name, desc) {
     if (!this.lastAssistant) this.createAssistantCard();
+    this._ensureToolFold();
+    const tools = this.lastAssistant.tools;
     const wrap = el("div", "tool-card");
     const head = el("div", "tool-card-head");
     const dot = el("span", "dot running");
@@ -244,7 +581,7 @@ const Chat = {
     const out = el("pre", "tool-output");
     out.hidden = true;
     wrap.append(head, out);
-    this.lastAssistant.tools.appendChild(wrap);
+    tools.appendChild(wrap);
     this.lastTool = { name, wrap, status, out };
     this.autoscroll();
   },
@@ -265,6 +602,21 @@ const Chat = {
       t.out.hidden = false;
     }
     t.wrap.classList.toggle("error", isError);
+  },
+
+  /**
+   * 回合收尾：把工具折叠区收成「N 次工具调用」汇总行（点击可再展开）。
+   * 由 app.js 在 result / interrupted 后调用；不清内容。
+   */
+  finalizeTurn() {
+    const a = this.lastAssistant;
+    if (!a || !a.fold) return;
+    const n = a.tools ? a.tools.children.length : 0;
+    const label = a.fold.querySelector(".fold-label");
+    const status = a.fold.querySelector(".fold-status");
+    if (label) label.textContent = n ? `${n} 次工具调用` : "工具调用";
+    if (status) status.textContent = "";
+    a.fold.classList.add("closed");
   },
 
   appendAttachment(icon, name) {
@@ -290,6 +642,23 @@ const Chat = {
       this.lastAssistant.body.innerHTML = renderMarkdown(this.streamBuf);
       this.autoscroll();
     });
+  },
+
+  /**
+   * 回合收尾：把累积的 streamBuf 同步渲染进正文，并取消挂起的 rAF 刷新。
+   *
+   * 竞态说明：若最后一个 text_delta 与 result 在同一帧内到达，result 处理
+   * 若先把 streamBuf 清空，随后挂起的 rAF 会用空 buffer 覆写 innerHTML，
+   * 已显示的回复就会在结束时消失（interrupted 同理会抹掉半截回复）。
+   * 因此收尾一律走这里同步提交；buffer 交给下一次 user_message / clearAll 重置。
+   */
+  commitStream() {
+    if (this._flushPending) this._flushPending = false;
+    if (!this.lastAssistant && this.streamBuf) this.createAssistantCard();
+    const a = this.lastAssistant;
+    if (!a) return;
+    a.body.innerHTML = renderMarkdown(this.streamBuf);
+    this.autoscroll();
   },
 
   autoscroll() {

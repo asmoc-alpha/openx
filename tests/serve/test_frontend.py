@@ -30,7 +30,10 @@ def test_overlay_and_turnbar_start_hidden():
     html = _read("index.html")
     assert 'id="perm-overlay" class="overlay" hidden' in html, \
         "权限弹窗必须起始 hidden（否则 CSS display:flex 会覆盖 hidden）"
-    assert '<div id="turn-bar" hidden>' in html, "回合条必须起始 hidden"
+    # 回合条必须起始 hidden。元素普遍带 data-page-node-id 尾随属性，故按
+    # "div 的 hidden 属性存在"断言而非精确子串（后者对属性顺序/追加过脆）。
+    assert re.search(r'<div id="turn-bar"[^>]*\bhidden\b', html), \
+        "回合条必须起始 hidden"
 
 
 def test_css_forces_hidden_to_win():
@@ -81,7 +84,7 @@ def test_appjs_dispatches_to_modals():
 def test_panels_container_starts_hidden():
     """面板区起始 hidden（同权限弹窗不变量：CSS display 不得覆盖 hidden）。"""
     html = _read("index.html")
-    assert '<div id="panels" class="panels" hidden>' in html
+    assert re.search(r'<div id="panels"[^>]*\bhidden\b', html)
 
 
 def test_panels_event_dispatch_and_render():
@@ -190,3 +193,40 @@ def test_no_build_artifacts_in_static():
             assert not n.endswith(".map"), f"禁止源码映射：{n}"
             assert not n.endswith(".min.js"), f"禁止压缩产物：{n}"
             assert not re.search(r"\.[a-f0-9]{8}\.(js|css)$", n), f"禁止哈希后缀：{n}"
+
+
+# ── 侧栏：工作区目录下的会话展示 + 删除 ─────────────────────────
+
+
+def test_sidebar_lists_sessions_under_each_group():
+    """每个目录组都要渲染其下会话，且标题/时间走 textContent（XSS 纪律）。"""
+    js = _read("sidebar.js")
+    assert "this._renderSessionItem(s)" in js
+    assert 'title.textContent = s.title || "新会话"' in js
+    assert "time.textContent = s.time ||" in js
+    # 首载全部目录默认展开（会话不用翻折叠直接可见）；组头点击可收起
+    assert "for (const g of this.workspaces)" in js
+    assert "this.expanded.add(g.workspace)" in js
+    assert "groupLi.classList.add(\"open\")" in js
+    assert "head.onclick = () => this.toggleGroup(path)" in js
+
+
+def test_sidebar_session_delete_wired_to_api():
+    """会话项带删除按钮，删除走 DELETE /api/sessions/{id}。"""
+    js = _read("sidebar.js")
+    assert "session-del" in js
+    assert "this.deleteSession(s)" in js
+    assert 'del.title = "删除会话"' in js
+    assert "OX.del(`/api/sessions/${encodeURIComponent(sid)}`)" in js
+    # 删掉的正是当前打开的会话 → 刷新回实时视图
+    assert "location.reload()" in js
+
+
+def test_css_sessions_visible_only_when_group_open():
+    """会话列表默认 display:none，仅 .ws-group.open 时显示（折叠门控在 CSS）。
+
+    防止回归成「目录组渲染了会话却从不加 open → 会话被 CSS 永久藏住」。
+    """
+    css = _read("style.css")
+    assert ".ws-sessions {" in css
+    assert ".ws-group.open > .ws-sessions { display: flex; }" in css

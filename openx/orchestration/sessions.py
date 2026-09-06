@@ -570,6 +570,28 @@ class SessionStore:
         return best
 
     @classmethod
+    def delete(cls, session_id: str) -> bool:
+        """删除会话文件（跨工作区定位）；不存在 / 删不动返回 False。
+
+        id 校验与定位全权交给 ``resolve_anywhere``（那里挡分隔符与特殊
+        字符、杜绝 glob 与路径穿越）——本方法只做最后一步 unlink。
+
+        **调用方契约**：若删的是当前活动会话，必须先重绑 agent 到新会话
+        再调本方法（见 serve 的 ``DELETE /api/sessions/{sid}``）——顺序颠倒
+        时，重绑窗口内任何一次 ``append_*`` 都会用 ``open("a")`` 把文件
+        复活成一个**没有 meta 行的空壳**（列表页读不到 workspace，恢复
+        也拿不到 model）。
+        """
+        meta = cls.resolve_anywhere(session_id)
+        if meta is None or meta.path is None:
+            return False
+        try:
+            Path(meta.path).unlink()
+        except OSError:
+            return False
+        return True
+
+    @classmethod
     def catalog(cls) -> list[tuple[str, list[SessionMeta]]]:
         """列出全部曾产生过会话的工作区及其会话（web 侧栏数据源）。
 
@@ -690,6 +712,12 @@ if __name__ == "__main__":
             assert perm["seq"] == 1 and perm["tool"] == "shell"
             # 顺序 = 文件序：三条 message 在前、账本事件在后
             assert kinds.index("permission_decision") > kinds.index("message")
+
+            # delete：删掉后定位不到；重复删 / 非法 id 安全返回 False
+            assert SessionStore.delete("selftest01") is True
+            assert SessionStore.resolve_anywhere("selftest01") is None
+            assert SessionStore.delete("selftest01") is False
+            assert SessionStore.delete("../escape") is False
         finally:
             SESSIONS_DIR = _saved
 

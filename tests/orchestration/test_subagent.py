@@ -448,6 +448,22 @@ class TestFleetCapture:
         assert "Reached maximum tool call rounds" in result.output
 
     @pytest.mark.asyncio
+    async def test_max_rounds_wraps_up_with_summary(self, tmp_path):
+        """触顶后补一轮无工具请求：run() 返回模型总结而非回退哨兵串。"""
+        tcs = [{"id": "c1", "type": "function", "function": {
+            "name": "read_file", "arguments": json.dumps({"file_path": "missing.txt"}),
+        }}]
+        agent = _make_agent(tmp_path, [
+            (None, tcs),  # 第 1 轮 → 工具
+            (None, tcs),  # 第 2 轮 → 工具（到达上限）
+            ("wrapped: read done; remaining: fix X; next: edit Y", None),
+        ])               # 第 3 次请求无工具 → 总结收尾
+        agent.config.max_tool_rounds = 2
+        out = await agent.run("go")
+        assert out == "wrapped: read done; remaining: fix X; next: edit Y"
+        assert "Reached maximum tool call rounds" not in out
+
+    @pytest.mark.asyncio
     async def test_parallel_children_get_separate_views(
         self, tmp_path, monkeypatch
     ):

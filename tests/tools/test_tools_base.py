@@ -18,7 +18,7 @@ class TestConfig:
         assert config.model == ""
         assert config.active_group == ""
         assert config.temperature == 0.0
-        assert config.max_tool_rounds == 30
+        assert config.max_tool_rounds == 100
         assert not config.auto_approve
         assert not hasattr(config, "api_key")
         assert not hasattr(config, "api_base")
@@ -35,6 +35,27 @@ class TestConfig:
         config._merge({"allowed_commands": ["custom-cmd"]})
         assert len(config.allowed_commands) == original + 1
         assert "custom-cmd" in config.allowed_commands
+
+    def test_env_max_tool_rounds_overrides_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENX_MAX_TOOL_ROUNDS", "200")
+        config = OpenXConfig.load(workspace=str(tmp_path))
+        assert config.max_tool_rounds == 200
+
+    def test_env_max_tool_rounds_invalid_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENX_MAX_TOOL_ROUNDS", "lots")
+        config = OpenXConfig.load(workspace=str(tmp_path))
+        assert config.max_tool_rounds == 100
+
+    def test_env_max_tool_rounds_beats_project_file(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / ".openx").mkdir()
+        (tmp_path / ".openx" / "settings.json").write_text(
+            '{"max_tool_rounds": 150}', encoding="utf-8"
+        )
+        monkeypatch.setenv("OPENX_MAX_TOOL_ROUNDS", "300")
+        config = OpenXConfig.load(workspace=str(tmp_path))
+        assert config.max_tool_rounds == 300  # env 优先于项目文件
 
 
 class TestPermissions:

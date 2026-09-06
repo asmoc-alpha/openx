@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="1IgnLMD3EfCQFH0F0puknH">
-<head data-page-node-id="VRALp43AkNIK904pfVGJjx">
-<meta charset="utf-8" data-page-node-id="rLEdskFEc579j3KrVJhbDA">
-<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="seuIA85KcemAs9fiZCkvsH">
-<title>OpenX · 智能助手工作台</title>
-<link rel="icon" type="image/svg+xml" href="/static/openx-mark.svg" data-page-node-id="O19fGIYJzLkH9Iwt3epj05">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenX</title>
+<link rel="icon" type="image/svg+xml" href="/static/openx-mark.svg">
 <!-- 首屏主题：在样式表解析前按偏好打 data-theme，避免浅色模式闪暗（FOUC） -->
 <script>
 (function () {
@@ -17,353 +17,348 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="/static/style.css" data-page-node-id="8zNUGxjWEdkzLx7dBdaUuH">
+<link rel="stylesheet" href="/static/style.css">
 </head>
-<body data-page-node-id="19XNFlhWbgiFQLKOqmNACL">
+<body>
 
-<!-- ── 顶栏 ──────────────────────────────────────────────── -->
-<header id="topbar" data-page-node-id="7NGJ5Eb6RVQ7L08fBdYKFi">
-  <!-- 左栏开关：侧栏收起后这是唯一的唤起入口，故常驻在最左（⌘/Ctrl+B） -->
-  <button class="icon-btn pane-toggle" data-pane-toggle="sidebar"
-    title="收起侧栏 (⌘B)" aria-label="切换侧栏" aria-expanded="true"
-    data-page-node-id="tbToggleSidebar">☰</button>
-  <div class="brand" data-page-node-id="5varvCByuTtdDPaJuQeEql">
-    <span class="logo" title="OpenX" data-page-node-id="RZDop9g0mQfikVEvnWMPNf">
-      <!-- 实心图标 + 字标：与 favicon 同源（openx-mark.svg），一处图形处处复用 -->
-      <img src="/static/openx-mark.svg" width="40" height="40" alt="OpenX logo" data-page-node-id="vce6DB0uP7TmsO1jwpBWeQ" />
-    </span>
-    <div class="brand-text" data-page-node-id="pOHW2hdXdQ2hQCo7cI9GiT">
-      <div class="brand-title" data-page-node-id="I7NECIHb0danCznb04q0Ae">OpenX</div>
-    </div>
-  </div>
-  <div class="topbar-spacer" data-page-node-id="AGnUKGqw7zuhbCUj58OTuG"></div>
-  <nav id="breadcrumb" class="breadcrumb" data-page-node-id="9BDoHUthfBVY5hoxHrfYuZ">
-    <span class="crumb" data-key="agent" data-page-node-id="l78FVgEWk7aXaX7fQVrZBE">智能体</span>
-    <span class="crumb-sep" data-page-node-id="IdJU7JyFTtTR1NZcvA2IIY">·</span>
-    <span class="crumb" data-key="mode" data-page-node-id="8QYDPWZqFywL4aUygZI65M">协作模式</span>
-    <span class="crumb-sep" data-page-node-id="0IoR1hP7kMgA1hsMbqgOmA">›</span>
-    <span class="crumb active" data-key="task" data-page-node-id="WGFQbKgswAClKjHyBFKVPh">多智能体协作的市场调研框架</span>
-  </nav>
-<div class="topbar-spacer" data-page-node-id="AlgcLT3CTsipDq8s7rZ4bh"></div>
-    <div class="topbar-actions" data-page-node-id="jADkjHSPEcGS4WaHJxUusp">
-      <!-- 右栏开关：任务面板收起后的唤起入口（⌘/Ctrl+J） -->
-      <button class="icon-btn pane-toggle" data-pane-toggle="taskpanel"
-        title="收起任务面板 (⌘J)" aria-label="切换任务面板" aria-expanded="true"
-        data-page-node-id="tbToggleTaskpanel">▤</button>
-      <button class="icon-btn" title="分享" data-page-node-id="4q5xnrsbWlfWubTTbqkRHt">⇪</button>
-      <button class="icon-btn" title="导出" data-page-node-id="JbERPZllKdFdd9zYYkNE8z">⬇</button>
-      <button class="icon-btn" title="更多" data-page-node-id="VMGuhaCH1Fmu4Atu6UpeR5">···</button>
-      <div id="conn" class="conn" data-state="connecting" title="连接状态" data-page-node-id="69X0iUxCBstXBOO6CTzcCe">connecting</div>
-    </div>
-</header>
-
-<!-- ── 三栏布局 ──────────────────────────────────────────── -->
-<div id="layout" data-sidebar="open" data-taskpanel="open" data-page-node-id="y9DaHxFGOxCvMuH3ul4Bnk">
+<!-- ── 三栏布局：左栏(品牌/工作区树) · 中栏(会话) · 右栏(任务面板) ──
+     无全局顶栏（DSH 壳层）：面板开关迁到品牌行 / 会话头；连接点挂在会话头。 -->
+<div id="layout" data-sidebar="open" data-taskpanel="open">
 
   <!-- ① 左栏 ─────────────────────────────────────────── -->
-  <aside id="sidebar" class="pane" data-page-node-id="NDGDyJDMpE1C31nXNdB0fw">
-    <div class="sidebar-top" data-page-node-id="QdoDyBNeWf5KIOEDibpuvL">
-      <div class="sidebar-actions" role="toolbar" aria-label="侧栏操作" data-page-node-id="HnFNkTmpAl0OxsiFUFs98G">
-        <button id="new-session" class="btn-primary" title="新建对话" aria-label="新建对话" data-page-node-id="TBIInmmQCKoWe4VuxbUCvZ">
-          + 新建对话
-        </button>
-        <!-- 栏内收起：与顶栏开关同一套 data-pane-toggle 契约 -->
-        <button class="icon-btn pane-toggle" data-pane-toggle="sidebar"
-          title="收起侧栏 (⌘B)" aria-label="收起侧栏" aria-expanded="true"
-          data-page-node-id="sbCollapse">«</button>
-      </div>
+  <aside id="sidebar" class="pane">
+    <div class="sb-brand-row">
+      <!-- 点击品牌 = 新建对话（同 DSH 点 mark 新建）；收起成 rail 后 = 展开侧栏 -->
+      <button id="brand" type="button" title="新建对话" aria-label="新建对话">
+        <span class="brand-logo"><img src="/static/openx-mark.svg" width="34" height="34" alt="OpenX"></span>
+        <span class="brand-text"><span class="brand-title">OpenX</span></span>
+      </button>
+      <button class="icon-btn pane-toggle" data-pane-toggle="sidebar"
+        title="收起侧栏 (⌘B)" aria-label="收起侧栏" aria-expanded="true">«</button>
     </div>
 
-    <div class="sidebar-scroll" data-page-node-id="wwEW7QasE93EtrLzpmZqGA">
-      <section class="side-section ws-section" data-page-node-id="FmtSfTtTZnMGKqlC6CNbop">
-        <header class="side-section-head ws-section-head" title="按目录分组的会话" data-page-node-id="VG6KLEFGDFt3O3bLOp1II3">
-          <span class="side-section-title" data-page-node-id="wsTitle">工作区</span>
-          <span class="side-section-count" id="ws-count" data-page-node-id="0C0Ofd4zIpHmqEx9GsKQ1R">0</span>
+    <button id="new-session" class="btn-primary" title="新建对话" aria-label="新建对话">+ 新建对话</button>
+
+    <div class="sb-search" id="sb-search">
+      <span class="search-icon">🔍</span>
+      <input id="ws-filter" type="search" placeholder="搜索会话…" autocomplete="off" aria-label="搜索会话">
+      <button class="search-clear" id="ws-filter-clear" type="button" aria-label="清除搜索" tabindex="-1">✕</button>
+    </div>
+
+    <div class="sidebar-scroll">
+      <section class="side-section ws-section">
+        <header class="side-section-head ws-section-head" title="按目录分组的会话">
+          <span class="side-section-title">工作区</span>
+          <span class="side-section-count" id="ws-count">0</span>
         </header>
-        <ul id="workspace-list" class="ws-list" data-page-node-id="DdGoxe1i0jLTosnuyIWO6L"></ul>
+        <ul id="workspace-list" class="ws-list"></ul>
       </section>
     </div>
 
-    <!-- 底栏：serve 无账户——只保留设置按钮（环境事实见上方工作区树与面包屑） -->
-    <div class="sidebar-foot" data-page-node-id="t36Lazm1LqfAF0YnmumExa">
-      <button class="user-settings-btn" title="设置" aria-label="设置" data-page-node-id="LXUBoaLFBe880Mx0b0NmQy">⚙</button>
+    <!-- 底栏：serve 无账户——只保留设置按钮 -->
+    <div class="sidebar-foot">
+      <button class="user-settings-btn" title="设置" aria-label="设置">⚙</button>
     </div>
   </aside>
 
-  <div class="resizer" data-resize="sidebar" role="separator" aria-orientation="vertical" data-page-node-id="mOTTINS1mzaCMGmrugCPm7"></div>
+  <div class="resizer" data-resize="sidebar" role="separator" aria-orientation="vertical"></div>
 
-  <!-- ② 中栏：对话 ───────────────────────────────────── -->
-  <main id="chat" class="pane" data-page-node-id="WFt3wJ4ucRFXz34bn4pMHL">
-    <div id="day-divider" class="day-divider" hidden data-page-node-id="ESSCUWv0COlUFQngYgIlPY"></div>
-    <div id="messages" class="scroll messages" data-page-node-id="N9IUj5ISFtNsmkoTnEujKv">
-      <!-- 首屏空状态：欢迎页 + 副标题 + 4 个能力芯片 + 底部状态点（撤回请求 4 恢复） -->
-      <section id="welcome-hero" class="welcome-hero" aria-label="OpenX" data-page-node-id="SDSTCRJ4HN571mq4sBqnCH">
-        <div class="welcome-mark" data-page-node-id="L4Yyx9E37BR10AUxdEHo9w">
-          <img src="/static/openx-mark.svg" width="44" height="44" alt="OpenX" data-page-node-id="3YTekcfS3KkUzg1fGGNY5y" />
+  <!-- ② 中栏：会话 ───────────────────────────────────── -->
+  <main id="chat" class="pane">
+    <!-- 会话头：面包屑（模型/工作区/回合标题）+ 连接点 + 任务面板开关 -->
+    <header class="session-head">
+      <nav id="breadcrumb" class="breadcrumb" aria-label="会话上下文">
+        <span class="crumb" data-key="agent">OpenX</span>
+        <span class="crumb-sep">·</span>
+        <span class="crumb" data-key="mode">未挂载工作区</span>
+        <span class="crumb-sep">›</span>
+        <span class="crumb active" data-key="task">新会话</span>
+      </nav>
+      <div class="session-actions">
+        <div id="conn" class="conn" data-state="connecting" title="连接状态">connecting</div>
+        <button class="icon-btn pane-toggle" data-pane-toggle="taskpanel"
+          title="收起任务面板 (⌘J)" aria-label="切换任务面板" aria-expanded="true">›</button>
+      </div>
+    </header>
+
+    <div id="messages" class="scroll messages">
+      <!-- 首屏空状态：欢迎页 + 副标题 + 4 个能力芯片 + 底部状态点 -->
+      <div id="day-divider" class="day-divider" hidden></div>
+      <section id="welcome-hero" class="welcome-hero" aria-label="OpenX">
+        <!-- 品牌：logo 与 OpenX 一行 -->
+        <div class="welcome-brand">
+          <img src="/static/openx-mark.svg" width="40" height="40" alt="OpenX">
+          <span class="wb-name">OpenX</span>
         </div>
-        <h1 class="welcome-title" data-page-node-id="welTitle">OpenX</h1>
-        <p class="welcome-subtitle" data-page-node-id="welSub">多 agent 协作的智能助手工作台</p>
-        <div class="welcome-chips" role="list" data-page-node-id="welChips">
-          <button class="welcome-chip" data-chip="code" role="listitem" data-page-node-id="welChip0">写代码 · 调 Bug</button>
-          <button class="welcome-chip" data-chip="doc" role="listitem" data-page-node-id="welChip1">读文档 · 总结</button>
-          <button class="welcome-chip" data-chip="data" role="listitem" data-page-node-id="welChip2">分析数据 · 画图</button>
-          <button class="welcome-chip" data-chip="web" role="listitem" data-page-node-id="welChip3">搜网页 · 抓信息</button>
+
+        <!-- 居中大输入框：空态时位于问候区；发首条消息后由 chat.js 移到 #chat 底部贴底 -->
+        <div id="composer">
+          <div id="turn-bar" hidden>
+            <button id="interrupt-btn" class="btn small danger" title="打断当前回合">■ Stop</button>
+            <span id="turn-status">working…</span>
+          </div>
+
+          <div class="composer-attachments" id="composer-attachments" hidden></div>
+
+          <div class="composer-shell">
+            <textarea id="input" rows="1"
+              placeholder="基于这个框架，把执行细节展开一下：每个 Agent 的输入契约、输出格式，以及冲突检测的具体规则……"></textarea>
+
+            <!-- 会话设置：仅空态显示（CSS 以 .welcome-hero #composer 为界） -->
+            <div class="composer-meta" aria-label="会话设置">
+              <span class="cm-label">本次会话</span>
+              <label class="sel-chip" title="工作目录（切换会在此目录重开新会话）">
+                <span class="sel-ic">▦</span>
+                <select id="ws-picker" aria-label="工作目录"></select>
+              </label>
+              <label class="sel-chip" title="模型组（整组切换，影响后续消息）">
+                <span class="sel-ic">◆</span>
+                <select id="model-picker" aria-label="模型组"></select>
+              </label>
+            </div>
+
+            <div class="composer-toolbar">
+              <div class="toolbar-left">
+                <button class="tool-btn" title="附件" aria-label="附件">📎</button>
+                <button class="tool-btn" title="代码块" aria-label="代码块">{ }</button>
+                <button class="tool-btn" title="图片" aria-label="图片">🖼</button>
+                <button class="tool-btn" title="MCP 工具" aria-label="MCP 工具">🌐</button>
+                <button class="tool-btn" title="语音" aria-label="语音">🎤</button>
+              </div>
+              <div class="toolbar-right">
+                <button id="send-btn" class="send-btn" title="发送 (Enter)" aria-label="发送">→</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="composer-hint">
+            <span>Enter 发送 · Shift+Enter 换行</span>
+            <span class="hint-spacer"></span>
+            <span>AI 生成内容仅供参考，请核实重要信息</span>
+          </div>
         </div>
-        <div class="welcome-hint" data-page-node-id="welHint">
-          <span class="hint-dot" data-page-node-id="welHintDot"></span>
-          <span id="welcome-hint-text" data-page-node-id="welHintText">就绪</span>
+
+        <div class="welcome-hint">
+          <span class="hint-dot"></span>
+          <span id="welcome-hint-text">就绪</span>
         </div>
       </section>
     </div>
-    <div id="panels" class="panels" hidden data-page-node-id="d9h0syAj1mghVwYA8H3tyX"></div>
-
-    <div id="composer" data-page-node-id="xsPIEeeFQqrhYBk16IdZU8">
-      <div id="turn-bar" hidden data-page-node-id="vCCUwFvd4T2adp2GH09POQ">
-        <button id="interrupt-btn" class="btn small danger" title="打断当前回合" data-page-node-id="1Dv5qiKpxigqXDluORU5wU">■ Stop</button>
-        <span id="turn-status" data-page-node-id="oc40O1l7IO23d97FhhCGf6">working…</span>
-      </div>
-
-      <div class="composer-attachments" id="composer-attachments" hidden data-page-node-id="9c5r0k8iwFSu2oaminywur"></div>
-
-      <div class="composer-shell" data-page-node-id="jyeqk4Vyzvm9AM0WaxL4Fd">
-        <textarea id="input" rows="1"
-          placeholder="基于这个框架，把执行细节展开一下：每个 Agent 的输入契约、输出格式，以及冲突检测的具体规则……"></textarea>
-        <div class="composer-toolbar" data-page-node-id="Y0FaGf1hsdu4FtL9GBe5wo">
-          <div class="toolbar-left" data-page-node-id="wn32IjEU39TzvPOgLSWoy2">
-            <button class="tool-btn" title="附件" data-page-node-id="vrlAC33fkpZImpgN9CLZrp">📎</button>
-            <button class="tool-btn" title="代码块" data-page-node-id="gZkCGMPB2Vj6dBujIPViJI">{ }</button>
-            <button class="tool-btn" title="图片" data-page-node-id="bpDE1KlTarIOxEQQJ3rAhd">🖼</button>
-            <button class="tool-btn" title="MCP 工具" data-page-node-id="LGmmkSzIhWpcRyweDrWrtd">🌐</button>
-            <button class="tool-btn" title="语音" data-page-node-id="dHYNjOTyVtdvdiTWxfsHlz">🎤</button>
-          </div>
-          <div class="toolbar-right" data-page-node-id="7zt9X15ehRHFFffDsDfGkG">
-            <button id="send-btn" class="send-btn" title="发送 (Enter)" data-page-node-id="cztdb5ponGZfMhLeNcE3y6">→</button>
-          </div>
-        </div>
-      </div>
-      <div class="composer-hint" data-page-node-id="F7YSgiOGpJFWJsD1OPK1NH">
-        <span data-page-node-id="LQH9vjX9nx51z9w34QtY9j">Enter 发送 · Shift+Enter 换行</span>
-        <span class="hint-spacer" data-page-node-id="IuFVoOvxyKP7l1zOETHrbH"></span>
-        <span data-page-node-id="zyQdSCK2ZJ7Qew6l8kBmCi">AI 生成内容仅供参考，请核实重要信息</span>
-      </div>
-    </div>
+    <div id="panels" class="panels" hidden></div>
   </main>
 
-  <div class="resizer" data-resize="taskpanel" role="separator" aria-orientation="vertical" data-page-node-id="YTDHwigIN8yhE1y2a8ixHu"></div>
+  <div class="resizer" data-resize="taskpanel" role="separator" aria-orientation="vertical"></div>
 
-<!-- ③ 右栏：任务面板 -->
-    <aside id="task-panel" class="pane" data-page-node-id="xOLlFRYKWDkveJfYt0jdMn">
-      <header class="tp-head" title="点击收起任务面板" data-page-node-id="NDmyBqAZtnrAdx5M1b5FIN">
-        <span class="tp-title" data-page-node-id="wlpWZIRtDGBpi7bslZbPwW">任务面板</span>
-        <div class="tp-head-actions" data-page-node-id="TuTE0F48OSaoYo09wULjXB">
-          <button class="tp-icon-btn" title="设置" data-page-node-id="V1qUrO9b5BnICRcDBZK4vH">⚙</button>
-          <button class="tp-icon-btn pane-toggle" data-pane-toggle="taskpanel"
-            title="收起任务面板 (⌘J)" aria-label="收起任务面板" aria-expanded="true"
-            data-page-node-id="tpCollapse">»</button>
-        </div>
-      </header>
+  <!-- ③ 右栏：任务面板（真实事件驱动：任务流 / 上下文 / 产物） -->
+  <aside id="task-panel" class="pane">
+    <header class="tp-head" title="点击收起任务面板">
+      <span class="tp-title">任务面板</span>
+      <div class="tp-head-actions">
+        <button class="tp-icon-btn" title="设置">⚙</button>
+        <button class="tp-icon-btn pane-toggle" data-pane-toggle="taskpanel"
+          title="收起任务面板 (⌘J)" aria-label="收起任务面板" aria-expanded="true">›</button>
+      </div>
+    </header>
 
-    <div class="tp-shell" data-page-node-id="IdmeOP710SicWekf3HGwES">
-    <nav class="tp-tabs" id="tp-tabs" data-page-node-id="YCW9nOIKFbeaSGcsGam5tY">
-      <button class="tp-tab active" data-tab="flow" data-page-node-id="wtBR6d1NGJ1hoWh6sKET0r">任务流 <span class="tp-tab-count" id="flow-tab-count" hidden data-page-node-id="fdux0uJksE2zwJnzvOxM67">0</span></button>
-      <button class="tp-tab" data-tab="context" data-page-node-id="osCz5EQiBIr7Vbg7fpdGGL">上下文</button>
-      <button class="tp-tab" data-tab="artifacts" data-page-node-id="dIPg7BEdoTBCGD2MZCj8Hk">产物</button>
+    <nav class="tp-tabs" id="tp-tabs">
+      <button class="tp-tab active" data-tab="flow">任务流 <span class="tp-tab-count" id="flow-tab-count" hidden>0</span></button>
+      <button class="tp-tab" data-tab="context">上下文</button>
+      <button class="tp-tab" data-tab="artifacts">产物</button>
     </nav>
 
-    <div class="tp-body scroll" data-page-node-id="K1D7GzT9jFeyUFWyBNA925">
-      <!-- 任务流：由 user_message / tool_use / tool_result / result 事件驱动 -->
-      <section class="tp-panel active" data-panel="flow" data-page-node-id="AYmHaHrBQEl9SqYIF1VaIF">
-        <div class="current-task" id="current-task" data-page-node-id="lbK4Mzmnyqe1GqRWw4GbKw">
-          <div class="ct-row" data-page-node-id="gBE61coPEfZwfQ3XIGvVBw">
-            <span class="status-dot idle" id="current-task-dot" data-page-node-id="VEds4k19jljygztjwuwazn"></span>
-            <span class="ct-status" id="current-task-status" data-page-node-id="6EBRrMYV9vw2FV2JyALkYg">空闲</span>
-            <span class="ct-step" id="current-task-step" data-page-node-id="GPId0XXQ2T9fztZN9wmKgP"></span>
+    <div class="tp-body scroll">
+      <!-- 任务流 -->
+      <section class="tp-panel active" data-panel="flow">
+        <div class="current-task" id="current-task">
+          <div class="ct-row">
+            <span class="status-dot idle" id="current-task-dot"></span>
+            <span class="ct-status" id="current-task-status">空闲</span>
+            <span class="ct-step" id="current-task-step"></span>
           </div>
-          <h3 class="ct-title" id="current-task-title" data-page-node-id="vwywFiXFXPRCGd5xuK9X3i">尚未开始对话</h3>
-          <div class="ct-progress" data-page-node-id="4DAREngFGaxIjMbviHikZ1">
-            <div class="progress-track" data-page-node-id="tGZUwLa7OwwpvUyZI27sIH">
-              <div class="progress-fill" id="progress-fill" style="width:0%" data-page-node-id="RREgu4qCRgbAFi2YUBwNtf"></div>
+          <h3 class="ct-title" id="current-task-title">尚未开始对话</h3>
+          <div class="ct-progress">
+            <div class="progress-track">
+              <div class="progress-fill" id="progress-fill" style="width:0%"></div>
             </div>
-            <div class="progress-meta" data-page-node-id="1LoIhNB3VNedKhLiAdDwrC">
-              <span id="progress-percent" data-page-node-id="zcZXUnfGJL9TYVjFC2IJS3">等待第一条消息</span>
-              <span id="progress-eta" data-page-node-id="hBZP8v03HDHHuOQW8kwfIL"></span>
+            <div class="progress-meta">
+              <span id="progress-percent">等待第一条消息</span>
+              <span id="progress-eta"></span>
             </div>
           </div>
         </div>
 
-        <div class="tp-section" data-page-node-id="xwFIBuzQHlMRQJ9JnUVS9M">
-          <div class="tp-section-head" data-page-node-id="MGplYDBfobnOZMWYzIkuQo">
-            <span class="tp-section-title" data-page-node-id="nb3USWthBqlagpvARX1ovC">本轮步骤</span>
-            <span class="tp-section-meta" id="steps-meta" data-page-node-id="pz6UTiafmKDeTokIbmxqfI">0 步</span>
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">本轮步骤</span>
+            <span class="tp-section-meta" id="steps-meta">0 步</span>
           </div>
-          <ul class="workflow-steps" id="workflow-steps" data-page-node-id="BhMINqlMKzXoFU3xZWdGSH"></ul>
-          <div class="tp-empty inline" id="steps-empty" data-page-node-id="s92hwJ92sZOOTG1x6gHLWH">
-            <div class="tp-empty-text" data-page-node-id="DynIGvLIuGoVbV2LTEE4x4">本轮还没有工具调用</div>
-            <div class="tp-empty-hint" data-page-node-id="TVVwkouQRgtT0z39FDdVE5">agent 调用工具时会实时出现在这里</div>
+          <ul class="workflow-steps" id="workflow-steps"></ul>
+          <div class="tp-empty inline" id="steps-empty">
+            <div class="tp-empty-text">本轮还没有工具调用</div>
+            <div class="tp-empty-hint">agent 调用工具时会实时出现在这里</div>
           </div>
         </div>
 
-        <div class="tp-section" data-page-node-id="RnuZsxTAHgYDG2hveoy0Ot">
-          <div class="tp-section-head" data-page-node-id="VlMVyvA0WTYkdBfk1wF4BK">
-            <span class="tp-section-title" data-page-node-id="nq8SGGmLdITOGHrBNBr95N">会话</span>
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">会话</span>
           </div>
-          <ul class="stat-rows" id="session-stats" data-page-node-id="HIuOy9e3hS52ogcszs9sA2"></ul>
+          <ul class="stat-rows" id="session-stats"></ul>
         </div>
       </section>
 
-      <!-- 上下文：本会话真实读/写过的文件（target 由服务端从工具入参派生） -->
-      <section class="tp-panel" data-panel="context" data-page-node-id="L7wd6twOW1P15FcoIaAucP">
-        <div class="tp-section" data-page-node-id="WPJ27J1Wqnc4lNNJTvUIWt">
-          <div class="tp-section-head" data-page-node-id="XV0S0amPBkDEQAWERKfCCN">
-            <span class="tp-section-title" data-page-node-id="VdATPnNyI0HA3R4s2yHmDY">工作区</span>
+      <!-- 上下文 -->
+      <section class="tp-panel" data-panel="context">
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">工作区</span>
           </div>
-          <div class="ctx-row static" id="ctx-root" data-page-node-id="7XACpXhK6qYswuRAGTxHFk">—</div>
+          <div class="ctx-row static" id="ctx-root">—</div>
         </div>
 
-        <div class="tp-section" data-page-node-id="UC7sjp1XsgQ16VJt1w6w2L">
-          <div class="tp-section-head" data-page-node-id="VQqreooq8S0HkoZArdTyzE">
-            <span class="tp-section-title" data-page-node-id="iKb4nzKBo8rA0elkcFymgt">引用的文件</span>
-            <span class="tp-section-meta" id="context-count" data-page-node-id="xydxGuCluGN5IJdrRLjTxU">0</span>
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">引用的文件</span>
+            <span class="tp-section-meta" id="context-count">0</span>
           </div>
-          <div class="tp-empty inline" id="context-empty" data-page-node-id="h6vfYibAtD69mg8HiR6IiF">
-            <div class="tp-empty-text" data-page-node-id="I5cAbdV3arpSfzdxLzGApT">本会话还没有引用任何文件</div>
-            <div class="tp-empty-hint" data-page-node-id="J26xRosyXwa3PJm6JMeeY1">agent 读写文件时会自动出现在这里</div>
+          <div class="tp-empty inline" id="context-empty">
+            <div class="tp-empty-text">本会话还没有引用任何文件</div>
+            <div class="tp-empty-hint">agent 读写文件时会自动出现在这里</div>
           </div>
-          <ul class="ctx-list" id="context-list" data-page-node-id="1sDrQxtF364TsXJFlUfulg"></ul>
+          <ul class="ctx-list" id="context-list"></ul>
         </div>
       </section>
 
-      <!-- 产物（复用现有 Artifacts 逻辑） -->
-      <section class="tp-panel" data-panel="artifacts" data-page-node-id="qXwSHuoc0g9y1gSrjlNC2u">
-        <div class="art-sub" data-page-node-id="SY3y4t2PsHkeNAPXPJESvG">
-          <div class="art-sub-head" data-page-node-id="GJtMRdUEijguxhMmxks8ih">
-            <span class="art-sub-title" data-page-node-id="qHqBJbmMSdfohIQJcM6Tl4">本次改动</span>
-            <button id="refresh-artifacts" class="tp-icon-btn" title="刷新" data-page-node-id="Dy2xReI4FNq1BMNdMXvO5O">↻</button>
+      <!-- 产物 -->
+      <section class="tp-panel" data-panel="artifacts">
+        <div class="art-sub">
+          <div class="art-sub-head">
+            <span class="art-sub-title">本次改动</span>
+            <span class="tp-section-meta" id="art-count">0</span>
+            <button id="refresh-artifacts" class="tp-icon-btn" title="刷新">↻</button>
           </div>
-          <ul id="artifact-list" class="artifact-list compact" data-page-node-id="ZcDfdTCRAb69VFtzBdl4pG"></ul>
+          <ul id="artifact-list" class="artifact-list compact"></ul>
         </div>
-        <div class="art-sub grow" data-page-node-id="SsR2IUfeGByh0IQPfGBFp8">
-          <div class="art-sub-head" data-page-node-id="Cq8CZsF4LPqukDajbv9r07">
-            <span class="art-sub-title" data-page-node-id="Fe9aAfBGiNP3oAOB5ZYjps">文件</span>
-            <button id="refresh-files" class="tp-icon-btn" title="刷新" data-page-node-id="TKdP1eG2jmhfaz8VfgjRRu">↻</button>
+        <div class="art-sub grow">
+          <div class="art-sub-head">
+            <span class="art-sub-title">文件</span>
+            <button id="refresh-files" class="tp-icon-btn" title="刷新">↻</button>
           </div>
-          <div class="art-sub-search" data-page-node-id="gBgCylDuTiKhPt4H0B80FO">
-            <input id="file-filter" type="search" placeholder="过滤文件名..." autocomplete="off" data-page-node-id="SSTCicLbRUHvgmzjHEhAyj" />
+          <div class="art-sub-search">
+            <input id="file-filter" type="search" placeholder="过滤文件名..." autocomplete="off">
           </div>
-          <div id="file-tree" class="tree scroll" data-page-node-id="bShcfvqlqMYh8LjmeDweEv"></div>
+          <div id="file-tree" class="tree scroll"></div>
         </div>
       </section>
     </div>
-    </div>
-    <!-- /tp-shell -->
   </aside>
 </div>
 
-<!-- ── 通用弹窗：保持与历史一致（settings / permission / ask / plan）── -->
+<!-- ── 通用弹窗 ─────────────────────────────────────────── -->
 
 <!-- 设置：模型配置 + 插件管理 -->
-<div id="settings-overlay" class="overlay" hidden data-page-node-id="UIh7EGEl6HDp0YoNaAGEXL">
-  <div class="modal wide" data-page-node-id="Tq7fhpNwB8CL87BSlM2PAY">
-    <div class="modal-head" data-page-node-id="aN19kgTAWmTQ6tONgMW7Eq">
-      <div class="modal-title" data-page-node-id="G9AiDbsaUlKAdBoW6ax5tK">设置</div>
-      <button id="settings-close" class="btn icon" title="关闭" data-page-node-id="P1ov6yz4ORXti7rF1eCARj">✕</button>
+<div id="settings-overlay" class="overlay" hidden>
+  <div class="modal wide">
+    <div class="modal-head">
+      <div class="modal-title">设置</div>
+      <button id="settings-close" class="btn icon" title="关闭" aria-label="关闭">✕</button>
     </div>
-    <nav class="tabs" id="settings-tabs" data-page-node-id="wpHnyetkiQkLqYRP4M04NE">
-      <button class="tab" data-tab="general" data-page-node-id="QYCF3s3rp2SOoKHkAtU2KC">通用</button>
-      <button class="tab active" data-tab="models" data-page-node-id="P3PJqDI8HIYPAHc7Jn8JnU">模型</button>
-      <button class="tab" data-tab="plugins" data-page-node-id="GGOzYTqcg1VdNcKNXQJpcA">Plugins</button>
-      <button class="tab" data-tab="mcp" data-page-node-id="F8R9oSj6VwUagVHooMNuvV">MCP</button>
-      <button class="tab" data-tab="skills" data-page-node-id="kqKLGuhMjmAdG2hfIuI20S">Skills</button>
+    <nav class="tabs" id="settings-tabs">
+      <button class="tab" data-tab="general">通用</button>
+      <button class="tab active" data-tab="models">模型</button>
+      <button class="tab" data-tab="plugins">Plugins</button>
+      <button class="tab" data-tab="mcp">MCP</button>
+      <button class="tab" data-tab="skills">Skills</button>
     </nav>
-    <div class="modal-body scroll" data-page-node-id="4BfxMogdyTBtwgUeShNygk">
-      <section class="tab-panel" data-panel="general" data-page-node-id="GbcGNWZi7q0oYivm7uWRzG">
-        <div class="set-head" data-page-node-id="LRH07pDuBa7saTnHpkzpIa">
-          <h3 class="set-title" data-page-node-id="KibjiOfHuPhl6kDaVinFlR">外观</h3>
-          <p class="set-desc" data-page-node-id="jWbCFy3gAgctqRMbPZjAwe">主题偏好只保存在当前浏览器（localStorage），不影响其它端。</p>
+    <div class="modal-body scroll">
+      <section class="tab-panel" data-panel="general">
+        <div class="set-head">
+          <h3 class="set-title">外观</h3>
+          <p class="set-desc">主题偏好只保存在当前浏览器（localStorage），不影响其它端。</p>
         </div>
-        <div class="theme-row" id="theme-row" data-page-node-id="wQDATRHnj2npNTAITiNfEL">
-          <button type="button" class="theme-opt" data-theme-opt="dark" data-page-node-id="id1LYGf0QjtX578C7TuGOc">深色</button>
-          <button type="button" class="theme-opt" data-theme-opt="light" data-page-node-id="yxtm5WPppiBMl4M1ARw6hy">浅色</button>
-          <button type="button" class="theme-opt" data-theme-opt="system" data-page-node-id="USlfMfShGfLEfkXmBe6tVO">跟随系统</button>
+        <div class="theme-row" id="theme-row">
+          <button type="button" class="theme-opt" data-theme-opt="dark">深色</button>
+          <button type="button" class="theme-opt" data-theme-opt="light">浅色</button>
+          <button type="button" class="theme-opt" data-theme-opt="system">跟随系统</button>
         </div>
       </section>
 
-      <section class="tab-panel active" data-panel="models" data-page-node-id="9ycFCE6alV9mNE0RHATiGb">
-        <div class="set-head" data-page-node-id="WBdKazHLiX6WQJ0B0mbkE4">
-          <h3 class="set-title" data-page-node-id="sAsLlj9C3K8rXKFrN00PwF">模型组</h3>
-          <p class="set-desc" data-page-node-id="ammuf1ivyDRWQYutBUUbN8">每个组按角色分配模型（main / exec / mini / modal）；组名唯一，API Key 可写为 <code data-page-node-id="ZYsriJV7GGMjH8WTfGWdQ0">env:VAR</code> 从环境读取。</p>
+      <section class="tab-panel active" data-panel="models">
+        <div class="set-head">
+          <h3 class="set-title">模型组</h3>
+          <p class="set-desc">每个组按角色分配模型（main / exec / mini / modal）；组名唯一，API Key 可写为 <code>env:VAR</code> 从环境读取。</p>
         </div>
-        <div class="settings-cols" data-page-node-id="AYS8dfLSE1LncsUdSgb03v">
-          <div class="set-list" data-page-node-id="BOFaLZGTXlTu0C542kHDDl">
-            <div id="model-groups" data-page-node-id="mk3bdpwc28miqCPUi3C9FL"></div>
+        <div class="settings-cols">
+          <div class="set-list">
+            <div id="model-groups"></div>
           </div>
-          <div class="form-card set-form" data-page-node-id="nA7l6gFPsLvcfNX2a34Ugw">
-            <div class="form-title" id="model-form-title" data-page-node-id="ODFhJ5fQBonfzDbXpfBhGi">新增模型组</div>
-            <input id="mg-name" class="input" placeholder="组名（如 default）" autocomplete="off" data-page-node-id="Zvsu02S7b8RXGu0ihvECPx" />
-            <input id="mg-kind" class="input" placeholder="kind：openai-compat / anthropic-compat" autocomplete="off" data-page-node-id="UCZUTMd8FAazZBnDbOIKj5" />
-            <input id="mg-base" class="input" placeholder="API Base URL（可留空用 kind 默认）" autocomplete="off" data-page-node-id="uazS94n3A0ks38LhIGngzn" />
-            <input id="mg-key" class="input" placeholder="API Key（可填 env:OPENAI_API_KEY；留空保持原值）" autocomplete="off" data-page-node-id="0ApKD3cCPxuEP3PPGY1ywG" />
-            <div class="set-form-sub" data-page-node-id="qFjx8Y6F4exV0AQDYHDhpy">角色模型（留空回落到 main）</div>
-            <div id="mg-roles" data-page-node-id="DH8wr3RGDtBA38yjnCcn23"></div>
-            <div class="form-actions" data-page-node-id="1OeYD4WUAkSFf2kBrxWACu">
-              <button id="mg-cancel" class="btn small" hidden data-page-node-id="Zn324TyaAjEMRIU9T51ewF">取消编辑</button>
-              <button id="mg-save" class="btn primary small" data-page-node-id="oTsrSDRQJCcSIDnHfBxtYV">保存模型组</button>
+          <div class="form-card set-form">
+            <div class="form-title" id="model-form-title">新增模型组</div>
+            <input id="mg-name" class="input" placeholder="组名（如 default）" autocomplete="off">
+            <input id="mg-kind" class="input" placeholder="kind：openai-compat / anthropic-compat" autocomplete="off">
+            <input id="mg-base" class="input" placeholder="API Base URL（可留空用 kind 默认）" autocomplete="off">
+            <input id="mg-key" class="input" placeholder="API Key（可填 env:OPENAI_API_KEY；留空保持原值）" autocomplete="off">
+            <div class="set-form-sub">角色模型（留空回落到 main）</div>
+            <div id="mg-roles"></div>
+            <div class="form-actions">
+              <button id="mg-cancel" class="btn small" hidden>取消编辑</button>
+              <button id="mg-save" class="btn primary small">保存模型组</button>
             </div>
-            <div id="mg-hint" class="hint" data-page-node-id="oAluNI6H46CAgoHrREyEOj"></div>
+            <div id="mg-hint" class="hint"></div>
           </div>
         </div>
       </section>
 
-      <section class="tab-panel" data-panel="plugins" data-page-node-id="DXgbqzdeX7xrK8ulleQLTb">
-        <div class="set-head" data-page-node-id="EOp5ddBugnIdQXSKPZCANl">
-          <h3 class="set-title" data-page-node-id="FjkKZ28gs2ouqlLpyFdwqb">插件</h3>
-          <p class="set-desc" data-page-node-id="6t7blxPnpuALbpcAGmWBsj">内核加载的 base bundle 插件清单。非内置插件的启停需重启 <code data-page-node-id="PtrCt2Zo3uJZcmLAiFc8q2">openx serve</code> 生效。</p>
+      <section class="tab-panel" data-panel="plugins">
+        <div class="set-head">
+          <h3 class="set-title">插件</h3>
+          <p class="set-desc">内核加载的 base bundle 插件清单。非内置插件的启停需重启 <code>openx serve</code> 生效。</p>
         </div>
-        <div id="plugin-list" class="card-list" data-page-node-id="cCNSG1XC6y4XXL3qyqb1Kl"></div>
+        <div id="plugin-list" class="card-list"></div>
       </section>
 
-      <section class="tab-panel" data-panel="mcp" data-page-node-id="VsBLXBq79xalnP7HtSUbac">
-        <div class="set-head" data-page-node-id="mywLA37Z0MSnU0VgAB1kJ1">
-          <h3 class="set-title" data-page-node-id="I8JgNBXSmi4GZaWB0oMWt9">MCP Servers</h3>
-          <p class="set-desc" data-page-node-id="MaE7NCJl58CfIvVvmV1kGP">目前仅支持 stdio transport；保存 / 删除后需重启 <code data-page-node-id="iZji2IgeCRMea3EkD5aHgo">openx serve</code> 生效。</p>
+      <section class="tab-panel" data-panel="mcp">
+        <div class="set-head">
+          <h3 class="set-title">MCP Servers</h3>
+          <p class="set-desc">目前仅支持 stdio transport；保存 / 删除后需重启 <code>openx serve</code> 生效。</p>
         </div>
-        <div class="settings-cols" data-page-node-id="rIkoRwQjr21UigPHxGHk9u">
-          <div class="set-list" data-page-node-id="Xif3sZskJESaomhXKVvGun">
-            <div id="mcp-list" class="card-list" data-page-node-id="hDyTsYRZdLE5AxF16DNg55"></div>
+        <div class="settings-cols">
+          <div class="set-list">
+            <div id="mcp-list" class="card-list"></div>
           </div>
-          <div class="form-card set-form" data-page-node-id="SKkoWxE6D0U1zcVRuPBJMI">
-            <div class="form-title" data-page-node-id="P8gPDXTsf9dgBbFCXk0rp3">新增 MCP Server</div>
-            <input id="mcp-name" class="input" placeholder="名称（如 filesystem）" autocomplete="off" data-page-node-id="bWjtcNp1raDTV5HCkbvQjT" />
-            <input id="mcp-command" class="input" placeholder="command（如 npx）" autocomplete="off" data-page-node-id="N4RQBi0EM37YIu63twO7kb" />
-            <input id="mcp-args" class="input" placeholder="args（空格分隔）" autocomplete="off" data-page-node-id="DHBXLa3Is6gSS1R1PjZ6zG" />
-            <div class="form-actions" data-page-node-id="HFKRu3XYoOT51lzywfEAMh">
-              <button id="mcp-save" class="btn primary small" data-page-node-id="6TJidOd7wqAEWsK54n4CO2">保存</button>
+          <div class="form-card set-form">
+            <div class="form-title">新增 MCP Server</div>
+            <input id="mcp-name" class="input" placeholder="名称（如 filesystem）" autocomplete="off">
+            <input id="mcp-command" class="input" placeholder="command（如 npx）" autocomplete="off">
+            <input id="mcp-args" class="input" placeholder="args（空格分隔）" autocomplete="off">
+            <div class="form-actions">
+              <button id="mcp-save" class="btn primary small">保存</button>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="tab-panel" data-panel="skills" data-page-node-id="xxDZtFplVHLSvKSbOkETCa">
-        <div class="set-head" data-page-node-id="nbGUOQbHbEk9xu34UuQpZ5">
-          <h3 class="set-title" data-page-node-id="znDz78pVzNM9Urf52padiF">Skills</h3>
-          <p class="set-desc" data-page-node-id="pHLYt1rSW1nf2HS3FI0CJq">技能正文（SKILL.md 指令部分）。可安装到用户级 <code data-page-node-id="cUCpmLKVAJrxS0KiU7pw6H">~/.openx/skills</code> 或项目级 <code data-page-node-id="GHMYK5ppQvF9oJvtBg0Onu">.openx/skills</code>。</p>
+      <section class="tab-panel" data-panel="skills">
+        <div class="set-head">
+          <h3 class="set-title">Skills</h3>
+          <p class="set-desc">技能正文（SKILL.md 指令部分）。可安装到用户级 <code>~/.openx/skills</code> 或项目级 <code>.openx/skills</code>。</p>
         </div>
-        <div class="settings-cols" data-page-node-id="UiL33yEIZfgUO7FB5xDNNK">
-          <div class="set-list" data-page-node-id="2uiXEKcQi2n8X3VRKpuqCc">
-            <div id="skill-list" class="card-list" data-page-node-id="utAZobUMFeRQK1e8qBsC1a"></div>
+        <div class="settings-cols">
+          <div class="set-list">
+            <div id="skill-list" class="card-list"></div>
           </div>
-          <div class="form-card set-form" data-page-node-id="s2FPklEm9cJZfSOsd6nCs3">
-            <div class="form-title" data-page-node-id="ARHyBQv5AU6xBbWohY10BG">新增 Skill</div>
-            <input id="sk-name" class="input" placeholder="名称（英文，作为文件名）" autocomplete="off" data-page-node-id="6Qnxyh3Dpr7Xl378B4CC94" />
-            <input id="sk-desc" class="input" placeholder="一句话描述" autocomplete="off" data-page-node-id="9sBRdJa5pl5HRwioEGuVpU" />
-            <input id="sk-trigger" class="input" placeholder="触发关键词（逗号分隔，可留空）" autocomplete="off" data-page-node-id="xaA9DXo42nAMWwEVgIkDXE" />
+          <div class="form-card set-form">
+            <div class="form-title">新增 Skill</div>
+            <input id="sk-name" class="input" placeholder="名称（英文，作为文件名）" autocomplete="off">
+            <input id="sk-desc" class="input" placeholder="一句话描述" autocomplete="off">
+            <input id="sk-trigger" class="input" placeholder="触发关键词（逗号分隔，可留空）" autocomplete="off">
             <textarea id="sk-content" class="input area" rows="5" placeholder="Skill 正文（SKILL.md 的指令部分）"></textarea>
-            <div class="form-actions" data-page-node-id="RLZCFEKEyBA5q0GVDrN95L">
-              <select id="sk-level" class="input narrow" data-page-node-id="AnipfUFdFWmI0FBea0ynqi">
-                <option value="global" data-page-node-id="Vt0F0OBzwZJmlUNhuCqMHH">用户级（~/.openx/skills）</option>
-                <option value="project" data-page-node-id="xQm8w02Y4iPSBggqs0HsZy">项目级（.openx/skills）</option>
+            <div class="form-actions">
+              <select id="sk-level" class="input narrow">
+                <option value="global">用户级（~/.openx/skills）</option>
+                <option value="project">项目级（.openx/skills）</option>
               </select>
-              <button id="sk-save" class="btn primary small" data-page-node-id="u56cwd4WBUanTadMxkrAGT">安装</button>
+              <button id="sk-save" class="btn primary small">安装</button>
             </div>
           </div>
         </div>
@@ -373,63 +368,87 @@
 </div>
 
 <!-- 权限批准 -->
-<div id="perm-overlay" class="overlay" hidden data-page-node-id="rC1VWHqGGJpPcB24YlMEOE">
-  <div class="modal" data-page-node-id="cCA4gVxuej8nPr783E4Ro9">
-    <div class="modal-head" data-page-node-id="bElKgHtvKhcSZ7AdUfF7Tm"><div class="modal-title" data-page-node-id="MW4LQzYvkn4V4YwHWrxT1Q">Allow this tool?</div></div>
-    <div class="modal-tool" id="perm-tool" data-page-node-id="x0I3DyfF92v6QW21X9WyYI"></div>
-    <div class="modal-reason" id="perm-reason" data-page-node-id="dqafOYzBzkJffabKdtLqGF"></div>
-    <pre class="modal-details" id="perm-details" data-page-node-id="vSJ8HKg1npcEfpZGzbBnH8"></pre>
-    <div class="modal-actions" data-page-node-id="32dYDtsRykBOvElX7zAngF">
-      <button class="btn" data-perm="allow-once" data-page-node-id="cNQFMPdIiBjYUOpLAWJnpD">Allow once</button>
-      <button class="btn" data-perm="allow-remember" hidden data-page-node-id="Il0DOlVXQX8wa3xpOSbD52">Allow &amp; remember</button>
-      <button class="btn danger" data-perm="deny" data-page-node-id="kewbVxEFXhmH9QlODUFN44">Deny</button>
+<div id="perm-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Allow this tool?</div></div>
+    <div class="modal-tool" id="perm-tool"></div>
+    <div class="modal-reason" id="perm-reason"></div>
+    <pre class="modal-details" id="perm-details"></pre>
+    <div class="modal-actions">
+      <button class="btn" data-perm="allow-once">Allow once</button>
+      <button class="btn" data-perm="allow-remember" hidden>Allow &amp; remember</button>
+      <button class="btn danger" data-perm="deny">Deny</button>
     </div>
   </div>
 </div>
 
 <!-- 交互提问 -->
-<div id="ask-overlay" class="overlay" hidden data-page-node-id="dxlHkAQxFAmNyvUAyFnbxr">
-  <div class="modal" data-page-node-id="EQVnMXk6IZG3LPS4WYbUNd">
-    <div class="modal-head" data-page-node-id="lqVzSWdPxDaBtOSUBQN3ag"><div class="modal-title" data-page-node-id="KD0ImL6RRHXBts3Yv68sOG">Question</div></div>
-    <div class="modal-reason" id="ask-question" data-page-node-id="oKiEUsWSdi0vCFO1kt57wy"></div>
-    <div id="ask-options" class="ask-options" data-page-node-id="pd6GGXvy5Aaai79zhS0LFA"></div>
-    <div id="ask-custom" class="ask-custom" hidden data-page-node-id="979BO5WMg32sERUVkTtQox">
+<div id="ask-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Question</div></div>
+    <div class="modal-reason" id="ask-question"></div>
+    <div id="ask-options" class="ask-options"></div>
+    <div id="ask-custom" class="ask-custom" hidden>
       <input id="ask-custom-input" class="input" type="text"
-        placeholder="type your own answer…" autocomplete="off" data-page-node-id="i1z3mZgEvBlB9TEBGmdiYA" />
+        placeholder="type your own answer…" autocomplete="off">
     </div>
-    <div class="modal-actions" data-page-node-id="dpWBR5ANQHKDQINTedvhP6">
-      <button class="btn" id="ask-skip-btn" data-page-node-id="6GhwUBmAivN5jtPcuj7hcD">Skip</button>
-      <button class="btn" id="ask-other-btn" data-page-node-id="4ZtH2m1aVT5BTsekvPvAGL">Other…</button>
-      <button class="btn primary" id="ask-submit-btn" disabled data-page-node-id="xjmdGDVfC2eYA10cR5AUCn">Submit</button>
+    <div class="modal-actions">
+      <button class="btn" id="ask-skip-btn">Skip</button>
+      <button class="btn" id="ask-other-btn">Other…</button>
+      <button class="btn primary" id="ask-submit-btn" disabled>Submit</button>
     </div>
   </div>
 </div>
 
 <!-- 计划审批 -->
-<div id="plan-overlay" class="overlay" hidden data-page-node-id="I1Ii4BXd3EExHTLMWijJMm">
-  <div class="modal" data-page-node-id="ejBRrBK4c95KfKoT93uGuG">
-    <div class="modal-head" data-page-node-id="Vk93E58F0X1c63TstbI6xz"><div class="modal-title" data-page-node-id="gykocHoe8WkdI0NtSUwxzj">Approve plan?</div></div>
-    <div class="modal-plan" id="plan-details" data-page-node-id="SKd75xNXxVrLef5760wOKC"></div>
-    <div class="modal-actions" data-page-node-id="CwE9fOH2WnP36BnF8VMGKP">
-      <button class="btn danger" id="plan-reject-btn" data-page-node-id="JlLewPbEcg4AAP7W0U5q0O">Reject</button>
-      <button class="btn primary" id="plan-approve-btn" data-page-node-id="VeC6TMbUbQ33wY3ixOThYL">Approve &amp; execute</button>
+<div id="plan-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Approve plan?</div></div>
+    <div class="modal-plan" id="plan-details"></div>
+    <div class="modal-actions">
+      <button class="btn danger" id="plan-reject-btn">Reject</button>
+      <button class="btn primary" id="plan-approve-btn">Approve &amp; execute</button>
+    </div>
+  </div>
+</div>
+
+<!-- 工作目录浏览器（本地 serve 枚举目录，替代手填绝对路径） -->
+<div id="dir-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">选择工作目录</div>
+      <div class="modal-head-actions">
+        <button id="dir-up" class="btn small" type="button" title="上级目录">↑ 上级</button>
+        <button id="dir-close" class="btn icon" title="关闭" aria-label="关闭">✕</button>
+      </div>
+    </div>
+    <div class="modal-body dir-body scroll">
+      <div id="dir-path" class="dir-path" title=""></div>
+      <ul id="dir-list" class="dir-list"></ul>
+      <div id="dir-empty" class="dir-empty" hidden>（没有子目录；点击上方路径或“上级”返回）</div>
+      <p class="dir-hint">点目录行进入浏览，点底部按钮在<b>当前目录</b>开工。</p>
+    </div>
+    <div class="modal-actions">
+      <span id="dir-current" class="dir-current"></span>
+      <button class="btn" id="dir-cancel" type="button">取消</button>
+      <button class="btn primary" id="dir-choose" type="button">在当前目录开工</button>
     </div>
   </div>
 </div>
 
 <!-- 文件预览抽屉 -->
-<div id="preview" class="drawer" hidden data-page-node-id="2ZMGNYhi7jxrGY4QzYj0HO">
-  <div class="drawer-head" data-page-node-id="WmhCFzyN2RtaHFzsnBXxgl">
-    <span id="preview-path" class="drawer-path" data-page-node-id="SjgMEivJAfdsrctv92MAYP"></span>
-    <div class="drawer-actions" data-page-node-id="037IbmZpMFReR7S9TL3fMO">
-      <button id="preview-copy" class="btn small" title="复制内容" data-page-node-id="KDbENaSzP9i03hLUkU5iDF">复制</button>
-      <button id="preview-close" class="btn icon" title="关闭" data-page-node-id="VedR7nveUaa9CEhlQDfhjC">✕</button>
+<div id="preview" class="drawer" hidden>
+  <div class="drawer-head">
+    <span id="preview-path" class="drawer-path"></span>
+    <div class="drawer-actions">
+      <button id="preview-copy" class="btn small" title="复制内容">复制</button>
+      <button id="preview-close" class="btn icon" title="关闭" aria-label="关闭">✕</button>
     </div>
   </div>
-  <div id="preview-body" class="drawer-body scroll" data-page-node-id="4jGbsgl9ucGHWmkUBObzwo"></div>
+  <div id="preview-body" class="drawer-body scroll"></div>
 </div>
 
-<div id="toast" class="toast" hidden data-page-node-id="WzhmhsMsUBGKWnPNNHCTAz"></div>
+<div id="toast" class="toast" hidden></div>
 
 <!-- 脚本（依赖顺序：工具 → 子模块 → 入口） -->
 <script src="/static/common.js"></script>

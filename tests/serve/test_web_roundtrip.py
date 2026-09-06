@@ -417,19 +417,119 @@ class TestWorkspaceTree:
         assert info["data"]["workspace"] == str(ws2)
 
     async def test_switch_rejects_unknown_dirs(self, server, workspace):
+        """不存在的目录仍 404；真实目录（即便尚无会话）现在允许切过去开工。"""
+        agent = server.app[SESSION_KEY].agent
         active = str(Path(workspace).resolve())
         bogus = (Path(workspace).parent / "never-existed").resolve()
         resp = await server.post(
             "/api/workspace/switch", json={"workspace": str(bogus)}
         )
         assert resp.status == 404
-        # 真实目录但无会话 → 409（信任守卫：必须曾在此跑过 openx）
+        # 真实目录但无会话：显式选择 = 信任 → 200，就地新建首条会话
         empty_dir = (Path(workspace).parent / "empty-ws").resolve()
         empty_dir.mkdir(parents=True, exist_ok=True)
+        old_id = agent.session_id
         resp = await server.post(
             "/api/workspace/switch", json={"workspace": str(empty_dir)}
         )
-        assert resp.status == 409
-        # key 未变
-        assert server.app[WORKSPACE_KEY].path == active
-        assert server.app[API_WORKSPACE_KEY].path == active
+        assert resp.status == 200, await resp.text()
+        body = (await resp.json())["data"]
+        assert body["session_id"] and body["session_id"] != old_id
+        # 已切过去：agent 与新目录重根、app-key 同步、info 落到新目录
+        assert agent.session_id == body["session_id"]
+        assert Path(agent.workspace).resolve() == empty_dir
+        assert server.app[WORKSPACE_KEY].path == str(empty_dir)
+        assert server.app[API_WORKSPACE_KEY].path == str(empty_dir)
+        info = await (await server.get("/api/info")).json()
+        assert info["data"]["workspace"] == str(empty_dir)
+
+    async def test_dirs_lists_children(self, server, workspace):
+        """GET /api/dirs：列直接子目录供目录浏览器导航；坏路径回落活动工作区。"""
+        ws = Path(workspace).resolve()
+        sub = ws / "subdir"
+        sub.mkdir(parents=True, exist_ok=True)
+        resp = await server.get(f"/api/dirs?path={sub}")
+        assert resp.status == 200
+        body = (await resp.json())["data"]
+        assert body["path"] == str(sub)
+        assert body["parent"] == str(ws)
+        # 不存在路径 → 回落活动工作区（不会 404）
+        resp2 = await server.get("/api/dirs?path=/definitely/not/a/real/dir/xyz")
+        assert resp2.status == 200
+        assert (await resp2.json())["data"]["path"] == str(ws)
+
+    # ── 会话删除（侧栏会话项的 ✕ 按钮 → DELETE /api/sessions/{sid}）──
+
+    async def test_delete_historical_session(self, server, workspace):
+        """删历史会话：文件移除、跨工作区定位、侧栏数据源（workspaces）同步。"""
+        ws2 = _seed_second_workspace(workspace)
+        resp = await server.delete("/api/sessions/sess-other")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+        data = body["data"]
+        assert data["deleted"] == "sess-other"
+        assert data["live"] is False and data["session_id"] == ""
+        # 文件已删 → 复盘端点 404、二次删除 404、workspaces 不再含该会话
+        assert SessionStore.resolve_anywhere("sess-other") is None
+        assert (await server.get("/api/sessions/sess-other/events")).status == 404
+        assert (await server.delete("/api/sessions/sess-other")).status == 404
+        groups = await (await server.get("/api/workspaces")).json()
+        ids = {s["session_id"] for g in groups for s in g["sessions"]}
+        assert "sess-other" not in ids
+        assert "sess-old" in ids  # 活动工作区会话不受影响
+
+    async def test_delete_unknown_session_404(self, server, workspace):
+        resp = await server.delete("/api/sessions/no-such-id")
+        assert resp.status == 404
+        # 既有会话原样保留
+        assert SessionStore.resolve_anywhere("sess-old") is not None
+
+    def _bind_live_session(self, server, workspace):
+        """把当前 live 会话落成一条真实会话文件并绑定 agent（仿 agent 启动）。"""
+        store = SessionStore.create(workspace, "test-model", session_id="sess-live")
+        agent = server.app[SESSION_KEY].agent
+        agent.session_store = store
+        agent.session_id = store.meta.session_id
+        agent.hooks.session_id = store.meta.session_id
+        return store
+
+    async def test_delete_live_session_rebinds_agent(self, server, workspace):
+        """删当前活动会话：先重绑到同工作区新会话，再删旧文件（顺序见调用方契约）。"""
+        old = self._bind_live_session(server, workspace)
+        old_id = old.meta.session_id
+        resp = await server.delete(f"/api/sessions/{old_id}")
+        assert resp.status == 200, await resp.text()
+        data = (await resp.json())["data"]
+        assert data["deleted"] == old_id
+        assert data["live"] is True
+        new_id = data["session_id"]
+        assert new_id and new_id != old_id
+        # agent 已整体重绑到新会话
+        agent = server.app[SESSION_KEY].agent
+        assert agent.session_id == new_id
+        assert agent.hooks.session_id == new_id
+        assert agent.session_store is not None
+        assert agent.session_store.path.is_file()
+        assert agent.session_store.meta.session_id == new_id
+        # 旧文件已删，复盘/workspaces 双双移除，新 live 会话在列
+        assert SessionStore.resolve_anywhere(old_id) is None
+        assert (await server.get(f"/api/sessions/{old_id}/events")).status == 404
+        groups = await (await server.get("/api/workspaces")).json()
+        ids = {s["session_id"] for g in groups for s in g["sessions"]}
+        assert old_id not in ids and new_id in ids
+        assert "sess-old" in ids  # 无关历史会话不受影响
+
+    async def test_delete_live_session_409_when_busy(self, server, workspace):
+        """回合进行中删当前会话 → 409：删除会换 session_id，进行中的回合会写错 store。"""
+        self._bind_live_session(server, workspace)
+        session = server.app[SESSION_KEY]
+        stall = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+        session._turn_task = stall
+        try:
+            resp = await server.delete("/api/sessions/sess-live")
+            assert resp.status == 409
+        finally:
+            stall.cancel()
+        # 未删成：live 会话仍在
+        assert SessionStore.resolve_anywhere("sess-live") is not None

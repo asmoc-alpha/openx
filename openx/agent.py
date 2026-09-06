@@ -134,6 +134,16 @@ class AgentState:
 # 结构化输出捕获哨兵：区别于"捕获到 None"（schema 允许 null 时合法）。
 _UNSET: Any = object()
 
+# 触顶收尾指引：工具往返达到 max_tool_rounds 时，agent 不再继续循环，而是
+# 追加一次**不带工具**的最终请求，让模型总结"已做/未做/下一步"而不是硬断。
+# 只注入当次请求、绝不落盘——回放/历史只见模型给出的总结正文。
+_WRAP_UP_PROMPT = (
+    "You have reached the tool-call limit for this turn and can no longer "
+    "call tools. Do NOT call any tools now. Write a concise wrap-up: what "
+    "has been completed, what is still unfinished, and the single most "
+    "useful next step for the user to continue."
+)
+
 
 @dataclass
 class ToolStartEvent:
@@ -1283,9 +1293,41 @@ class OpenXAgent:
             self.last_tool_rounds = state.tool_rounds
             return content
 
+        # 触顶：追加一次无工具请求让模型收尾总结（失败才回落原提示）。
+        # 指引只出现在当次请求（_wrap_up_turn 内部），不落盘。
+        wrap = await self._wrap_up_turn(turn_llm, state.messages)
+        if wrap:
+            new_turn.append({"role": "assistant", "content": wrap})
+            self.history.add(new_turn)
+            self._persist_turn(new_turn)
+            await self._maybe_auto_compact()
+            await self._fire_stop_hook("end_turn")
+            self.last_tool_rounds = state.tool_rounds
+            return wrap
         await self._fire_stop_hook("max_rounds")
         self.last_tool_rounds = state.tool_rounds
         return "Reached maximum tool call rounds without a final response."
+
+    async def _wrap_up_turn(
+        self, turn_llm: LLMClient, state_messages: list[dict[str, Any]]
+    ) -> str | None:
+        """触顶后的一次无工具最终请求：成功返回模型总结正文；失败返回 None。
+
+        ``run()`` 用 ``chat`` 同步聚合；``stream_run`` 有自己的流式实现，
+        不共用本方法。请求里注入的收尾指引只此一次、不进历史。
+        """
+        try:
+            msg = await turn_llm.chat(
+                messages=[*state_messages,
+                          {"role": "user", "content": _WRAP_UP_PROMPT}],
+                tools=[],
+                stream=self.config.stream,
+            )
+        except Exception:
+            return None
+        self._accumulate_tokens(msg)
+        content = (msg.get("content") or "").strip()
+        return content or None
 
     # ── 流式运行（REPL 主路径）───────────────────────────────────
 
@@ -1408,6 +1450,35 @@ class OpenXAgent:
             self.last_tool_rounds = state.tool_rounds
             return
 
+        # 触顶收尾（同 run()）：一次不带工具的最终流请求，让模型总结进度
+        done: StreamDone | None = None
+        try:
+            async for event in turn_llm.stream_chat(
+                messages=[*state.messages,
+                          {"role": "user", "content": _WRAP_UP_PROMPT}],
+                tools=[],
+            ):
+                if isinstance(event, StreamDone):
+                    done = event
+                else:
+                    yield event
+        except Exception:
+            done = None
+        if done is not None:
+            self.total_output_tokens += done.token_count
+            self.total_input_tokens += done.input_tokens
+            self.total_cached_tokens += done.cached_tokens
+            self.total_plugin_tokens += _active_plugin_schema_tokens()
+            wrap = (done.response.get("content") or "").strip()
+            if wrap:
+                new_turn.append({"role": "assistant", "content": wrap})
+                self.history.add(new_turn)
+                self._persist_turn(new_turn)
+                if await self._maybe_auto_compact():
+                    yield "\n\n[dim]● Compacting conversation…[/dim]\n"
+                await self._fire_stop_hook("end_turn")
+                self.last_tool_rounds = state.tool_rounds
+                return
         yield "\n\n[dim]Max tool rounds reached[/dim]"
         await self._fire_stop_hook("max_rounds")
         self.last_tool_rounds = state.tool_rounds

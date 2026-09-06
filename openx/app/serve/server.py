@@ -4,6 +4,7 @@ create_app(session)：路由——
 - ``GET /ws``                          WebSocket 事件流（下行广播 + 上行意图）
 - ``GET /api/sessions``                会话列表（meta，供侧栏与复盘页）
 - ``GET /api/sessions/{sid}/events``   复盘：统一事件列表（消息行 + 账本行投影）
+- ``DELETE /api/sessions/{sid}``       删除会话（当前活动会话 → 重绑新会话）
 - ``GET /``（静态前端 ``web/``）       自包含 vanilla JS 客户端
 
 run_serve(agent, console, host, port, workspace)：由 main.py 在
@@ -62,6 +63,39 @@ def _active_workspace(request: web.Request) -> str:
     return str(ref or "")
 
 
+async def _api_dirs(request: web.Request) -> web.Response:
+    """GET /api/dirs?path=… → 列出目录的直接子目录（目录选择器导航）。
+
+    浏览器出于安全拿不到本地绝对路径，目录选择须由本地 serve 侧枚举。
+    返回 ``{path, basename, parent, dirs:[{name, path}]}``；跳过点目录与
+    符号链接。给定路径无效/缺失时回落当前活动工作区。
+    """
+    start = _active_workspace(request) or str(Path.home())
+    raw = (request.query.get("path") or "").strip()
+    candidate = Path(raw).expanduser().resolve() if raw else Path(start)
+    if not candidate.is_dir():
+        candidate = Path(start)
+    dirs: list[dict] = []
+    try:
+        for child in sorted(candidate.iterdir(), key=lambda p: (p.name.lower())):
+            if child.name.startswith("."):
+                continue
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    dirs.append({"name": child.name, "path": str(child)})
+            except OSError:
+                continue
+    except (PermissionError, OSError):
+        dirs = []
+    parent = candidate.parent
+    return web.json_response({"ok": True, "data": {
+        "path": str(candidate),
+        "basename": candidate.name or str(candidate),
+        "parent": str(parent) if parent != candidate else "",
+        "dirs": dirs,
+    }})
+
+
 def create_app(session: ServeSession, workspace: str = "") -> web.Application:
     """构建 aiohttp 应用：/ws + REST 端点 + 静态前端。"""
     app = web.Application()
@@ -71,13 +105,29 @@ def create_app(session: ServeSession, workspace: str = "") -> web.Application:
     app.router.add_get("/ws", session.handle_ws)
     app.router.add_get("/api/sessions", _api_sessions)
     app.router.add_get("/api/sessions/{sid}/events", _api_session_events)
+    app.router.add_delete("/api/sessions/{sid}", _api_session_delete)
     app.router.add_get("/api/workspaces", _api_workspaces)
     app.router.add_post("/api/workspace/switch", _api_workspace_switch)
+    app.router.add_get("/api/dirs", _api_dirs)
     # 管理端点（模型 / MCP / skill / plugin / 文件产物）——见 api.py
     register_api(app, session, workspace)
     app.router.add_get("/", _index)
-    app.router.add_static("/static/", str(_WEB_DIR))
+    # 静态前端：统一 no-store，杜绝浏览器缓存旧版 JS/CSS（前端零构建、改动即生效）
+    app.router.add_get("/static/{name}", _static_file)
     return app
+
+
+async def _static_file(request: web.Request) -> web.FileResponse:
+    """GET /static/{name} → web/ 下文件；扁平目录 + no-store 防缓存旧稿。"""
+    name = request.match_info.get("name", "")
+    if not name or "/" in name or "\\" in name:
+        raise web.HTTPNotFound()
+    path = (_WEB_DIR / name).resolve()
+    if not str(path).startswith(str(_WEB_DIR.resolve())) or not path.is_file():
+        raise web.HTTPNotFound()
+    resp = web.FileResponse(path)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 async def _index(request: web.Request) -> web.FileResponse:
@@ -149,6 +199,119 @@ async def _api_session_events(request: web.Request) -> web.Response:
     })
 
 
+def _reset_live_session(session: "ServeSession", workspace: str) -> str:
+    """在当前工作区新建一个空会话并整体重绑 agent；返回新 session_id。
+
+    与 ``_api_workspace_switch`` 的重绑段同源，**唯一差异是不重建工具**——
+    工作区没变，工具无需重根（省一次内核重载，也避免打断进行中的插件）。
+
+    重绑面：session_store / session_id / hooks.session_id / 账本挂载 /
+    历史与 todos / token 计数 / live 缓冲，最后广播 init 让已连客户端同步
+    （前端侧栏据此高亮新会话）。
+    """
+    agent = session.agent
+    model = str(getattr(getattr(agent, "config", None), "model", "") or "")
+    group = str(getattr(getattr(agent, "config", None), "active_group", "") or "")
+    store = SessionStore.create(workspace, model, group=group)
+    had_store = getattr(agent, "session_store", None)
+
+    agent.session_store = store
+    agent.session_id = store.meta.session_id
+    hooks = getattr(agent, "hooks", None)
+    if hooks is not None:
+        hooks.session_id = agent.session_id
+
+    # 账本重挂到新会话文件（无旧 store 的嵌入式/测试场景跳过，保持 hermetic）
+    if had_store is not None:
+        try:
+            from ...kernel import get_kernel
+
+            get_kernel().attach_ledger(
+                store.append_event,
+                session=agent.session_id,
+                start_seq=store.ledger_start_seq(),  # 新建文件恒 0
+            )
+        except Exception:
+            pass  # 账本是证据系统；挂接失败不阻断切换
+
+    clear = getattr(agent, "clear_history", None)
+    if callable(clear):
+        clear()
+    todos = getattr(agent, "todos", None)
+    if isinstance(todos, list):
+        todos.clear()
+    for attr in (
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cached_tokens",
+        "total_plugin_tokens",
+    ):
+        if hasattr(agent, attr):
+            setattr(agent, attr, 0)
+
+    session._live_events = []
+    session._live_user = None
+    try:
+        from ...kernel import protocol
+
+        session.broadcast(protocol.init_event(
+            agent.session_id, model, sorted(getattr(agent, "tools", {}) or {})
+        ))
+    except Exception:
+        pass  # 广播失败不影响重绑结果
+    return str(agent.session_id)
+
+
+async def _api_session_delete(request: web.Request) -> web.Response:
+    """DELETE /api/sessions/{sid} → 删除一条会话（侧栏会话项的删除按钮）。
+
+    按 id **跨工作区**定位（同复盘端点），两种情形：
+
+    - **历史会话**：直接删文件（append-only 转录，无其它引用）。
+    - **当前活动会话**：先 ``_reset_live_session`` 重绑到同工作区的新会话，
+      **再**删旧文件。顺序不可颠倒——先删的话，重绑窗口内一次 append 就会
+      用 ``open("a")`` 把文件复活成无 meta 行的空壳（见 ``SessionStore
+      .delete`` 的调用方契约）。响应回带新的 ``session_id``，前端据此同步。
+
+    回合进行中删除当前会话 → 409：删除会换 session_id，进行中的回合会把
+    消息写进一个已被摘掉的 store。
+    """
+    sid = request.match_info["sid"]
+    meta = SessionStore.resolve_anywhere(sid)
+    if meta is None or meta.path is None:
+        return web.json_response(
+            {"ok": False, "reason": f"session not found: {sid}"}, status=404
+        )
+
+    session = request.app[SESSION_KEY]
+    agent = getattr(session, "agent", None)
+    is_live = agent is not None and str(getattr(agent, "session_id", "") or "") == sid
+    new_id = ""
+    if is_live:
+        if session.is_busy():
+            return web.json_response(
+                {"ok": False,
+                 "reason": "a turn is in progress — stop it before deleting "
+                           "the current session"},
+                status=409,
+            )
+        try:
+            new_id = _reset_live_session(session, _active_workspace(request))
+        except Exception as exc:                    # 建文件 / 重绑失败 → 不删
+            return web.json_response(
+                {"ok": False, "reason": f"cannot reset current session: {exc}"},
+                status=500,
+            )
+
+    if not SessionStore.delete(sid):
+        return web.json_response(
+            {"ok": False, "reason": f"session not found: {sid}"}, status=404
+        )
+    return web.json_response(
+        {"ok": True, "data": {"deleted": sid, "live": is_live, "session_id": new_id}}
+    )
+
+
 async def _api_workspace_switch(request: web.Request) -> web.Response:
     """POST /api/workspace/switch → 切换 serve 当前工作区（live 重根 + 新会话）。
 
@@ -174,15 +337,9 @@ async def _api_workspace_switch(request: web.Request) -> web.Response:
         return web.json_response(
             {"ok": False, "reason": f"directory not found: {candidate}"}, status=404
         )
-    # 信任守卫：会话文件只能由 SessionStore.create 产生——目标目录下已有会话
-    # == 用户在此跑过 openx，切过去不绕过既有目录信任检查。
-    if not SessionStore.has_sessions(str(candidate)):
-        return web.json_response(
-            {"ok": False,
-             "reason": "workspace has no stored sessions — run openx there first"},
-            status=409,
-        )
-
+    # 目录选择是 Web 端用户的显式动作（等同在此跑过 openx）：允许切到**尚无
+    # 会话**的目录——SessionStore.create 会就地新建首条会话。不再要求
+    # has_sessions，以支持“新对话输入框选任意新目录”的体验。
     session = request.app[SESSION_KEY]
     if session.is_busy():
         return web.json_response(
@@ -352,7 +509,10 @@ if __name__ == "__main__":
 
     app = create_app(ServeSession(_FakeAgent(), ServeConsole()), workspace="/tmp/x")
     routes = [r.resource.canonical for r in app.router.routes()]
-    for expected in ("/ws", "/api/sessions", "/api/sessions/{sid}/events", "/"):
+    for expected in (
+        "/ws", "/api/sessions", "/api/sessions/{sid}/events",
+        "/api/sessions/{sid}", "/",
+    ):
         assert expected in routes, f"missing route {expected}: {routes}"
     assert (_WEB_DIR / "index.html").is_file(), "web/index.html missing"
     print(f"routes ok ({len(routes)}): {sorted(routes)}")

@@ -47,8 +47,14 @@ function setConn(stateName, label) {
 const LAYOUT_KEY = "openx.serve.layout.v2";
 
 const PANES = {
-  sidebar:   { el: "sidebar",    width: 260, min: 180, max: 400 },
-  taskpanel: { el: "task-panel", width: 340, min: 260, max: 560 },
+  sidebar:   { el: "sidebar",    width: 280, min: 180, max: 420 },
+  taskpanel: { el: "task-panel", width: 360, min: 260, max: 560 },
+};
+
+// 开关按钮字形的方向随状态换向（与 title 同步）：展开态显示收拢箭头。
+const PANE_GLYPH = {
+  sidebar:   { open: "«", collapsed: "»" },
+  taskpanel: { open: "»", collapsed: "«" },
 };
 
 // 开关按钮的 title：按当前展开/收起切换文案，让「点了会发生什么」一目了然
@@ -106,6 +112,11 @@ function setPaneCollapsed(name, collapsed, persist = true) {
   layout.dataset[name] = collapsed ? "collapsed" : "open";
   syncPaneToggles();
   if (persist) saveLayout();
+  // 左栏收成 rail 时品牌钮退化为「展开侧栏」入口
+  if (name === "sidebar") {
+    const b = $("brand");
+    if (b) b.title = collapsed ? "展开侧栏 (⌘B)" : "新建对话";
+  }
   // 中栏宽度随之变化：画板 / 代码高亮之类依赖宽度的组件可据此重排
   window.dispatchEvent(new CustomEvent("openx:layout", {
     detail: { pane: name, collapsed },
@@ -126,6 +137,8 @@ function syncPaneToggles() {
     btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     const t = PANE_TOGGLE_TITLE[name];
     if (t) btn.title = collapsed ? t.collapsed : t.open;
+    const g = PANE_GLYPH[name];
+    if (g) btn.textContent = collapsed ? g.collapsed : g.open;
   });
 }
 
@@ -214,11 +227,14 @@ function applyEvent(ev) {
       $("messages").classList.add("streaming");
       Chat.streamBuf = "";
       Chat.lastAssistant = null;
-      showTurnBar(true, "working…");
+      showTurnBar(true);
       TaskPanel.onTurnStart(ev.text || "");
       updateBreadcrumb();
       break;
     case "text_delta":
+      // 非会话态（!streaming）的 text_delta 是越带外提示（如模型切换的
+      // “⟳”元提示）——不进正文，也不该在空态误建一条助手消息。
+      if (!AppState.streaming) break;
       Chat.streamBuf += ev.text || "";
       Chat.scheduleFlush();
       TaskPanel.onTextDelta();
@@ -242,18 +258,20 @@ function applyEvent(ev) {
     case "result":
       AppState.streaming = false;
       $("messages").classList.remove("streaming");
-      Chat.streamBuf = "";
+      Chat.commitStream();   // 同步提交最终正文（见 commitStream 竞态说明）
       showTurnBar(false);
       Chat.appendMeta(doneLabel(ev));
+      Chat.finalizeTurn();
       TaskPanel.onResult(ev);
       Sidebar.reload().then(() => Sidebar.renderAll());
       break;
     case "interrupted":
       AppState.streaming = false;
       $("messages").classList.remove("streaming");
-      Chat.streamBuf = "";
+      Chat.commitStream();   // 保留已生成的半截回复，不清 buffer
       showTurnBar(false);
       Chat.appendMeta("⏹ Interrupted");
+      Chat.finalizeTurn();
       TaskPanel.onInterrupted();
       break;
     case "permission_request":
@@ -293,10 +311,10 @@ function renderHistory(messages) {
   }
 }
 
-function showTurnBar(show, status) {
-  const bar = $("turn-bar");
-  bar.hidden = !show;
-  if (status) $("turn-status").textContent = status;
+function showTurnBar(show) {
+  // 回答状态不再显示在对话框上方：改由发送钮表达（空闲 "→" 发送；
+  // 回答中变 "■" 停止 + 脉冲动画），点击发送钮即中断。turn-bar 保持隐藏。
+  if (typeof Chat !== "undefined" && Chat.setStreaming) Chat.setStreaming(Boolean(show));
 }
 
 // ── 顶栏 / 面包屑 ──────────────────────────────────────────────────
@@ -394,6 +412,8 @@ async function loadInfo() {
   updateBreadcrumb();
   Sidebar.renderAll();    // 工作区树 + 环境卡（同一批真实事实）
   TaskPanel.renderStats();
+  // 启动即空态：输入框居中 + 填充目录/模型选择（进入会话态时会自动贴底）
+  if (typeof Chat !== "undefined" && Chat.enterEmpty) Chat.enterEmpty();
 }
 
 async function boot() {
