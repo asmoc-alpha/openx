@@ -30,21 +30,10 @@ const TaskPanel = {
   usage: null,   // 最近一次 result 事件的累计 token 用量
   lastTurn: null,
   _ticker: null,
-  /**
-   * 是否展开。默认 false（空状态下不展示任务面板，避免一个"实时"绿灯在空状态里空转）。
-   * 数据来源：DOM 上 `#task-panel[data-visible]`——视觉与状态合一是唯一事实。
-   */
-  isVisible() {
-    const p = document.getElementById("task-panel");
-    return Boolean(p && p.dataset.visible === "true");
-  },
 
   init() {
     this.bindTabs();
     this.bindResizer();
-    this.bindCollapse();          // 顶部 × 收起 / 整块点击（折叠态）恢复
-    // 默认折叠（与「空对话时任务面板默认关闭」语义一致）
-    this.setVisible(false);
     this.render();
   },
 
@@ -77,26 +66,6 @@ const TaskPanel = {
     });
   },
 
-  /** 顶部 × 关闭 / 折叠态下整块点击 = 恢复。事件冒泡：× 不冒泡。 */
-  bindCollapse() {
-    const panel = document.getElementById("task-panel");
-    if (!panel) return;
-    const head = panel.querySelector(".tp-head");
-    const closeBtn = panel.querySelector("#tp-collapse");
-    if (closeBtn) {
-      closeBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.close();
-      });
-    }
-    if (head) {
-      head.addEventListener("click", (e) => {
-        // 折叠态下整块点击 = 展开；展开态下点 .tp-head-actions（设置）不要冒泡
-        if (!this.isVisible()) this.open();
-      });
-    }
-  },
-
   showTab(name) {
     document.querySelectorAll("#tp-tabs .tp-tab").forEach((t) => {
       t.classList.toggle("active", t.dataset.tab === name);
@@ -107,21 +76,6 @@ const TaskPanel = {
     if (name === "artifacts" && typeof Artifacts !== "undefined") {
       Artifacts.load(Artifacts.sessionId);
     }
-  },
-
-  open()  { this.setVisible(true); },
-  close() { this.setVisible(false); },
-  toggle() { this.setVisible(!this.isVisible()); },
-
-  /** `setVisible(true)` 会自动定位到任务流标签（让新一次回合直接被看见）。 */
-  setVisible(v) {
-    const panel = document.getElementById("task-panel");
-    if (!panel) return;
-    panel.dataset.visible = v ? "true" : "false";
-    // 顶部切换按钮的 aria-pressed 联动
-    const topBtn = document.getElementById("toggle-task-panel");
-    if (topBtn) topBtn.setAttribute("aria-pressed", v ? "true" : "false");
-    if (v) this.showTab("flow");
   },
 
   // ── 事件入口（app.js 的 reducer 调用）——────────────────────────

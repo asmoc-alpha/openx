@@ -93,15 +93,6 @@ function bindResizers() {
   });
 }
 
-/** 顶部「任务面板」切换按钮：仅一处点击就够。 */
-function bindTopbarToggle() {
-  const btn = document.getElementById("toggle-task-panel");
-  if (!btn) return;
-  btn.addEventListener("click", () => {
-    if (typeof TaskPanel !== "undefined" && TaskPanel.toggle) TaskPanel.toggle();
-  });
-}
-
 // ── 事件 reducer（WS → DOM） ───────────────────────────────────────
 function textOf(content) {
   if (typeof content === "string") return content;
@@ -326,7 +317,6 @@ async function boot() {
   Chat.init();
   Modals.init();
   TaskPanel.init();
-  bindTopbarToggle();
   if (typeof Artifacts !== "undefined") Artifacts.init();
   if (typeof Settings !== "undefined") Settings.init();
   await Sidebar.init();

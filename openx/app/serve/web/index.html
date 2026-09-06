@@ -42,7 +42,6 @@
   </nav>
 <div class="topbar-spacer" data-page-node-id="AlgcLT3CTsipDq8s7rZ4bh"></div>
     <div class="topbar-actions" data-page-node-id="jADkjHSPEcGS4WaHJxUusp">
-      <button id="toggle-task-panel" class="icon-btn" title="任务面板" data-page-node-id="NUZcAETvcf7MpxohSO9QyE">▤</button>
       <button class="icon-btn" title="分享" data-page-node-id="4q5xnrsbWlfWubTTbqkRHt">⇪</button>
       <button class="icon-btn" title="导出" data-page-node-id="JbERPZllKdFdd9zYYkNE8z">⬇</button>
       <button class="icon-btn" title="更多" data-page-node-id="VMGuhaCH1Fmu4Atu6UpeR5">···</button>
@@ -57,29 +56,17 @@
   <aside id="sidebar" class="pane" data-page-node-id="NDGDyJDMpE1C31nXNdB0fw">
     <div class="sidebar-top" data-page-node-id="QdoDyBNeWf5KIOEDibpuvL">
       <div class="sidebar-actions" role="toolbar" aria-label="侧栏操作" data-page-node-id="HnFNkTmpAl0OxsiFUFs98G">
-        <button id="new-session" class="action-btn" title="新建对话" aria-label="新建对话" data-page-node-id="TBIInmmQCKoWe4VuxbUCvZ">
-          <span class="ab-icon" data-page-node-id="1V0tF9SrB0n170b3JdfF0f">+</span>
+        <button id="new-session" class="btn-primary" title="新建对话" aria-label="新建对话" data-page-node-id="TBIInmmQCKoWe4VuxbUCvZ">
+          + 新建对话
         </button>
-        <button id="search-toggle" class="action-btn" title="搜索" aria-label="搜索"
-          aria-expanded="false" data-page-node-id="yHUlYpkTGYUxSDqhC5cUpZ">
-          <span class="ab-icon" data-page-node-id="d6cyINAJkfcoz5qHgBsaEL">⌕</span>
-        </button>
-      </div>
-      <div class="search-pane" id="search-pane" hidden data-page-node-id="I4RlhD1ok7e1iyvegCbzjc">
-        <span class="search-pane-icon" data-page-node-id="4NSNwHnDhdAiu7qLW2tMXU">⌕</span>
-        <input id="global-filter" type="search"
-          placeholder="搜索对话 / 文件 / 工具..." autocomplete="off" data-page-node-id="gMBCj36Fqup2yvXFblFv6f" />
-        <button id="search-close" class="search-pane-close" title="收起" aria-label="收起" data-page-node-id="DwHQZbVpj5M4qmDCV7NV8U">×</button>
       </div>
     </div>
 
     <div class="sidebar-scroll" data-page-node-id="wwEW7QasE93EtrLzpmZqGA">
       <section class="side-section ws-section" data-page-node-id="FmtSfTtTZnMGKqlC6CNbop">
         <header class="side-section-head ws-section-head" title="按目录分组的会话" data-page-node-id="VG6KLEFGDFt3O3bLOp1II3">
-          <span class="ws-section-icon" aria-hidden="true" data-page-node-id="xGAisbaUPcu35aJqAFqjU1">▤</span>
+          <span class="side-section-title" data-page-node-id="wsTitle">工作区</span>
           <span class="side-section-count" id="ws-count" data-page-node-id="0C0Ofd4zIpHmqEx9GsKQ1R">0</span>
-          <button id="ws-add-root" class="ws-section-add" title="选择工作目录新建对话"
-            aria-label="新建工作区" data-page-node-id="BYrzq057otY6aNMifmaJoz">+</button>
         </header>
         <ul id="workspace-list" class="ws-list" data-page-node-id="DdGoxe1i0jLTosnuyIWO6L"></ul>
       </section>
@@ -97,12 +84,22 @@
   <main id="chat" class="pane" data-page-node-id="WFt3wJ4ucRFXz34bn4pMHL">
     <div id="day-divider" class="day-divider" hidden data-page-node-id="ESSCUWv0COlUFQngYgIlPY"></div>
     <div id="messages" class="scroll messages" data-page-node-id="N9IUj5ISFtNsmkoTnEujKv">
-      <!-- 首屏空状态：极度精简——只把 OpenX logo 当作视觉锚点放在对话框上方。
-           "多 agent 协作的智能助手工作台"副标题、四个能力芯片、底部状态点
-           全数移除，避免向用户呈现虚构引导；用户直接在下方的 composer 输入即可。 -->
+      <!-- 首屏空状态：欢迎页 + 副标题 + 4 个能力芯片 + 底部状态点（撤回请求 4 恢复） -->
       <section id="welcome-hero" class="welcome-hero" aria-label="OpenX" data-page-node-id="SDSTCRJ4HN571mq4sBqnCH">
         <div class="welcome-mark" data-page-node-id="L4Yyx9E37BR10AUxdEHo9w">
           <img src="/static/openx-mark.svg" width="44" height="44" alt="OpenX" data-page-node-id="3YTekcfS3KkUzg1fGGNY5y" />
+        </div>
+        <h1 class="welcome-title" data-page-node-id="welTitle">OpenX</h1>
+        <p class="welcome-subtitle" data-page-node-id="welSub">多 agent 协作的智能助手工作台</p>
+        <div class="welcome-chips" role="list" data-page-node-id="welChips">
+          <button class="welcome-chip" data-chip="code" role="listitem" data-page-node-id="welChip0">写代码 · 调 Bug</button>
+          <button class="welcome-chip" data-chip="doc" role="listitem" data-page-node-id="welChip1">读文档 · 总结</button>
+          <button class="welcome-chip" data-chip="data" role="listitem" data-page-node-id="welChip2">分析数据 · 画图</button>
+          <button class="welcome-chip" data-chip="web" role="listitem" data-page-node-id="welChip3">搜网页 · 抓信息</button>
+        </div>
+        <div class="welcome-hint" data-page-node-id="welHint">
+          <span class="hint-dot" data-page-node-id="welHintDot"></span>
+          <span id="welcome-hint-text" data-page-node-id="welHintText">就绪</span>
         </div>
       </section>
     </div>
@@ -142,19 +139,15 @@
 
   <div class="resizer" data-resize="taskpanel" role="separator" aria-orientation="vertical" data-page-node-id="YTDHwigIN8yhE1y2a8ixHu"></div>
 
-<!-- ③ 右栏：任务面板（可整体点击 tp-head 关闭；× 关闭；
-        没有"实时"徽标——避免用户在「开始任务」前看到一个永远亮的绿灯） -->
-    <aside id="task-panel" class="pane" data-visible="false" data-page-node-id="xOLlFRYKWDkveJfYt0jdMn">
+<!-- ③ 右栏：任务面板 -->
+    <aside id="task-panel" class="pane" data-page-node-id="xOLlFRYKWDkveJfYt0jdMn">
       <header class="tp-head" title="点击收起任务面板" data-page-node-id="NDmyBqAZtnrAdx5M1b5FIN">
-        <button id="tp-collapse" class="tp-collapse-icon" title="收起任务面板"
-          aria-label="收起任务面板" data-page-node-id="2cMzUgVrNIwO8xsdMWED2S">×</button>
         <span class="tp-title" data-page-node-id="wlpWZIRtDGBpi7bslZbPwW">任务面板</span>
         <div class="tp-head-actions" data-page-node-id="TuTE0F48OSaoYo09wULjXB">
           <button class="tp-icon-btn" title="设置" data-page-node-id="V1qUrO9b5BnICRcDBZK4vH">⚙</button>
         </div>
       </header>
 
-    <!-- 任务面板主体：折叠时一起隐藏（CSS 用 #task-panel[data-visible] 切换） -->
     <div class="tp-shell" data-page-node-id="IdmeOP710SicWekf3HGwES">
     <nav class="tp-tabs" id="tp-tabs" data-page-node-id="YCW9nOIKFbeaSGcsGam5tY">
       <button class="tp-tab active" data-tab="flow" data-page-node-id="wtBR6d1NGJ1hoWh6sKET0r">任务流 <span class="tp-tab-count" id="flow-tab-count" hidden data-page-node-id="fdux0uJksE2zwJnzvOxM67">0</span></button>

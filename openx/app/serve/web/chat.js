@@ -11,13 +11,12 @@ const Chat = {
   lastTool: null,
   thinkingBody: null,
   thinkingOpen: false,
-  // 标记这一会话是否已经触发过「自动开任务面板」——避免每次 user_message 都重开
-  _panelOpenedFor: "",
 
   init() {
     this.bindInput();
     this.bindSend();
     this.bindInterrupt();
+    this.bindWelcomeChips();
   },
 
   /**
@@ -63,11 +62,30 @@ const Chat = {
   },
 
   /**
-   * setWelcomeHint / bindWelcomeChips：旧的连接状态提示 + 能力芯片已不在
-   * 首屏暴露给用户，这两个 API 保留为 no-op 以兼容 history 调用方。
+   * setWelcomeHint / bindWelcomeChips：首屏底部状态点和能力芯片（撤回请求 4 恢复）。
+   * setWelcomeHint 更新 #welcome-hint-text 文案 + #hint-dot 颜色，
+   * bindWelcomeChips 给 4 个芯片绑定点击 → 写入输入框。
    */
-  setWelcomeHint(_text, _connState) { /* no-op: 首屏已极简，不再展示 */ },
-  bindWelcomeChips() { /* no-op: 4 个能力芯片已移除 */ },
+  setWelcomeHint(text, connState) {
+    const hint = document.getElementById("welcome-hint-text");
+    if (hint) hint.textContent = text || "就绪";
+    const dot = document.querySelector(".hint-dot");
+    if (dot) dot.dataset.state = connState || "";
+  },
+  bindWelcomeChips() {
+    const chips = document.querySelectorAll(".welcome-chip");
+    const inp = $("input");
+    if (!inp) return;
+    chips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const label = chip.textContent.trim();
+        if (inp.value && !OX.confirm("替换当前输入？")) return;
+        inp.value = label;
+        inp.focus();
+        inp.dispatchEvent(new Event("input"));
+      });
+    });
+  },
 
   // ── 输入 ─────────────────────────────────────────
   bindInput() {
@@ -120,16 +138,6 @@ const Chat = {
     const row = el("div", "msg user");
     row.textContent = text;
     $("messages").appendChild(row);
-
-    // 首条用户消息：自动打开任务面板——只有「这才刚开始的会话」才需要它，
-    // 已打开过的不重复触发；并把首条问题作为会话标题回填（轻量本地回填）。
-    if (this._panelOpenedFor !== AppState.sessionId) {
-      this._panelOpenedFor = AppState.sessionId || "";
-      if (typeof TaskPanel !== "undefined" && TaskPanel.open) TaskPanel.open();
-      if (typeof Sidebar !== "undefined" && Sidebar.renameSession) {
-        Sidebar.renameSession(AppState.sessionId, text);
-      }
-    }
     this.autoscroll();
   },
 
