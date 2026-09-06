@@ -40,53 +40,138 @@ function setConn(stateName, label) {
   }
 }
 
+/* ── 布局：宽度 + 左右栏收缩 ─────────────────────────────────────
+   两份状态一起持久化：拖拽得到的栏宽、以及两栏的展开/收起。
+   收起态写在 #layout 的 data-* 上（CSS 据此把宽度压到 0），
+   inline style.width 不动，展开即恢复上次宽度。 */
 const LAYOUT_KEY = "openx.serve.layout.v2";
 
-function restoreLayout() {
+const PANES = {
+  sidebar:   { el: "sidebar",    width: 260, min: 180, max: 400 },
+  taskpanel: { el: "task-panel", width: 340, min: 260, max: 560 },
+};
+
+// 开关按钮的 title：按当前展开/收起切换文案，让「点了会发生什么」一目了然
+const PANE_TOGGLE_TITLE = {
+  sidebar:   { collapsed: "展开侧栏 (⌘B)",     open: "收起侧栏 (⌘B)" },
+  taskpanel: { collapsed: "展开任务面板 (⌘J)", open: "收起任务面板 (⌘J)" },
+};
+
+function readLayout() {
+  const def = {
+    sidebar: PANES.sidebar.width,
+    taskpanel: PANES.taskpanel.width,
+    sidebarCollapsed: false,
+    taskpanelCollapsed: false,
+  };
   try {
-    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
-    if (saved.sidebar) $("sidebar").style.width = saved.sidebar + "px";
-    if (saved.taskpanel) $("task-panel").style.width = saved.taskpanel + "px";
-  } catch (_) { /* 坏值忽略 */ }
+    const s = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
+    if (Number(s.sidebar) >= PANES.sidebar.min) def.sidebar = Number(s.sidebar);
+    if (Number(s.taskpanel) >= PANES.taskpanel.min) def.taskpanel = Number(s.taskpanel);
+    def.sidebarCollapsed = s.sidebarCollapsed === true;
+    def.taskpanelCollapsed = s.taskpanelCollapsed === true;
+  } catch (_) { /* 坏值回落默认 */ }
+  return def;
 }
 
 function saveLayout() {
+  const layout = $("layout");
+  if (!layout) return;
   try {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify({
-      sidebar: parseInt($("sidebar").style.width, 10) || 260,
-      taskpanel: parseInt($("task-panel").style.width, 10) || 340,
+      sidebar: parseInt($("sidebar").style.width, 10) || PANES.sidebar.width,
+      taskpanel: parseInt($("task-panel").style.width, 10) || PANES.taskpanel.width,
+      sidebarCollapsed: layout.dataset.sidebar === "collapsed",
+      taskpanelCollapsed: layout.dataset.taskpanel === "collapsed",
     }));
   } catch (_) { /* 写入失败忽略 */ }
 }
 
+function restoreLayout() {
+  const s = readLayout();
+  $("sidebar").style.width = s.sidebar + "px";
+  $("task-panel").style.width = s.taskpanel + "px";
+  setPaneCollapsed("sidebar", s.sidebarCollapsed, false);
+  setPaneCollapsed("taskpanel", s.taskpanelCollapsed, false);
+}
+
+function isCollapsed(name) {
+  const layout = $("layout");
+  return Boolean(layout) && layout.dataset[name] === "collapsed";
+}
+
+function setPaneCollapsed(name, collapsed, persist = true) {
+  const layout = $("layout");
+  if (!layout || !PANES[name]) return;
+  layout.dataset[name] = collapsed ? "collapsed" : "open";
+  syncPaneToggles();
+  if (persist) saveLayout();
+  // 中栏宽度随之变化：画板 / 代码高亮之类依赖宽度的组件可据此重排
+  window.dispatchEvent(new CustomEvent("openx:layout", {
+    detail: { pane: name, collapsed },
+  }));
+}
+
+function togglePane(name) {
+  setPaneCollapsed(name, !isCollapsed(name));
+}
+
+/** 所有 data-pane-toggle 按钮（顶栏两个 + 栏内两个）同步到当前状态 */
+function syncPaneToggles() {
+  document.querySelectorAll("[data-pane-toggle]").forEach((btn) => {
+    const name = btn.dataset.paneToggle;
+    if (!PANES[name]) return;
+    const collapsed = isCollapsed(name);
+    btn.classList.toggle("is-collapsed", collapsed);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    const t = PANE_TOGGLE_TITLE[name];
+    if (t) btn.title = collapsed ? t.collapsed : t.open;
+  });
+}
+
+function bindPaneToggles() {
+  document.querySelectorAll("[data-pane-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => togglePane(btn.dataset.paneToggle));
+  });
+  // ⌘B / ⌘J（Windows 上为 Ctrl）：与主流编辑器一致的双栏快捷键
+  document.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "b") { e.preventDefault(); togglePane("sidebar"); }
+    else if (k === "j") { e.preventDefault(); togglePane("taskpanel"); }
+  });
+}
+
 function bindResizers() {
   document.querySelectorAll(".resizer").forEach((r) => {
-    const target = r.dataset.resize;
-    const pane = $(target === "taskpanel" ? "task-panel" : target);
+    const name = r.dataset.resize;
+    const spec = PANES[name];
+    if (!spec) return;
+    const pane = $(spec.el);
     if (!pane) return;
     let dragging = false;
     r.addEventListener("mousedown", (e) => {
+      // 收起态没有分隔条（display:none），这里只是防御
+      if (isCollapsed(name)) return;
       dragging = true;
       r.classList.add("dragging");
+      document.body.classList.add("is-resizing");
       document.body.style.cursor = "col-resize";
       e.preventDefault();
     });
     document.addEventListener("mousemove", (e) => {
       if (!dragging) return;
-      let w;
-      if (target === "sidebar") {
-        w = Math.min(400, Math.max(180, e.clientX));
-      } else {
-        // 折叠态（width:0）的任务面板拖不动；跳过让用户先点开
-        if (pane.dataset.visible === "false") return;
-        w = Math.min(560, Math.max(260, window.innerWidth - e.clientX));
-      }
+      const raw = name === "sidebar"
+        ? e.clientX
+        : window.innerWidth - e.clientX;
+      const w = Math.min(spec.max, Math.max(spec.min, raw));
       pane.style.width = w + "px";
     });
     document.addEventListener("mouseup", () => {
       if (!dragging) return;
       dragging = false;
       r.classList.remove("dragging");
+      document.body.classList.remove("is-resizing");
       document.body.style.cursor = "";
       saveLayout();
     });
@@ -313,6 +398,7 @@ async function loadInfo() {
 
 async function boot() {
   bindResizers();
+  bindPaneToggles();
   restoreLayout();
   Chat.init();
   Modals.init();

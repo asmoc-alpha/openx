@@ -33,36 +33,23 @@ const TaskPanel = {
 
   init() {
     this.bindTabs();
-    this.bindResizer();
+    this.bindHeadCollapse();
     this.render();
+  },
+
+  /** 点标题栏空白处收起右栏；右侧的按钮（设置 / 收起）各自处理，不冒泡到这里 */
+  bindHeadCollapse() {
+    const head = document.querySelector("#task-panel .tp-head");
+    if (!head) return;
+    head.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      if (typeof togglePane === "function") togglePane("taskpanel");
+    });
   },
 
   bindTabs() {
     document.querySelectorAll("#tp-tabs .tp-tab").forEach((tab) => {
       tab.onclick = () => this.showTab(tab.dataset.tab);
-    });
-  },
-
-  bindResizer() {
-    const r = document.querySelector('.resizer[data-resize="taskpanel"]');
-    if (!r) return;
-    let dragging = false;
-    r.addEventListener("mousedown", (e) => {
-      dragging = true;
-      r.classList.add("dragging");
-      document.body.style.cursor = "col-resize";
-      e.preventDefault();
-    });
-    document.addEventListener("mousemove", (e) => {
-      if (!dragging) return;
-      const w = Math.min(560, Math.max(260, window.innerWidth - e.clientX));
-      $("task-panel").style.width = w + "px";
-    });
-    document.addEventListener("mouseup", () => {
-      if (!dragging) return;
-      dragging = false;
-      r.classList.remove("dragging");
-      document.body.style.cursor = "";
     });
   },
 

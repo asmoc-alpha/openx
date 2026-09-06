@@ -23,6 +23,10 @@
 
 <!-- ── 顶栏 ──────────────────────────────────────────────── -->
 <header id="topbar" data-page-node-id="7NGJ5Eb6RVQ7L08fBdYKFi">
+  <!-- 左栏开关：侧栏收起后这是唯一的唤起入口，故常驻在最左（⌘/Ctrl+B） -->
+  <button class="icon-btn pane-toggle" data-pane-toggle="sidebar"
+    title="收起侧栏 (⌘B)" aria-label="切换侧栏" aria-expanded="true"
+    data-page-node-id="tbToggleSidebar">☰</button>
   <div class="brand" data-page-node-id="5varvCByuTtdDPaJuQeEql">
     <span class="logo" title="OpenX" data-page-node-id="RZDop9g0mQfikVEvnWMPNf">
       <!-- 实心图标 + 字标：与 favicon 同源（openx-mark.svg），一处图形处处复用 -->
@@ -42,6 +46,10 @@
   </nav>
 <div class="topbar-spacer" data-page-node-id="AlgcLT3CTsipDq8s7rZ4bh"></div>
     <div class="topbar-actions" data-page-node-id="jADkjHSPEcGS4WaHJxUusp">
+      <!-- 右栏开关：任务面板收起后的唤起入口（⌘/Ctrl+J） -->
+      <button class="icon-btn pane-toggle" data-pane-toggle="taskpanel"
+        title="收起任务面板 (⌘J)" aria-label="切换任务面板" aria-expanded="true"
+        data-page-node-id="tbToggleTaskpanel">▤</button>
       <button class="icon-btn" title="分享" data-page-node-id="4q5xnrsbWlfWubTTbqkRHt">⇪</button>
       <button class="icon-btn" title="导出" data-page-node-id="JbERPZllKdFdd9zYYkNE8z">⬇</button>
       <button class="icon-btn" title="更多" data-page-node-id="VMGuhaCH1Fmu4Atu6UpeR5">···</button>
@@ -50,7 +58,7 @@
 </header>
 
 <!-- ── 三栏布局 ──────────────────────────────────────────── -->
-<div id="layout" data-page-node-id="y9DaHxFGOxCvMuH3ul4Bnk">
+<div id="layout" data-sidebar="open" data-taskpanel="open" data-page-node-id="y9DaHxFGOxCvMuH3ul4Bnk">
 
   <!-- ① 左栏 ─────────────────────────────────────────── -->
   <aside id="sidebar" class="pane" data-page-node-id="NDGDyJDMpE1C31nXNdB0fw">
@@ -59,6 +67,10 @@
         <button id="new-session" class="btn-primary" title="新建对话" aria-label="新建对话" data-page-node-id="TBIInmmQCKoWe4VuxbUCvZ">
           + 新建对话
         </button>
+        <!-- 栏内收起：与顶栏开关同一套 data-pane-toggle 契约 -->
+        <button class="icon-btn pane-toggle" data-pane-toggle="sidebar"
+          title="收起侧栏 (⌘B)" aria-label="收起侧栏" aria-expanded="true"
+          data-page-node-id="sbCollapse">«</button>
       </div>
     </div>
 
@@ -145,6 +157,9 @@
         <span class="tp-title" data-page-node-id="wlpWZIRtDGBpi7bslZbPwW">任务面板</span>
         <div class="tp-head-actions" data-page-node-id="TuTE0F48OSaoYo09wULjXB">
           <button class="tp-icon-btn" title="设置" data-page-node-id="V1qUrO9b5BnICRcDBZK4vH">⚙</button>
+          <button class="tp-icon-btn pane-toggle" data-pane-toggle="taskpanel"
+            title="收起任务面板 (⌘J)" aria-label="收起任务面板" aria-expanded="true"
+            data-page-node-id="tpCollapse">»</button>
         </div>
       </header>
 

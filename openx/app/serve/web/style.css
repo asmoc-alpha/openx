@@ -203,6 +203,42 @@ body {
 }
 #task-panel { width: 340px; flex: none; }
 
+/* ── 左右栏收缩 ─────────────────────────────────────────────
+   收起态只由 #layout 的 data-sidebar / data-taskpanel 驱动：
+   CSS 把宽度压到 0，而 inline style.width 保留着「上次展开的宽度」，
+   展开时原样恢复，不需要 JS 记第二份宽度。
+   拖拽中关掉过渡——否则跟随鼠标会有迟滞感。 */
+#sidebar, #task-panel {
+  transition: width 0.18s ease, padding 0.18s ease, opacity 0.14s ease;
+}
+body.is-resizing #sidebar,
+body.is-resizing #task-panel { transition: none; }
+
+#layout[data-sidebar="collapsed"] #sidebar {
+  width: 0 !important;
+  padding-left: 0;
+  padding-right: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+#layout[data-taskpanel="collapsed"] #task-panel {
+  width: 0 !important;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* 栏都没了，分隔条自然也不该留一条缝 */
+#layout[data-sidebar="collapsed"] > .resizer[data-resize="sidebar"],
+#layout[data-taskpanel="collapsed"] > .resizer[data-resize="taskpanel"] { display: none; }
+
+/* 栏内收起按钮 / 顶栏开关：收起时用主题色标记「点我展开」 */
+.pane-toggle.is-collapsed {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+}
+
 /* 拖拽分隔条 */
 .resizer {
   flex: none;
@@ -247,6 +283,11 @@ body {
   flex-direction: column;
   gap: 8px;
 }
+
+/* 新建对话占满剩余宽度，收起按钮固定在右侧不被挤压 */
+.sidebar-actions { display: flex; align-items: center; gap: 8px; }
+.sidebar-actions > .btn-primary { flex: 1; min-width: 0; }
+.sidebar-actions > .pane-toggle { flex: none; }
 
 .kbd {
   font-family: var(--mono);
@@ -1701,6 +1742,8 @@ select.input { font-family: var(--sans); }
   #sidebar { display: none; }
   .resizer { display: none; }
   #chat { width: 100%; }
+  /* 窄屏侧栏已强制隐藏，开关留着只会点了没反应 */
+  [data-pane-toggle="sidebar"] { display: none; }
 }
 
 /* ═══ 侧栏工作区树（按工作区分类会话 + 切区） ═══════════════════ */
