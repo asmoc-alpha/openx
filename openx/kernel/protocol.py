@@ -112,8 +112,34 @@ def thinking_delta(text: str) -> dict[str, Any]:
     return {"type": "thinking_delta", "text": text}
 
 
-def tool_use(name: str) -> dict[str, Any]:
-    return {"type": "tool_use", "name": name}
+def tool_use(name: str, args_summary: str = "", target: str = "") -> dict[str, Any]:
+    """一次工具调用开始（可选携带**派生**的展示字段）。
+
+    - ``args_summary``：一行人类可读摘要（shell 前三词 / 路径 / 搜索模式）；
+    - ``target``：目标型工具的主要路径（读、写、glob、列目录等），供 Web
+      右栏「上下文」面板收录；非目标型工具为空串。
+
+    两字段由 serve 从工具入参**派生**后下发，**不原样回传入参**——
+    ``write_file`` 的 ``content`` 可能含整个文件，会把每条下行事件撑大；
+    产物路径另走 ``artifact`` 单发事件。可选、默认空串——既有 NDJSON
+    消费者零改动（headless stream-json 不传即不带信息）。
+    """
+    return {
+        "type": "tool_use",
+        "name": name,
+        "args_summary": args_summary,
+        "target": target,
+    }
+
+
+def artifact(path: str, tool: str) -> dict[str, Any]:
+    """serve 下行：一次写工具产出的文件（产物面板的增量源）。
+
+    OpenX 内核没有 artifact 概念，产物是**读侧派生**：serve 从写类工具的
+    入参抽 path 后单发此事件。不塞进 ``tool_use``——``write_file`` 的入参
+    可能含整个文件内容，会把每条下行事件撑大；产物面板只需要路径。
+    """
+    return {"type": "artifact", "path": path, "tool": tool}
 
 
 def tool_result(name: str, is_error: bool, output: str) -> dict[str, Any]:

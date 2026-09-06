@@ -293,6 +293,63 @@ class TestResolvers:
         assert resolve_by_id(ws, "no-such-id") is None
 
 
+# ── 7b. 跨工作区列举 / 定位 / 信任守卫（web serve 侧栏 + 切区）───────
+
+
+class TestCrossWorkspace:
+    """catalog 分组排序 / resolve_anywhere 跨区定位 + 字符集守卫 /
+    has_sessions 信任守卫。"""
+
+    def test_catalog_groups_and_orders(self, sessions_tmp):
+        h_a = SessionStore.workspace_hash("/ws/alpha")
+        h_b = SessionStore.workspace_hash("/ws/beta")
+        _write_meta_line(sessions_tmp, h_a, "a_old", "2026-07-01T00:00:00+00:00",
+                         workspace="/ws/alpha")
+        _write_meta_line(sessions_tmp, h_a, "a_new", "2026-07-03T00:00:00+00:00",
+                         workspace="/ws/alpha")
+        _write_meta_line(sessions_tmp, h_b, "b_only", "2026-07-02T00:00:00+00:00",
+                         workspace="/ws/beta")
+
+        catalog = SessionStore.catalog()
+        # 组内 updated_at 倒序；组间按最新会话倒序（alpha 07-03 > beta 07-02）
+        assert [(ws, [m.session_id for m in metas]) for ws, metas in catalog] == [
+            ("/ws/alpha", ["a_new", "a_old"]),
+            ("/ws/beta", ["b_only"]),
+        ]
+
+    def test_catalog_empty_when_no_sessions(self, sessions_tmp):
+        assert SessionStore.catalog() == []
+        # 空 hash 目录（无 jsonl）不算工作区
+        (sessions_tmp / "deadbeefdeadbeef").mkdir(parents=True, exist_ok=True)
+        assert SessionStore.catalog() == []
+
+    def test_resolve_anywhere_across_workspaces(self, sessions_tmp):
+        h_a = SessionStore.workspace_hash("/wsa")
+        h_b = SessionStore.workspace_hash("/wsb")
+        _write_meta_line(sessions_tmp, h_a, "sess-a", "2026-07-01T00:00:00+00:00",
+                         workspace="/wsa")
+        _write_meta_line(sessions_tmp, h_b, "sess-b", "2026-07-02T00:00:00+00:00",
+                         workspace="/wsb")
+
+        m = SessionStore.resolve_anywhere("sess-b")
+        assert m is not None and m.session_id == "sess-b"
+        assert m.workspace == "/wsb"          # 跨区也恢复原属工作区
+        assert SessionStore.resolve_anywhere("no-such-id") is None
+
+    def test_resolve_anywhere_rejects_traversal(self, sessions_tmp):
+        """id 字符集白名单：/ 与 .. 一律拒绝（glob/路径穿越守卫）。"""
+        for evil in ("", "..", "../x", "a/b", ".hidden", "..\\x"):
+            assert SessionStore.resolve_anywhere(evil) is None, evil
+
+    def test_has_sessions_trust_guard(self, sessions_tmp):
+        ws = "/ws/trusted"
+        assert SessionStore.has_sessions(ws) is False
+        _write_meta_line(sessions_tmp, SessionStore.workspace_hash(ws), "s1",
+                         "2026-07-01T00:00:00+00:00", workspace=ws)
+        assert SessionStore.has_sessions(ws) is True
+        assert SessionStore.has_sessions("/never/used") is False
+
+
 # ── 8. agent 集成 ───────────────────────────────────────────────
 
 

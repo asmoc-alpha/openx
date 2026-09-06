@@ -131,6 +131,16 @@ class ServeSession:
         """是否有已 attach 的客户端（权限桥据此判定 fail-closed）。"""
         return bool(self._clients)
 
+    def is_busy(self) -> bool:
+        """当前是否有未完成/待消费的回合（切工作区前必须为空）。
+
+        只查 ``_turn_task`` 不够：消息可能正等在 ``_queue`` 里（worker 挂在
+        ``await self._queue.get()``），切换后该条提示会在**新工作区**执行。
+        故「回合进行中 或 队列非空」都算忙。
+        """
+        task = self._turn_task
+        return (task is not None and not task.done()) or not self._queue.empty()
+
     # ── WS 入口 ──────────────────────────────────────────────────
 
     async def handle_ws(self, request: web.Request) -> web.WebSocketResponse:
@@ -305,6 +315,11 @@ class ServeSession:
         self.broadcast(protocol.user_message(text))
         try:
             async for ev in self.agent.stream_run(text):
+                # 产物：写类工具入参 → artifact 增量广播（右侧面板实时增长）
+                for tool, path in self._artifacts_of(ev):
+                    art = protocol.artifact(path, tool)
+                    self._live_events.append(art)
+                    self.broadcast(art)
                 projected = self._project(ev)
                 if projected is None:
                     continue
@@ -349,7 +364,12 @@ class ServeSession:
         from ...llm import StreamReasoning
 
         if isinstance(ev, ToolStartEvent):
-            return protocol.tool_use(ev.name)
+            # 展示字段（摘要 / 目标路径）由入参派生后同行下发——端不再只
+            # 看到一个光秃秃的工具名，任务流与上下文面板才有真实内容。
+            from .api import tool_display
+
+            summary, target = tool_display(ev.name, ev.arguments)
+            return protocol.tool_use(ev.name, summary, target)
         if isinstance(ev, ToolResultEvent):
             return protocol.tool_result(
                 ev.name, ev.is_error, ev.output[:_STREAM_TOOL_OUTPUT_LIMIT]
@@ -361,6 +381,22 @@ class ServeSession:
             if text:
                 return protocol.text_delta(text)
         return None
+
+    def _artifacts_of(self, ev: Any) -> list[tuple[str, str]]:
+        """写类工具事件 → ``[(tool, path), ...]``；非写工具返回 ``[]``。
+
+        产物的实时源。与复盘端点（``api.artifacts_get``）共用提取函数，
+        保证"进行中看到的"与"回头复盘看到的"是同一口径——两处都从工具
+        入参派生，内核本身没有 artifact 概念。
+        """
+        from ...agent import ToolStartEvent
+        from .api import _paths_from_tool_calls
+
+        if not isinstance(ev, ToolStartEvent):
+            return []
+        name = str(getattr(ev, "name", "") or "")
+        args = getattr(ev, "arguments", "")
+        return [(name, p) for p in _paths_from_tool_calls(name, args)]
 
     def _history_messages(self) -> list:
         """attach 快照的历史消息（agent.history.messages，可能为空）。"""

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="OpenX logo">
+  <style>
+    /* 单色：与 OpenX 字标走同一套页面文字色（深色模式近白 / 浅色模式近黑），
+       让 logo 与 "OpenX" 字样在视觉重量与颜色上保持一致，不抢眼不喧宾。 */
+    .mark { fill: #f1f5f9; }
+    /* 眼睛用「镂空」色：吃掉头部色块形成眼洞；色值取页面面板背景（深色=深，浅色=浅），
+       以至于浏览器 Tab/书签等任意背景下都能自然"穿透"形成眼睛。 */
+    .eye  { fill: #14181f; }
+    @media (prefers-color-scheme: light) {
+      .mark { fill: #0f1720; }
+      .eye  { fill: #f8fafb; }
+    }
+  </style>
+
+  <!-- 天线：圆头顶 + 短杆，从头部顶端探出，与原版形态一致 -->
+  <circle class="mark" cx="32" cy="6.8" r="3"/>
+  <rect class="mark" x="30.6" y="9" width="2.8" height="7.6" rx="1.4"/>
+
+  <!-- 头部：占据画布绝大部分，纯色填充让图标在标签页/小尺寸下也饱满 -->
+  <rect class="mark" x="5" y="15.4" width="54" height="40.6" rx="13.5"/>
+
+  <!-- 双眼：减法造型（用页面面板色挖洞），比另填色更稳重 -->
+  <circle class="eye" cx="23.4" cy="33.4" r="5.4"/>
+  <circle class="eye" cx="40.6" cy="33.4" r="5.4"/>
+</svg>

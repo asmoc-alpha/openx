@@ -7,37 +7,77 @@ TestServer 与测试同进程同事件循环（pytest-asyncio auto）。
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from openx.agent import ToolResultEvent, ToolStartEvent
+from openx.app.serve.api import WORKSPACE_KEY as API_WORKSPACE_KEY
 from openx.app.serve.bridge import ServeConsole
-from openx.app.serve.server import SESSION_KEY, create_app
+from openx.app.serve.server import SESSION_KEY, WORKSPACE_KEY, create_app
 from openx.app.serve.session import ServeSession
 from openx.kernel.protocol import Event
 from openx.orchestration.sessions import SessionStore
 
 
 class FakeHistory:
-    messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello!"},
-    ]
+    """带 clear() 的消息盒——切区后清空历史、attach 快照随之变空。"""
+
+    def __init__(self):
+        self.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello!"},
+        ]
+
+    def clear(self):
+        self.messages = []
 
 
 class FakeAgent:
-    session_id = "sess-live"
-    history = FakeHistory()
-    tools = {"read_file": 1, "write_file": 1}
-    last_tool_rounds = 1
-    total_input_tokens = 5
-    total_output_tokens = 2
+    """鸭子实现真实 OpenXAgent 在 serve 路径上被触碰的面（每实例状态）。
+
+    切区 handler 无分支地调用 ``_build_tools`` / ``_compute_tool_schemas`` /
+    ``reload_instructions`` / ``clear_history``——真实 agent 全具备，fake 只须
+    补齐最小面；每实例 ``__init__`` 避免跨测试共享类级可变状态。
+    """
 
     class _Cfg:
-        model = "fake-model"
+        def __init__(self):
+            self.model = "fake-model"
+            self.active_group = "fake-group"
+            self.workspace = ""
 
-    config = _Cfg()
+    class _Hooks:
+        def __init__(self):
+            self.session_id = "sess-live"
+
+    def __init__(self):
+        self.session_id = "sess-live"
+        self.config = self._Cfg()
+        self.hooks = self._Hooks()
+        self.history = FakeHistory()
+        self.todos = []
+        self.session_store = None
+        self.workspace = None
+        self.total_input_tokens = 5
+        self.total_output_tokens = 2
+        self.total_cached_tokens = 0
+        self.total_plugin_tokens = 0
+        self.last_tool_rounds = 1
+        self.tools = {"read_file": 1, "write_file": 1}
+
+    def clear_history(self):
+        self.history.clear()
+
+    def _build_tools(self):
+        return dict(self.tools)
+
+    def _compute_tool_schemas(self):
+        return []
+
+    def reload_instructions(self):
+        return None
 
     async def startup(self):
         pass
@@ -99,7 +139,8 @@ async def test_index_serves_frontend(server):
     resp = await server.get("/")
     assert resp.status == 200
     body = await resp.text()
-    assert "OpenX Serve" in body
+    # P4.5 重构：品牌保留 OpenX，但页面标题改为「OpenX · 智能助手工作台」
+    assert "OpenX" in body
     assert 'src="/static/app.js"' in body
 
 
@@ -292,3 +333,103 @@ async def test_ws_plan_request_reject(server):
     })
     assert await fut is False
     await ws.close()
+
+
+# ── 工作区树 / 跨区回放 / 切区（P 侧栏按工作区分类会话）──────────
+
+
+def _seed_second_workspace(
+    workspace: str, session_id: str = "sess-other", title: str = "other question"
+) -> Path:
+    """在隔离的 SESSIONS_DIR 里为另一工作区预置一条会话；返回其解析路径。"""
+    ws2 = (Path(workspace).parent / "ws2").resolve()
+    ws2.mkdir(parents=True, exist_ok=True)
+    store = SessionStore.create(str(ws2), "test-model", session_id=session_id)
+    store.append_messages([
+        {"role": "user", "content": title},
+        {"role": "assistant", "content": "other answer"},
+    ])
+    store.update_meta(first_user_message=title)
+    return ws2
+
+
+class TestWorkspaceTree:
+    async def test_workspaces_lists_groups_active_first(self, server, workspace):
+        ws2 = _seed_second_workspace(workspace)
+        resp = await server.get("/api/workspaces")
+        assert resp.status == 200
+        groups = await resp.json()
+        by_path = {g["workspace"]: g for g in groups}
+        assert len(groups) == 2
+        active_path = str(Path(workspace).resolve())
+        # 活动组置首
+        assert groups[0]["active"] is True
+        assert groups[0]["workspace"] == active_path
+        # 其它工作区组
+        other = by_path[str(ws2)]
+        assert other["active"] is False
+        item = other["sessions"][0]
+        assert item["session_id"] == "sess-other"
+        for key in ("title", "workspace", "model", "group", "created_at",
+                    "updated_at", "first_user_message", "total_input_tokens"):
+            assert key in item
+        # 活动工作区仍只见 boot 会话（列表隔离不受影响）
+        assert {s["session_id"] for s in groups[0]["sessions"]} == {"sess-old"}
+
+    async def test_replay_across_workspaces(self, server, workspace):
+        ws2 = _seed_second_workspace(workspace)
+        resp = await server.get("/api/sessions/sess-other/events")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["workspace"] == str(ws2)
+        types = [e["type"] for e in data["events"]]
+        assert types.count("message") == 2
+        # 活动工作区列表隔离：仍只有 sess-old
+        lst = await (await server.get("/api/sessions")).json()
+        assert [s["session_id"] for s in lst] == ["sess-old"]
+
+    async def test_switch_reroots_agent_and_app_keys(self, server, workspace):
+        agent = server.app[SESSION_KEY].agent
+        ws2 = _seed_second_workspace(workspace)
+        old_id = agent.session_id
+        resp = await server.post(
+            "/api/workspace/switch", json={"workspace": str(ws2)}
+        )
+        assert resp.status == 200, await resp.text()
+        body = (await resp.json())["data"]
+        assert body["workspace"] == str(ws2)
+        assert body["session_id"] and body["session_id"] != old_id
+        # agent 与新 store 重绑
+        assert agent.session_store is not None
+        assert agent.session_store.path.is_file()
+        assert agent.session_id == body["session_id"]
+        assert agent.hooks.session_id == body["session_id"]
+        assert Path(agent.workspace).resolve() == ws2
+        assert agent.todos == []
+        # 两处 app-key 同步（key 持 WorkspaceRef 盒子，改的是 .path）
+        assert server.app[WORKSPACE_KEY].path == str(ws2)
+        assert server.app[API_WORKSPACE_KEY].path == str(ws2)
+        # /api/sessions 现在落到新工作区：sess-other + 新建空会话
+        lst = await (await server.get("/api/sessions")).json()
+        ids = {s["session_id"] for s in lst}
+        assert "sess-other" in ids and body["session_id"] in ids
+        info = await (await server.get("/api/info")).json()
+        assert info["data"]["workspace"] == str(ws2)
+
+    async def test_switch_rejects_unknown_dirs(self, server, workspace):
+        active = str(Path(workspace).resolve())
+        bogus = (Path(workspace).parent / "never-existed").resolve()
+        resp = await server.post(
+            "/api/workspace/switch", json={"workspace": str(bogus)}
+        )
+        assert resp.status == 404
+        # 真实目录但无会话 → 409（信任守卫：必须曾在此跑过 openx）
+        empty_dir = (Path(workspace).parent / "empty-ws").resolve()
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        resp = await server.post(
+            "/api/workspace/switch", json={"workspace": str(empty_dir)}
+        )
+        assert resp.status == 409
+        # key 未变
+        assert server.app[WORKSPACE_KEY].path == active
+        assert server.app[API_WORKSPACE_KEY].path == active

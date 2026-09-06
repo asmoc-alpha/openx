@@ -89,6 +89,42 @@ class SessionMeta:
     path: Path | None = None  # create/load 之后回填
 
 
+# ── 会话标题（首条 user 消息）────────────────────────────────────
+
+
+def _first_user_text(raw: str, limit: int = 200) -> str:
+    """从一条 message 行取 user 消息的纯文本摘要（列表页标题用）。
+
+    会话 id（``5732de02c8e3``）对人是噪声，列表页要显示"这个会话在聊什么"
+    ——故回填首条 user 消息。写盘时 meta 行早于任何消息落盘，无法在创建时
+    得知，只能在读侧补。
+
+    ``content`` 可为 str 或 parts 列表（multimodal：图片占位等）——只取
+    text 段。超长截断（列表页只需一行）；非 user / 解析失败返回 ""（调用方
+    按"未取到"处理，前端再回退）。
+    """
+    try:
+        line = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(line, dict):
+        return ""
+    msg = line.get("message")
+    if not isinstance(msg, dict) or msg.get("role") != "user":
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        text = content.strip()
+    elif isinstance(content, list):
+        parts = [p.get("text", "") for p in content if isinstance(p, dict)]
+        text = "\n".join(t for t in parts if t).strip()
+    else:
+        return ""
+    # 单行化：标题里换行是噪声（多行粘贴的首行才是意图）
+    text = " ".join(text.split())
+    return text[:limit]
+
+
 # ── sanitize helpers ────────────────────────────────────────────
 
 
@@ -296,6 +332,10 @@ class SessionStore:
 
         先按受控序列化前缀快速跳过巨型 message 行（不 json.loads），
         其余行才解析——列表页无需为每条消息付解析代价。
+
+        **例外**：首条 user 消息要回填 ``first_user_message``（列表页标题，
+        避免暴露无语义的 session-id）。命中即止——只付一次解析代价，且
+        只在 meta 已读出后进行（meta 行在文件首，天然先到）。
         """
         path = Path(path)
         meta: SessionMeta | None = None
@@ -309,6 +349,8 @@ class SessionStore:
                     if raw.startswith('{"type": "message"') or raw.startswith(
                         '{"type":"message"'
                     ):
+                        if meta is not None and not meta.first_user_message:
+                            meta.first_user_message = _first_user_text(raw)
                         continue
                     try:
                         line = json.loads(raw)
@@ -471,6 +513,93 @@ class SessionStore:
                 metas.append(meta)
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         return metas
+
+    @classmethod
+    def has_sessions(cls, workspace: str) -> bool:
+        """该工作区的 hash 目录下是否已有会话文件（不解析 meta）。
+
+        web ``serve`` 切工作区的信任守卫用的廉价等价：会话文件只能由
+        ``SessionStore.create`` 产生，故存在文件 == 用户在此工作区运行过
+        openx（不需要信任弹窗即可切过去）。
+        """
+        directory = SESSIONS_DIR / cls.workspace_hash(workspace)
+        if not directory.is_dir():
+            return False
+        try:
+            return any(directory.glob("*.jsonl"))
+        except OSError:
+            return False
+
+    @classmethod
+    def resolve_anywhere(cls, session_id: str) -> SessionMeta | None:
+        """跨所有工作区目录按 session_id 定位会话 meta（web 回放任意工作区）。
+
+        目录名是路径指纹（不可反解），只能按文件名 `*/{id}.jsonl` 全局搜索。
+        多命中（拷贝/极小概率冲突）取 ``updated_at`` 最新者。
+
+        **入口校验**：会话 id 只作为**单个路径分量**拼进 glob，绝不放行任何
+        路径分隔符（``/``、``\\``）——挡 glob/路径穿越。允许 ``[A-Za-z0-9._-]``
+        （真实 id 是 ``uuid4().hex[:12]``，但测试/手工 id 常是 ``sess-*`` 人读
+        名，故不做十六进制收紧；``resolve_by_id`` 走 ``{hash}/{id}`` 拼接同样
+        暴露，遗留问题在此一并注释留证）。
+        """
+        if (
+            not session_id
+            or session_id in (".", "..")
+            or session_id.startswith(".")
+            or "/" in session_id
+            or "\\" in session_id
+            or "\x00" in session_id
+            or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                   "abcdefghijklmnopqrstuvwxyz0123456789._-" for c in session_id)
+        ):
+            return None
+        if not SESSIONS_DIR.is_dir():
+            return None
+        best: SessionMeta | None = None
+        try:
+            matches = SESSIONS_DIR.glob(f"*/{session_id}.jsonl")
+        except OSError:
+            return None
+        for path in matches:
+            meta = cls._load_meta_only(path)
+            if meta is None:
+                continue
+            if best is None or (meta.updated_at or "") > (best.updated_at or ""):
+                best = meta
+        return best
+
+    @classmethod
+    def catalog(cls) -> list[tuple[str, list[SessionMeta]]]:
+        """列出全部曾产生过会话的工作区及其会话（web 侧栏数据源）。
+
+        返回 ``[(workspace_abs, [SessionMeta...]), ...]``：组内按 ``updated_at``
+        倒序，组间按该组最新会话倒序。hash 目录名不可反解 → 必须读各文件
+        meta 行恢复真实 workspace 路径（``_load_meta_only`` 跳过巨型 message
+        行不解析，量级=会话数，点击式列举可接受）。逐目录吞 ``OSError``，
+        坏目录绝不拖垮整表。
+        """
+        if not SESSIONS_DIR.is_dir():
+            return []
+        groups: dict[str, list[SessionMeta]] = {}
+        for sub in sorted(SESSIONS_DIR.iterdir()):
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            try:
+                files = sorted(sub.glob("*.jsonl"))
+            except OSError:
+                continue
+            for path in files:
+                meta = cls._load_meta_only(path)
+                if meta is None or not meta.workspace:
+                    continue
+                groups.setdefault(meta.workspace, []).append(meta)
+        result: list[tuple[str, list[SessionMeta]]] = []
+        for workspace, metas in groups.items():
+            metas.sort(key=lambda m: m.updated_at or "", reverse=True)
+            result.append((workspace, metas))
+        result.sort(key=lambda g: (g[1][0].updated_at or ""), reverse=True)
+        return result
 
 
 # ── convenience resolvers ───────────────────────────────────────
