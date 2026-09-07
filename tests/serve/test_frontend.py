@@ -176,6 +176,47 @@ def test_task_panel_three_tabs():
     assert 'data-tab="artifacts"' in html
 
 
+def test_flow_tab_plan_and_agent_sections():
+    """任务流 tab 含执行计划 / 子 agent 两块清单的 DOM 骨架。"""
+    html = _read("index.html")
+    for pid in ("plan-list", "plan-meta", "plan-empty",
+                "agent-list", "agent-meta", "agent-empty"):
+        assert f'id="{pid}"' in html, f"缺失 #{pid}"
+
+
+def test_composer_decorative_icons_removed():
+    """对话框下方装饰图标（附件/代码块/图片/MCP/语音）无副作用，整体移除。
+
+    只留右侧发送钮（真实功能：发送 / 回答中变 ■ 停止）。
+    """
+    html = _read("index.html")
+    css = _read("style.css")
+    assert "tool-btn" not in html and "toolbar-left" not in html
+    assert "tool-btn" not in css and "toolbar-left" not in css
+    assert 'id="send-btn"' in html  # 发送钮仍在
+
+
+def test_appjs_dispatches_todos_and_fleet_to_taskpanel():
+    """reducer 把 todos / fleet 状态快照交给 TaskPanel，init 触发面板归位。"""
+    app = _read("app.js")
+    assert 'case "todos":' in app
+    assert "TaskPanel.onTodos(ev.todos || [])" in app
+    assert 'case "fleet":' in app
+    assert "TaskPanel.onFleet(ev.agents || [])" in app
+    assert "TaskPanel.onSessionReset()" in app
+
+
+def test_taskpanel_renders_plan_and_agents_with_textcontent():
+    """执行计划 / 子 agent 渲染走 textContent（模型文本，XSS 纪律）。"""
+    js = _read("task-panel.js")
+    assert "onSessionReset() {" in js
+    assert "onTodos(list) {" in js and "onFleet(list) {" in js
+    assert "renderPlan()" in js and "renderAgents()" in js
+    # 计划行主文案 / 子代理名都是模型产物文本
+    assert "title.textContent = t.content" in js
+    assert "name.textContent = label" in js
+
+
 def test_chat_input_and_send_present():
     """中栏输入区关键控件：textarea、send-btn、turn-bar。"""
     html = _read("index.html")

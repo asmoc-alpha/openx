@@ -444,3 +444,180 @@ async def test_panel_ticker_stops_with_last_client(monkeypatch):
     assert session._panel_task is None
     assert session._panel_sig is None
     session.stop()
+
+
+# ── 执行计划 / 子 agent 状态型广播（todos / fleet 下行）────────────
+
+
+class FakeFleet:
+    """假 FleetMonitor：register/reset/complete 的裸状态盒（鸭子最小面）。
+
+    只承载 serve 投影用到的字段（id/label/subagent_type/status/
+    tools_count/elapsed），不带行缓冲——serve 侧本来就不投影行。
+    """
+
+    def __init__(self, views=None):
+        self.views = views if views is not None else []
+
+    def snapshot(self):
+        return [dict(v) for v in self.views]
+
+    def reset(self):
+        self.views = []
+
+    def register(self, label, subagent_type="general-purpose"):
+        view = {
+            "id": len(self.views) + 1,
+            "label": label,
+            "subagent_type": subagent_type,
+            "status": "running",
+            "tools_count": 0,
+            "elapsed": 1,
+        }
+        self.views.append(view)
+        return view
+
+    def complete(self, view, is_error=False):
+        view["status"] = "error" if is_error else "done"
+
+
+_PLAN = [
+    {"content": "设计接口", "activeForm": "设计接口", "status": "in_progress"},
+    {"content": "落地实现", "activeForm": "落地实现", "status": "pending"},
+]
+
+
+async def test_attach_snapshot_includes_todos_and_fleet():
+    """attach 快照补发执行计划 / 子 agent：迟到客户端面板与实时一致。"""
+    agent = FakeAgent()
+    agent.todos = [dict(t) for t in _PLAN]
+    agent.fleet = FakeFleet([
+        {"id": 1, "label": "审阅改动", "subagent_type": "explore",
+         "status": "running", "tools_count": 3, "elapsed": 5},
+    ])
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+
+    by_type = {e["type"]: e for e in ws.sent}
+    assert by_type["todos"]["todos"] == _PLAN
+    a = by_type["fleet"]["agents"][0]
+    assert a["id"] == 1 and a["label"] == "审阅改动" and a["status"] == "running"
+    assert a["tools_count"] == 3 and a["subagent_type"] == "explore"
+    session.stop()
+
+
+async def test_empty_snapshot_omitted_on_attach():
+    """无执行计划 / 无子 agent → attach 不发空快照（端默认空态，避免噪声）。"""
+    agent = FakeAgent()   # 无 todos / fleet 面
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    assert not any(e["type"] in ("todos", "fleet") for e in ws.sent)
+    session.stop()
+
+
+class _TodoWriteAgent(FakeAgent):
+    """回合里先更新计划、再回一个 todo_write 结果的假 agent。"""
+
+    async def stream_run(self, text):
+        self.todos = [dict(t) for t in _PLAN]
+        yield ToolResultEvent(name="todo_write", output="", is_error=False)
+        yield "planned"
+
+
+async def test_todo_write_result_broadcasts_plan():
+    """todo_write 收尾 → 广播执行计划全量快照（todo_tools 侧同源）。"""
+    agent = _TodoWriteAgent()
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("写个计划")
+    await asyncio.sleep(0.05)
+    todo = [e for e in ws.sent if e["type"] == "todos"]
+    assert todo and todo[-1]["todos"] == _PLAN
+    session.stop()
+
+
+class _FleetAgent(FakeAgent):
+    """回合行为由 delegate 开关控制：开 → 委派一个子代理跑几拍后收尾。
+
+    复用于两处：委派轮验证运行中/终态广播；普通轮验证不残留、不发空帧。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.delegate = False
+
+    async def stream_run(self, text):
+        if not self.delegate:
+            yield "plain turn"
+            return
+        fleet = self.fleet
+        view = fleet.register("审阅改动", "explore")
+        yield "delegating…"
+        await asyncio.sleep(0.05)     # 给 ticker 几拍（_FLEET_TICK 已被调小）
+        yield "waiting"
+        fleet.complete(view)
+        yield "done"
+
+
+async def test_fleet_broadcasts_during_turn_and_finalizes(monkeypatch):
+    """回合中 ticker 广播运行态（父等工具不 yield 事件也可见）；收尾定格终态。"""
+    import openx.app.serve.session as session_mod
+
+    monkeypatch.setattr(session_mod, "_FLEET_TICK", 0.01)
+    agent = _FleetAgent()
+    agent.delegate = True
+    agent.fleet = FakeFleet()
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("派个子代理")
+    await asyncio.sleep(0.2)
+
+    fleet_evs = [e for e in ws.sent if e["type"] == "fleet"]
+    assert fleet_evs, "没有 fleet 广播"
+    # 回合进行中至少有一帧 running；终局定格为 done
+    assert any(a["status"] == "running" for ev in fleet_evs for a in ev["agents"])
+    assert fleet_evs[-1]["agents"][0]["status"] == "done"
+    session.stop()
+
+
+async def test_next_turn_resets_fleet_without_stale_broadcast(monkeypatch):
+    """新一轮回合 fleet 归零：上轮委派不残留；本轮无子代理则不发空帧。"""
+    import openx.app.serve.session as session_mod
+
+    monkeypatch.setattr(session_mod, "_FLEET_TICK", 0.01)
+    agent = _FleetAgent()
+    agent.fleet = FakeFleet()
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+
+    agent.delegate = True
+    session.submit("有委派的一轮")
+    await asyncio.sleep(0.15)
+    assert any(e["type"] == "fleet" for e in ws.sent)  # 委派轮确有广播
+
+    ws.sent.clear()
+    agent.delegate = False
+    session.submit("普通一轮")
+    await asyncio.sleep(0.05)
+    # 本轮无子代理 → 无任何 fleet 事件（reset 后空快照与指纹一致，不广播）
+    assert not any(e["type"] == "fleet" for e in ws.sent)
+    session.stop()

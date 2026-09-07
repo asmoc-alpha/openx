@@ -399,9 +399,9 @@ class TestWorkspaceTree:
         body = (await resp.json())["data"]
         assert body["workspace"] == str(ws2)
         assert body["session_id"] and body["session_id"] != old_id
-        # agent 与新 store 重绑
+        # agent 与新 store 重绑；新会话空白 → 惰性落盘（不发言不建文件）
         assert agent.session_store is not None
-        assert agent.session_store.path.is_file()
+        assert not agent.session_store.path.is_file()
         assert agent.session_id == body["session_id"]
         assert agent.hooks.session_id == body["session_id"]
         assert Path(agent.workspace).resolve() == ws2
@@ -409,10 +409,10 @@ class TestWorkspaceTree:
         # 两处 app-key 同步（key 持 WorkspaceRef 盒子，改的是 .path）
         assert server.app[WORKSPACE_KEY].path == str(ws2)
         assert server.app[API_WORKSPACE_KEY].path == str(ws2)
-        # /api/sessions 现在落到新工作区：sess-other + 新建空会话
+        # /api/sessions 落到新工作区：只有 sess-other——新建空会话不入列
         lst = await (await server.get("/api/sessions")).json()
         ids = {s["session_id"] for s in lst}
-        assert "sess-other" in ids and body["session_id"] in ids
+        assert "sess-other" in ids and body["session_id"] not in ids
         info = await (await server.get("/api/info")).json()
         assert info["data"]["workspace"] == str(ws2)
 
@@ -486,8 +486,13 @@ class TestWorkspaceTree:
         assert SessionStore.resolve_anywhere("sess-old") is not None
 
     def _bind_live_session(self, server, workspace):
-        """把当前 live 会话落成一条真实会话文件并绑定 agent（仿 agent 启动）。"""
+        """把当前 live 会话落成一条真实会话文件并绑定 agent（仿 agent 启动）。
+
+        补一条消息让文件真正落盘（惰性创建）——删除当前会话按文件定位，
+        空白 live 会话没有文件、也不该有。
+        """
         store = SessionStore.create(workspace, "test-model", session_id="sess-live")
+        store.append_messages([{"role": "user", "content": "live question"}])
         agent = server.app[SESSION_KEY].agent
         agent.session_store = store
         agent.session_id = store.meta.session_id
@@ -505,19 +510,19 @@ class TestWorkspaceTree:
         assert data["live"] is True
         new_id = data["session_id"]
         assert new_id and new_id != old_id
-        # agent 已整体重绑到新会话
+        # agent 已整体重绑到新会话；新会话空白 → 惰性落盘（不建文件）
         agent = server.app[SESSION_KEY].agent
         assert agent.session_id == new_id
         assert agent.hooks.session_id == new_id
         assert agent.session_store is not None
-        assert agent.session_store.path.is_file()
+        assert not agent.session_store.path.is_file()
         assert agent.session_store.meta.session_id == new_id
-        # 旧文件已删，复盘/workspaces 双双移除，新 live 会话在列
+        # 旧文件已删，复盘/workspaces 双双移除；新 live 会话空白 → 不入列
         assert SessionStore.resolve_anywhere(old_id) is None
         assert (await server.get(f"/api/sessions/{old_id}/events")).status == 404
         groups = await (await server.get("/api/workspaces")).json()
         ids = {s["session_id"] for g in groups for s in g["sessions"]}
-        assert old_id not in ids and new_id in ids
+        assert old_id not in ids and new_id not in ids
         assert "sess-old" in ids  # 无关历史会话不受影响
 
     async def test_delete_live_session_409_when_busy(self, server, workspace):
@@ -533,3 +538,24 @@ class TestWorkspaceTree:
             stall.cancel()
         # 未删成：live 会话仍在
         assert SessionStore.resolve_anywhere("sess-live") is not None
+
+    # ── 新建对话（品牌钮 / 「+新建对话」→ POST /api/session/new）────
+
+    async def test_session_new_rebinds_store_lazy(self, server, workspace):
+        """新建对话：整体重绑到新会话（store/账本/计数），空白不落盘。"""
+        agent = server.app[SESSION_KEY].agent
+        old_store = self._bind_live_session(server, workspace)
+        old_id = agent.session_id
+        resp = await server.post("/api/session/new", json={})
+        assert resp.status == 200, await resp.text()
+        data = (await resp.json())["data"]
+        assert data["session_id"] and data["session_id"] != old_id
+        # store 一并换新——否则新对话的消息会错写进旧会话文件
+        assert agent.session_store is not old_store
+        assert agent.session_store.meta.session_id == data["session_id"]
+        assert agent.session_id == data["session_id"]
+        assert agent.hooks.session_id == data["session_id"]
+        assert not agent.session_store.path.is_file()  # 空白会话不落盘
+        assert agent.history.messages == []           # 上下文清空
+        # 旧会话文件原样保留（新建 ≠ 删除）
+        assert SessionStore.resolve_anywhere(old_id) is not None

@@ -1,10 +1,10 @@
 """Phase 6 会话持久化回归测试。
 
-覆盖：create/append/load 往返 / meta_update 前向合并 / workspace_hash
-确定性 / list_for_workspace 倒序与工作区隔离 / 图片 base64 绝不落盘 /
-孤立 tool 消息与损坏行清洗 / resolve_latest 与 resolve_by_id /
-agent 集成（真实 SessionStore 落盘 + load_session 恢复）/ CLI 参数解析 /
-hooks payload tool_input 截断（ride-along）。
+覆盖：create/append/load 往返 / 惰性落盘（空白会话不保存）/ meta_update
+前向合并 / workspace_hash 确定性 / list_for_workspace 倒序与工作区隔离 /
+图片 base64 绝不落盘 / 孤立 tool 消息与损坏行清洗 / resolve_latest 与
+resolve_by_id / agent 集成（真实 SessionStore 落盘 + load_session 恢复）/
+CLI 参数解析 / hooks payload tool_input 截断（ride-along）。
 
 SESSIONS_DIR 与 hooks SETTINGS_PATH 均 monkeypatch 到 tmp_path，
 绝不触碰真实 ~/.openx。
@@ -85,7 +85,8 @@ class TestRoundtrip:
 
     def test_create_append_load_roundtrip(self, sessions_tmp):
         store = SessionStore.create("/tmp/ws-a", "gpt-4o", session_id="abc123")
-        assert store.path.is_file()
+        # 惰性落盘：空白会话不建文件（见 TestLazyCreation 的专项覆盖）
+        assert not store.path.is_file()
 
         msgs = [
             {"role": "user", "content": "hello"},
@@ -93,6 +94,7 @@ class TestRoundtrip:
             {"role": "user", "content": "bye"},
         ]
         store.append_messages(msgs)
+        assert store.path.is_file()  # 首条消息写入即建文件
         store.update_meta(
             total_input_tokens=42, total_output_tokens=7,
             total_cached_tokens=9, total_plugin_tokens=800,
@@ -111,6 +113,49 @@ class TestRoundtrip:
         assert meta.path == store.path
 
 
+# ── 1b. 惰性落盘（空白会话不保存）───────────────────────────────
+
+
+class TestLazyCreation:
+    """create 只建内存态：空白会话绝不留壳，首条消息才建文件。"""
+
+    def test_blank_create_touches_nothing(self, sessions_tmp):
+        store = SessionStore.create("/ws/lazy", "m", session_id="lazy1")
+        assert not store.path.is_file()
+        assert not store.path.parent.exists()  # 连工作区 hash 目录都不建
+        # meta 更新与账本事件只进内存/缓冲，绝不单独触发落盘
+        store.update_meta(total_input_tokens=5, first_user_message="x")
+        from openx.kernel.protocol import Event
+
+        store.append_event(Event(
+            seq=1, ts=1.0, session="lazy1", type="probe",
+            payload={"type": "probe"}, origin="kernel", digest="d1",
+        ))
+        assert not store.path.is_file()
+        assert store.meta.total_input_tokens == 5  # 内存态已更新
+
+    def test_first_message_flushes_meta_and_buffered_lines(self, sessions_tmp):
+        store = SessionStore.create("/ws/lazy", "m", session_id="lazy2")
+        from openx.kernel.protocol import Event
+
+        store.append_event(Event(
+            seq=1, ts=1.0, session="lazy2", type="probe",
+            payload={"type": "probe"}, origin="kernel", digest="d1",
+        ))
+        store.update_meta(total_input_tokens=7)
+        store.append_messages([{"role": "user", "content": "hi"}])
+
+        assert store.path.is_file()
+        lines = [json.loads(x) for x in store.path.read_text().splitlines()]
+        # 行序：meta 首行 → 缓冲刷出的账本行 / meta_update → 消息行
+        assert [x.get("type") for x in lines[:4]] == [
+            "meta", "probe", "meta_update", "message",
+        ], lines[:4]
+        meta, messages = SessionStore.load(store.path)
+        assert messages == [{"role": "user", "content": "hi"}]
+        assert meta.total_input_tokens == 7  # 缓冲的 meta_update 已合并
+
+
 # ── 2. meta_update 前向合并 ─────────────────────────────────────
 
 
@@ -119,6 +164,8 @@ class TestMetaUpdateMerge:
 
     def test_forward_merge_tokens_todos_updated_at(self, sessions_tmp):
         store = SessionStore.create("/ws", "m", session_id="s1")
+        # 惰性落盘：先有消息建文件，meta_update 才有可追加的落点
+        store.append_messages([{"role": "user", "content": "hi"}])
         store.update_meta(
             total_input_tokens=10, total_output_tokens=1,
             total_cached_tokens=4, total_plugin_tokens=400,
@@ -277,10 +324,11 @@ class TestResolvers:
     def test_hit_and_miss(self, sessions_tmp):
         ws = "/ws/resolvers"
         store1 = SessionStore.create(ws, "m", session_id="sess1")
+        store1.append_messages([{"role": "user", "content": "first session"}])
         store2 = SessionStore.create(ws, "m", session_id="sess2")
-        # 明确拔高 sess2 的 updated_at，保证排序确定性
-        store2.update_meta(first_user_message="second session")
-        del store1
+        # 后写的 sess2 updated_at 更新（首条用户消息读侧回填标题）
+        store2.append_messages([{"role": "user", "content": "second session"}])
+        del store1, store2
 
         latest = resolve_latest(ws)
         assert latest is not None and latest.session_id == "sess2"
@@ -495,6 +543,7 @@ class TestModelGroupMeta:
         store = SessionStore.create("/ws/g", "m1", group="g1")
         assert store.meta.group == "g1"
 
+        store.append_messages([{"role": "user", "content": "hi"}])
         store.update_meta(model="m2", group="g2")  # 切组留痕
 
         meta, _ = SessionStore.load(store.path)

@@ -184,6 +184,28 @@ def serve_history(messages: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "history", "messages": messages}
 
 
+def serve_todos(todos: list[dict[str, Any]]) -> dict[str, Any]:
+    """serve 下行：执行计划（todo_write 维护的任务清单）全量快照。
+
+    计划是**状态**而非增量——``todo_write`` 每次全量覆盖，故下行也发全量，
+    端收到即整体替换（与 CLI 读 ``agent.todos`` 同源）。快照随
+    ``todo_write`` 的 tool_result 触发，并在 attach 时补发（迟到客户端
+    拿到当前计划）。
+    """
+    return {"type": "todos", "todos": todos}
+
+
+def serve_fleet(agents: list[dict[str, Any]]) -> dict[str, Any]:
+    """serve 下行：子 agent（task 工具委派）运行态快照。
+
+    ``agents = [{id, label, subagent_type, status, tools_count, elapsed}]``
+    ——源自 ``FleetMonitor.snapshot()`` 的投影（不带行缓冲：展示只需
+    状态与活跃度，转录行会把事件面撑大）。回合内由 ticker 变化才广播，
+    attach 时补发当前快照。
+    """
+    return {"type": "fleet", "agents": agents}
+
+
 def serve_panels(panels: list[dict[str, Any]]) -> dict[str, Any]:
     """serve 下行：插件 UI 面板快照（ui/v1，web 常驻面板）。
 
@@ -406,5 +428,11 @@ if __name__ == "__main__":
     assert _e["subtype"] == "error" and _e["error"] == "boom"
     _pr = permission_request("r2", "shell", "run", can_remember=False)
     assert _pr["can_remember"] is False and _pr["type"] == "permission_request"
+    # 执行计划 / 子 agent 快照（serve 右栏任务面板）
+    _td = serve_todos([{"content": "x", "activeForm": "x", "status": "pending"}])
+    assert _td["type"] == "todos" and _td["todos"][0]["status"] == "pending"
+    _fl = serve_fleet([{"id": 1, "label": "find X", "subagent_type": "explore",
+                        "status": "running", "tools_count": 2, "elapsed": 3}])
+    assert _fl["type"] == "fleet" and _fl["agents"][0]["tools_count"] == 2
 
     print("openx/kernel/protocol.py OK ✓")

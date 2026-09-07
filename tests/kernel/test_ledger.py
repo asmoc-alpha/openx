@@ -163,11 +163,15 @@ class TestSessionLedger:
             store.append_event, session="sess1", start_seq=store.ledger_start_seq()
         )
         k.ensure_loaded(str(ws))
+        # 惰性落盘：装载事件只缓冲，文件尚未建；首条消息触发刷出
+        assert not store.path.is_file()
+        store.append_messages([{"role": "user", "content": "hi"}])
         n = store.ledger_start_seq()
         assert n > 0
         # 恢复语义：load() 只恢复消息，账本行不干扰会话恢复
         meta, messages = SessionStore.load(store.path)
-        assert messages == [] and meta.session_id == store.meta.session_id
+        assert messages == [{"role": "user", "content": "hi"}]
+        assert meta.session_id == store.meta.session_id
         # 续接：新内核进程从既有条目数起，seq 不重号
         k.attach_ledger(
             store.append_event, session="sess1", start_seq=store.ledger_start_seq()

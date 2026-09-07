@@ -12,7 +12,11 @@ openx serve（P4）核心：一个 ServeSession 宿主一个 agent（长存会�
 - **attach 快照**：新客户端先收 ``init`` + ``serve_history(agent.history)`` +
   （回合中）``_live_user`` + ``_live_events`` 缓冲重放——迟到客户端看到
   当前上下文，前端 reducer 对 text_delta 追加到末条 assistant 气泡，
-  实时与迟加入渲染一致。
+  实时与迟加入渲染一致。执行计划（``todos``）与子 agent（``fleet``）
+  是状态型数据，attach 时非空即补发快照。
+- **执行计划 / 子 agent**：``todo_write`` 收尾触发计划全量广播；子代理
+  运行态由回合级 ticker 轮询 ``FleetMonitor`` 快照、变化才广播（父
+  agent 等工具时不 yield 事件，事件驱动看不到回合中段的子代理活动）。
 - **interrupt**：cancel ``_turn_task``；``_run_turn`` 捕获 CancelledError 后
   广播 ``{"type":"interrupted"}`` 并**正常返回**（不毒死 worker）。回合中
   cancel 安全：``history.add`` 只在回合末尾，部分回合丢弃（同 REPL Esc 语义）。
@@ -64,6 +68,11 @@ _STREAM_TOOL_OUTPUT_LIMIT = 2000
 # 这里变化才广播（动画帧即天然变化源）。
 _PANEL_TICK = 0.25
 
+# 子 agent 广播节拍（秒）：task 工具委派的子代理在回合内持续活动，但父
+# agent 的 stream_run 在等工具期间不再 yield 事件——只能靠回合级 ticker
+# 轮询 FleetMonitor 快照，变化才广播（同面板通道的纪律）。
+_FLEET_TICK = 0.25
+
 
 @dataclass
 class Client:
@@ -109,6 +118,10 @@ class ServeSession:
         # 指纹（变化才广播，attach 快照与 ticker 共用）
         self._panel_task: Optional[asyncio.Task] = None
         self._panel_sig: Optional[tuple] = None
+        # 子 agent（fleet）回合级广播：_run_turn 起、回合收尾停；_fleet_sig
+        # 是上帧指纹（变化才广播）
+        self._fleet_task: Optional[asyncio.Task] = None
+        self._fleet_sig: Optional[tuple] = None
 
     # ── 生命周期 ─────────────────────────────────────────────────
 
@@ -126,6 +139,9 @@ class ServeSession:
         if self._panel_task is not None:
             self._panel_task.cancel()
             self._panel_task = None
+        if self._fleet_task is not None:
+            self._fleet_task.cancel()
+            self._fleet_task = None
 
     def has_clients(self) -> bool:
         """是否有已 attach 的客户端（权限桥据此判定 fail-closed）。"""
@@ -194,6 +210,14 @@ class ServeSession:
             self._enqueue(client, protocol.user_message(self._live_user))
         for ev in list(self._live_events):
             self._enqueue(client, ev)
+        # 执行计划 / 子 agent 快照：状态型数据（非增量事件），attach 即补发，
+        # 迟到客户端的任务面板与实时一致。空快照不发——端默认即空态。
+        todos = self._todos_snapshot()
+        if todos:
+            self._enqueue(client, protocol.serve_todos(todos))
+        fleet = self._fleet_snapshot()
+        if fleet:
+            self._enqueue(client, protocol.serve_fleet(fleet))
         # 面板快照（ui/v1）：宠物等常驻面板 attach 即可见（不等下一拍）。
         # 空面板不入快照——端默认无面板，多余空事件只扰动既有事件序。
         panels = self._current_panels()
@@ -263,6 +287,70 @@ class ServeSession:
             for name, lines in raw
         ]
 
+    # ── 执行计划 / 子 agent 广播（右栏任务面板数据源）──────────────
+
+    def _todos_snapshot(self) -> list[dict]:
+        """agent.todos → 下行快照（字段清洗；无 todos 面 → 空表）。
+
+        与 CLI 同源：直接读 agent 持有的共享列表（todo_write 原地替换它）。
+        快照是状态而非事件——attach 补发与 todo_write 结果触发共用本函数。
+        """
+        todos = getattr(self.agent, "todos", None)
+        if not isinstance(todos, list):
+            return []
+        return [
+            {
+                "content": str(t.get("content", "")),
+                "activeForm": str(t.get("activeForm", t.get("content", ""))),
+                "status": str(t.get("status", "pending")),
+            }
+            for t in todos
+            if isinstance(t, dict)
+        ]
+
+    def _broadcast_todos(self) -> None:
+        """todo_write 收尾后广播当前执行计划（全量替换语义）。"""
+        self.broadcast(protocol.serve_todos(self._todos_snapshot()))
+
+    def _fleet_snapshot(self) -> list[dict]:
+        """FleetMonitor 快照 → 下行投影（只带状态与活跃度，不带行缓冲）。"""
+        fleet = getattr(self.agent, "fleet", None)
+        if fleet is None:
+            return []
+        try:
+            views = fleet.snapshot()
+        except Exception:
+            _log.exception("fleet snapshot failed; broadcasting none")
+            return []
+        return [
+            {
+                "id": v.get("id"),
+                "label": str(v.get("label") or ""),
+                "subagent_type": str(v.get("subagent_type") or ""),
+                "status": str(v.get("status") or "running"),
+                "tools_count": int(v.get("tools_count") or 0),
+                "elapsed": int(v.get("elapsed") or 0),
+            }
+            for v in views
+        ]
+
+    def _broadcast_fleet(self, force: bool = False) -> None:
+        """fleet 快照变化才广播（指纹比对）；force 用于回合收尾定格终态。"""
+        snap = self._fleet_snapshot()
+        sig = tuple(
+            (a["id"], a["status"], a["tools_count"], a["elapsed"]) for a in snap
+        )
+        if not force and sig == self._fleet_sig:
+            return
+        self._fleet_sig = sig
+        self.broadcast(protocol.serve_fleet(snap))
+
+    async def _fleet_ticker(self) -> None:
+        """回合内轮询 fleet 快照（父 agent 等工具时不 yield 事件，只能靠拍）。"""
+        while True:
+            await asyncio.sleep(_FLEET_TICK)
+            self._broadcast_fleet()
+
     # ── 广播 / 入队 ──────────────────────────────────────────────
 
     def broadcast(self, obj: dict) -> None:
@@ -309,10 +397,23 @@ class ServeSession:
 
     async def _run_turn(self, text: str) -> None:
         """跑一轮：stream_run 事件投影广播 + 终局 result / interrupted。"""
+        from ...agent import ToolResultEvent
+
         started = time.monotonic()
         self._live_user = text
         self._live_events = []
         self.broadcast(protocol.user_message(text))
+        # 子 agent 视图按回合隔离（镜像 CLI StreamingService.start 的
+        # fleet.reset()）：上轮委派的子代理不该挂在本轮任务流里
+        fleet = getattr(self.agent, "fleet", None)
+        if fleet is not None:
+            try:
+                fleet.reset()
+            except Exception:
+                pass  # 视图重置失败不阻断回合
+        # 指纹初始化为「空快照」：本轮无子代理时 ticker 一条都不发
+        self._fleet_sig = ()
+        self._fleet_task = asyncio.ensure_future(self._fleet_ticker())
         try:
             async for ev in self.agent.stream_run(text):
                 # 产物：写类工具入参 → artifact 增量广播（右侧面板实时增长）
@@ -320,6 +421,9 @@ class ServeSession:
                     art = protocol.artifact(path, tool)
                     self._live_events.append(art)
                     self.broadcast(art)
+                # 执行计划：todo_write 收尾即广播全量快照（任务是状态不是增量）
+                if isinstance(ev, ToolResultEvent) and ev.name == "todo_write":
+                    self._broadcast_todos()
                 projected = self._project(ev)
                 if projected is None:
                     continue
@@ -334,6 +438,13 @@ class ServeSession:
             _log.exception("turn failed")
             self.broadcast(self._result_event(started, error=f"{type(e).__name__}: {e}"))
         finally:
+            if self._fleet_task is not None:
+                self._fleet_task.cancel()
+                self._fleet_task = None
+            # 定格子 agent 终态（最后一拍可能错过 done/error 翻转）；
+            # 本轮从未出现过子代理则不发（空事件只是噪声）
+            if fleet is not None and (self._fleet_sig or self._fleet_snapshot()):
+                self._broadcast_fleet(force=True)
             self._live_user = None
             self._live_events = []
 

@@ -1043,22 +1043,10 @@ body.is-resizing #task-panel { transition: none; }
 .composer-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;   /* 工具栏只剩右侧发送钮，恒靠右 */
   margin-top: 6px;
 }
-.toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 4px; }
-.tool-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-faint);
-  width: 30px; height: 30px;
-  border-radius: 9px;
-  cursor: pointer;
-  font-size: 13px;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: all 0.12s;
-}
-.tool-btn:hover { background: var(--bg-hover); color: var(--text); }
+.toolbar-right { display: flex; align-items: center; gap: 4px; }
 
 /* 发送：DeepSeek 蓝小圆钮 */
 .send-btn {
@@ -1287,6 +1275,38 @@ body.is-resizing #task-panel { transition: none; }
   font-size: 10.5px;
   font-family: var(--mono);
   color: var(--text-faint);
+}
+
+/* 执行计划（todo 清单）/ 子 agent 行（任务流 tab 快照）
+   status-dot 复用上方状态点配色：pending/done 灰绿、running 主色脉冲 */
+.plan-list, .agent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.plan-item, .agent-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-soft);
+}
+.plan-item .status-dot, .agent-item .status-dot { margin-top: 5px; }
+.plan-item.active, .agent-item.running {
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+}
+.agent-item.error { border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+.plan-item.done, .agent-item.done { opacity: 0.85; }
+.plan-body, .agent-body { flex: 1; min-width: 0; }
+.plan-title, .agent-name {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.plan-sub, .agent-sub {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  margin-top: 1px;
+  overflow-wrap: anywhere;
 }
 
 /* 空状态 */
@@ -1809,8 +1829,7 @@ select.input { font-family: var(--sans); }
   min-height: 32px;
 }
 .welcome-hero #composer .composer-hint { display: none; }
-/* 空态输入框保持干净：只留右侧发送钮，装饰工具按钮收起 */
-.welcome-hero #composer .composer-toolbar .tool-btn { display: none; }
+/* 空态输入框保持干净：装饰按钮已整体移除，只剩右侧发送钮 */
 
 /* 会话设置行：默认隐藏（贴底会话态），仅空态问候区内显示 */
 .composer-meta {

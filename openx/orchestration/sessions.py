@@ -11,6 +11,10 @@
 
 设计要点
 ========
+- **惰性落盘**：``create()`` 只建内存态，首条消息写入时才真正建文件
+  （meta 行 + 先期缓冲的账本/meta_update 行）。空白会话绝不留壳——
+  serve 启动 / 切工作区 / 新建对话都会先开一个"新会话"，用户不发言
+  就不该在盘上多一个空文件。
 - **append-only**：token 用量 / todos / updated_at 等易变字段以
   ``meta_update`` 行前向合并（load 时顺序回放），避免重写整文件。
 - **隐私与安全**：多模态消息里的 ``image_url`` part（base64 data URL）
@@ -214,12 +218,21 @@ class SessionStore:
 
     写入一律追加（append-only）：消息经 ``append_messages``，易变元数据
     经 ``update_meta`` 以 meta_update 行前向合并——永不重写旧行。
+
+    **惰性落盘**：``create()`` 只建内存态，首条消息写入（``_ensure_on_disk``
+    ）时才真正建文件。文件建成前到达的账本行 / meta_update 行先缓冲，
+    建文件时随 meta 首行一并落盘——早期事件（provider_selected 等）不丢。
     """
 
     def __init__(self, meta: SessionMeta, path: Path) -> None:
         self.meta = meta
         self.path = Path(path)
         self.meta.path = self.path
+        # 惰性落盘标记：open()（续写既有文件）恒已在盘；create() 的新
+        # 文件在首条 append_messages 之前只存在于内存。
+        self._on_disk = self.path.exists()
+        # 文件建成前缓冲的下行（账本信封 / meta_update），建文件时统一刷出
+        self._pending: list[str] = []
 
     # ── factories ───────────────────────────────────────────
 
@@ -238,14 +251,12 @@ class SessionStore:
         group: str = "",
         session_id: str | None = None,
     ) -> "SessionStore":
-        """新建会话：mkdir -p 工作区目录并写入 meta 首行。
+        """新建会话（惰性：只建内存态，首条消息写入时才落盘建文件）。
 
         ``first_user_message`` 留空，待首条用户消息到达后经
         ``update_meta`` 回填。``group`` 记录建会话时的模型组（展示/归因）。
         """
         session_id = session_id or uuid.uuid4().hex[:12]
-        directory = SESSIONS_DIR / cls.workspace_hash(workspace)
-        directory.mkdir(parents=True, exist_ok=True)
         now = _now_iso()
         meta = SessionMeta(
             session_id=session_id,
@@ -255,19 +266,7 @@ class SessionStore:
             created_at=now,
             updated_at=now,
         )
-        path = directory / f"{session_id}.jsonl"
-        line = {
-            "type": "meta",
-            "version": 1,
-            "session_id": meta.session_id,
-            "workspace": meta.workspace,
-            "model": meta.model,
-            "group": meta.group,
-            "created_at": meta.created_at,
-            "updated_at": meta.updated_at,
-        }
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        path = SESSIONS_DIR / cls.workspace_hash(workspace) / f"{session_id}.jsonl"
         return cls(meta, path)
 
     @classmethod
@@ -441,8 +440,40 @@ class SessionStore:
 
     # ── writing (append-only) ───────────────────────────────
 
+    def _ensure_on_disk(self) -> None:
+        """首条消息写入前建文件：meta 首行 + 先期缓冲行一并落盘。
+
+        惰性落盘的落点：``create()`` 不碰盘，真正建文件只发生在这里
+        （唯一触发方是 ``append_messages``——meta_update / 账本行只更
+        内存或缓冲，绝不单独把一个空白会话拽到盘上）。
+        """
+        if self._on_disk:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = {
+            "type": "meta",
+            "version": 1,
+            "session_id": self.meta.session_id,
+            "workspace": self.meta.workspace,
+            "model": self.meta.model,
+            "group": self.meta.group,
+            "created_at": self.meta.created_at,
+            "updated_at": self.meta.updated_at,
+        }
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+            if self._pending:
+                f.write("".join(self._pending))
+        self._pending.clear()
+        self._on_disk = True
+
     def append_messages(self, messages: list[dict[str, Any]]) -> None:
-        """追加消息行；image_url part 替换为占位文本（base64 绝不落盘）。"""
+        """追加消息行；image_url part 替换为占位文本（base64 绝不落盘）。
+
+        首次调用即建文件（见 ``_ensure_on_disk``）——空白会话从此有了
+        第一条消息，才配在盘上存在。
+        """
+        self._ensure_on_disk()
         now = _now_iso()
         chunks: list[str] = []
         for msg in messages:
@@ -459,6 +490,7 @@ class SessionStore:
         """追加 meta_update 行（append-only，不重写）并同步内存 meta。
 
         ``updated_at`` 一律取当前时间——调用方显式传入也会被覆盖。
+        文件尚未落盘（空白会话）时只更内存并缓冲该行，建文件时刷出。
         """
         payload: dict[str, Any] = {
             k: v for k, v in fields.items() if k in _META_UPDATE_FIELDS
@@ -466,18 +498,26 @@ class SessionStore:
         payload["type"] = "meta_update"
         payload["updated_at"] = _now_iso()
         self._apply_meta_update(self.meta, payload)
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+        if self._on_disk:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(line)
+        else:
+            self._pending.append(line)
 
     def append_event(self, event: Any) -> None:
         """追加内核事件信封行（会话账本，K2b）。
 
         信封行携带 seq/digest 字段，与 message/meta 行共存；load() 对
         message/meta 之外的行静默跳过--账本行不参与会话恢复，只服务
-        审计与回放。
+        审计与回放。文件尚未落盘时先缓冲（见 ``_ensure_on_disk``）。
         """
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event.to_line(), ensure_ascii=False, default=str) + "\n")
+        line = json.dumps(event.to_line(), ensure_ascii=False, default=str) + "\n"
+        if self._on_disk:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(line)
+        else:
+            self._pending.append(line)
 
     def ledger_start_seq(self) -> int:
         """既有信封条目数（恢复会话时 kernel.attach_ledger 的续接起点）。"""
@@ -656,11 +696,23 @@ if __name__ == "__main__":
             ws = str(Path(_td) / "ws")
             # create → append → update_meta → load 往返
             store = SessionStore.create(ws, "selftest-model", session_id="selftest01")
-            assert store.path.is_file()
+            assert not store.path.is_file()  # 惰性：空白会话不建文件
+            from openx.kernel.protocol import Event
+            store.append_event(Event(
+                seq=1, ts=1.0, session="selftest01", type="probe",
+                payload={"type": "probe"}, origin="kernel", digest="d0",
+            ))
+            assert not store.path.is_file()  # 账本行只缓冲，不触发落盘
             store.append_messages([
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "hi!"},
             ])
+            assert store.path.is_file()
+            # 行序：meta → 缓冲刷出的账本行 → 消息行
+            _lines = [json.loads(x) for x in store.path.read_text().splitlines()]
+            assert [x.get("type") for x in _lines[:3]] == [
+                "meta", "probe", "message",
+            ], _lines[:3]
             store.update_meta(
                 total_input_tokens=10, total_output_tokens=3,
                 total_cached_tokens=6, total_plugin_tokens=400,
@@ -686,6 +738,7 @@ if __name__ == "__main__":
             h1 = SessionStore.workspace_hash(ws)
             assert h1 == SessionStore.workspace_hash(ws) and len(h1) == 16
             other = SessionStore.create(str(Path(_td) / "other"), "m")
+            other.append_messages([{"role": "user", "content": "elsewhere"}])
             metas = SessionStore.list_for_workspace(ws)
             assert [m.session_id for m in metas] == ["selftest01"]  # 其他工作区被排除
             assert resolve_latest(ws).session_id == "selftest01"

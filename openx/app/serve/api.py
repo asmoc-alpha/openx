@@ -26,6 +26,7 @@ from aiohttp import web
 from ...config import OpenXConfig
 from ... import model_groups as _mg
 from ... import skills as _skills
+from ...orchestration.sessions import SessionStore
 
 # ── 常量 ────────────────────────────────────────────────────────
 
@@ -239,44 +240,92 @@ async def session_info(request: web.Request) -> web.Response:
     })
 
 
-async def session_new(request: web.Request) -> web.Response:
-    """POST /api/session/new → 清空上下文，开一个新会话 id。
+def _reset_live_session(session: Any, workspace: str) -> str:
+    """在当前工作区新建一个空会话并整体重绑 agent；返回新 session_id。
 
-    serve 是单 agent 长存进程，"新建会话"= 丢弃当前对话历史 + 换
-    session_id（**不重启进程**）：旧的转录仍在盘上（按旧 id 存），新消息
-    归到新 id 下。
+    与 ``_api_workspace_switch`` 的重绑段同源，**唯一差异是不重建工具**——
+    工作区没变，工具无需重根（省一次内核重载，也避免打断进行中的插件）。
+
+    重绑面：session_store / session_id / hooks.session_id / 账本挂载 /
+    历史与 todos / token 计数 / live 缓冲，最后广播 init 让已连客户端同步
+    （前端侧栏据此高亮新会话）。新会话文件惰性创建（``SessionStore
+    .create``）：不发言不落盘——空白会话不保存。
+    """
+    agent = session.agent
+    model = str(getattr(getattr(agent, "config", None), "model", "") or "")
+    group = str(getattr(getattr(agent, "config", None), "active_group", "") or "")
+    store = SessionStore.create(workspace, model, group=group)
+    had_store = getattr(agent, "session_store", None)
+
+    agent.session_store = store
+    agent.session_id = store.meta.session_id
+    hooks = getattr(agent, "hooks", None)
+    if hooks is not None:
+        hooks.session_id = agent.session_id
+
+    # 账本重挂到新会话文件（无旧 store 的嵌入式/测试场景跳过，保持 hermetic）
+    if had_store is not None:
+        try:
+            from ...kernel import get_kernel
+
+            get_kernel().attach_ledger(
+                store.append_event,
+                session=agent.session_id,
+                start_seq=store.ledger_start_seq(),  # 新建文件恒 0
+            )
+        except Exception:
+            pass  # 账本是证据系统；挂接失败不阻断切换
+
+    clear = getattr(agent, "clear_history", None)
+    if callable(clear):
+        clear()
+    todos = getattr(agent, "todos", None)
+    if isinstance(todos, list):
+        todos.clear()
+    for attr in (
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cached_tokens",
+        "total_plugin_tokens",
+    ):
+        if hasattr(agent, attr):
+            setattr(agent, attr, 0)
+
+    session._live_events = []
+    session._live_user = None
+    try:
+        from ...kernel import protocol
+
+        session.broadcast(protocol.init_event(
+            agent.session_id, model, sorted(getattr(agent, "tools", {}) or {})
+        ))
+    except Exception:
+        pass  # 广播失败不影响重绑结果
+    return str(agent.session_id)
+
+
+async def session_new(request: web.Request) -> web.Response:
+    """POST /api/session/new → 清空上下文，重开一个新会话（惰性落盘）。
+
+    serve 是单 agent 长存进程，"新建会话"= 丢弃当前对话历史 + 整体重绑
+    到新会话（**不重启进程**）：旧的转录仍在盘上（按旧 id 存），新消息
+    归到新 id 下。经 ``_reset_live_session`` 与"删除当前会话"的重绑完全
+    同源——session_store / 账本 / todos / token 计数一并换新（此前只换
+    session_id 不换 store，新对话的消息会错写进旧会话文件）；新会话文件
+    惰性创建，不发言不落盘。
 
     注意：不碰 activeGroup / MCP 连接——那属于配置，不属于会话。
     """
-    import uuid
-
+    session = request.app.get(SESSION_KEY)
     agent = _agent(request)
+    if session is None:
+        return _fail("serve session unavailable", status=500)
     try:
-        clear = getattr(agent, "clear_history", None)
-        if callable(clear):
-            clear()
-        agent.session_id = uuid.uuid4().hex[:12]
-        hooks = getattr(agent, "hooks", None)
-        if hooks is not None:
-            hooks.session_id = agent.session_id      # 钩子 payload 归属新会话
+        new_id = _reset_live_session(session, str(_workspace(request)))
     except Exception as exc:                          # 上下文重置失败不应挂页
         return _fail(f"cannot reset session: {exc}", status=500)
-
-    session = request.app.get(SESSION_KEY)
-    if session is not None:
-        session._live_events = []
-        session._live_user = None
-        try:
-            from ...kernel import protocol
-            session.broadcast(protocol.init_event(
-                agent.session_id,
-                str(getattr(getattr(agent, "config", None), "model", "") or ""),
-                sorted(getattr(agent, "tools", {}) or {}),
-            ))
-        except Exception:
-            pass
     return _ok({
-        "session_id": agent.session_id,
+        "session_id": new_id,
         "model": str(getattr(getattr(agent, "config", None), "model", "") or ""),
     })
 

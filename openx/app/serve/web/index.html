@@ -118,13 +118,6 @@
             </div>
 
             <div class="composer-toolbar">
-              <div class="toolbar-left">
-                <button class="tool-btn" title="附件" aria-label="附件">📎</button>
-                <button class="tool-btn" title="代码块" aria-label="代码块">{ }</button>
-                <button class="tool-btn" title="图片" aria-label="图片">🖼</button>
-                <button class="tool-btn" title="MCP 工具" aria-label="MCP 工具">🌐</button>
-                <button class="tool-btn" title="语音" aria-label="语音">🎤</button>
-              </div>
               <div class="toolbar-right">
                 <button id="send-btn" class="send-btn" title="发送 (Enter)" aria-label="发送">→</button>
               </div>
@@ -189,6 +182,18 @@
 
         <div class="tp-section">
           <div class="tp-section-head">
+            <span class="tp-section-title">执行计划</span>
+            <span class="tp-section-meta" id="plan-meta"></span>
+          </div>
+          <div class="tp-empty inline" id="plan-empty">
+            <div class="tp-empty-text">还没有执行计划</div>
+            <div class="tp-empty-hint">agent 生成多步任务清单后，会实时显示在这里</div>
+          </div>
+          <ul class="plan-list" id="plan-list"></ul>
+        </div>
+
+        <div class="tp-section">
+          <div class="tp-section-head">
             <span class="tp-section-title">本轮步骤</span>
             <span class="tp-section-meta" id="steps-meta">0 步</span>
           </div>
@@ -197,6 +202,18 @@
             <div class="tp-empty-text">本轮还没有工具调用</div>
             <div class="tp-empty-hint">agent 调用工具时会实时出现在这里</div>
           </div>
+        </div>
+
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">子 agent</span>
+            <span class="tp-section-meta" id="agent-meta"></span>
+          </div>
+          <div class="tp-empty inline" id="agent-empty">
+            <div class="tp-empty-text">本轮没有子 agent</div>
+            <div class="tp-empty-hint">把任务委派给子 agent 时，运行状态会实时出现在这里</div>
+          </div>
+          <ul class="agent-list" id="agent-list"></ul>
         </div>
 
         <div class="tp-section">

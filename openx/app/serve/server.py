@@ -41,7 +41,7 @@ from aiohttp import web
 
 from ...orchestration.sessions import SessionStore
 from .api import WORKSPACE_KEY as API_WORKSPACE_KEY
-from .api import WorkspaceRef, register_api
+from .api import WorkspaceRef, register_api, _reset_live_session
 from .session import ServeSession
 
 _log = logging.getLogger("openx.serve")
@@ -199,69 +199,6 @@ async def _api_session_events(request: web.Request) -> web.Response:
     })
 
 
-def _reset_live_session(session: "ServeSession", workspace: str) -> str:
-    """在当前工作区新建一个空会话并整体重绑 agent；返回新 session_id。
-
-    与 ``_api_workspace_switch`` 的重绑段同源，**唯一差异是不重建工具**——
-    工作区没变，工具无需重根（省一次内核重载，也避免打断进行中的插件）。
-
-    重绑面：session_store / session_id / hooks.session_id / 账本挂载 /
-    历史与 todos / token 计数 / live 缓冲，最后广播 init 让已连客户端同步
-    （前端侧栏据此高亮新会话）。
-    """
-    agent = session.agent
-    model = str(getattr(getattr(agent, "config", None), "model", "") or "")
-    group = str(getattr(getattr(agent, "config", None), "active_group", "") or "")
-    store = SessionStore.create(workspace, model, group=group)
-    had_store = getattr(agent, "session_store", None)
-
-    agent.session_store = store
-    agent.session_id = store.meta.session_id
-    hooks = getattr(agent, "hooks", None)
-    if hooks is not None:
-        hooks.session_id = agent.session_id
-
-    # 账本重挂到新会话文件（无旧 store 的嵌入式/测试场景跳过，保持 hermetic）
-    if had_store is not None:
-        try:
-            from ...kernel import get_kernel
-
-            get_kernel().attach_ledger(
-                store.append_event,
-                session=agent.session_id,
-                start_seq=store.ledger_start_seq(),  # 新建文件恒 0
-            )
-        except Exception:
-            pass  # 账本是证据系统；挂接失败不阻断切换
-
-    clear = getattr(agent, "clear_history", None)
-    if callable(clear):
-        clear()
-    todos = getattr(agent, "todos", None)
-    if isinstance(todos, list):
-        todos.clear()
-    for attr in (
-        "total_input_tokens",
-        "total_output_tokens",
-        "total_cached_tokens",
-        "total_plugin_tokens",
-    ):
-        if hasattr(agent, attr):
-            setattr(agent, attr, 0)
-
-    session._live_events = []
-    session._live_user = None
-    try:
-        from ...kernel import protocol
-
-        session.broadcast(protocol.init_event(
-            agent.session_id, model, sorted(getattr(agent, "tools", {}) or {})
-        ))
-    except Exception:
-        pass  # 广播失败不影响重绑结果
-    return str(agent.session_id)
-
-
 async def _api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{sid} → 删除一条会话（侧栏会话项的删除按钮）。
 
@@ -338,8 +275,9 @@ async def _api_workspace_switch(request: web.Request) -> web.Response:
             {"ok": False, "reason": f"directory not found: {candidate}"}, status=404
         )
     # 目录选择是 Web 端用户的显式动作（等同在此跑过 openx）：允许切到**尚无
-    # 会话**的目录——SessionStore.create 会就地新建首条会话。不再要求
-    # has_sessions，以支持“新对话输入框选任意新目录”的体验。
+    # 会话**的目录——SessionStore.create 会重开首条会话（惰性：首条消息
+    # 才落盘）。不再要求 has_sessions，以支持“新对话输入框选任意新目录”的
+    # 体验。
     session = request.app[SESSION_KEY]
     if session.is_busy():
         return web.json_response(

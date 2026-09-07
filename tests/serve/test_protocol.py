@@ -2,7 +2,8 @@
 
 覆盖：上行 message/interrupt/permission_response(remember) 解析、畸形行
 容错、未知类型容忍；下行 user_message/history/result/permission_request
-(can_remember) 形状；存量 permission_response 行为不变（向后兼容）。
+(can_remember) 与执行计划/子 agent 快照（todos/fleet）形状；存量
+permission_response 行为不变（向后兼容）。
 """
 
 from __future__ import annotations
@@ -115,6 +116,28 @@ def test_serve_history_shape():
     ev = protocol.serve_history([{"role": "user", "content": "hi"}])
     assert ev["type"] == "history"
     assert ev["messages"][0]["content"] == "hi"
+
+
+def test_serve_todos_shape():
+    """执行计划快照事件：{type, todos:[{content, activeForm, status}]}。"""
+    ev = protocol.serve_todos([
+        {"content": "写测试", "activeForm": "写测试", "status": "in_progress"},
+        {"content": "跑通", "activeForm": "跑通", "status": "pending"},
+    ])
+    assert ev["type"] == "todos"
+    assert ev["todos"][0]["status"] == "in_progress"
+    assert protocol.serve_todos([]) == {"type": "todos", "todos": []}
+
+
+def test_serve_fleet_shape():
+    """子 agent 快照事件：{type, agents:[{id,label,subagent_type,status,...}]}。"""
+    ev = protocol.serve_fleet([{
+        "id": 1, "label": "审阅", "subagent_type": "explore",
+        "status": "running", "tools_count": 2, "elapsed": 3,
+    }])
+    assert ev["type"] == "fleet"
+    assert ev["agents"][0]["tools_count"] == 2
+    assert protocol.serve_fleet([]) == {"type": "fleet", "agents": []}
 
 
 def test_serve_panels_shape():

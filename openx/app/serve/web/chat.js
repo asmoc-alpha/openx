@@ -9,8 +9,10 @@ const Chat = {
   streamBuf: "",
   lastAssistant: null,
   lastTool: null,
+  // 本回合 thinking 折叠块（wrap 供收尾折叠/改标签；start 计耗时）
+  thinkingWrap: null,
   thinkingBody: null,
-  thinkingOpen: false,
+  thinkingStart: 0,
 
   init() {
     this.bindInput();
@@ -417,6 +419,21 @@ const Chat = {
   },
 
   // ── 渲染：单条消息 ────────────────────────────────
+  /**
+   * 新回合开始：清渲染缓冲。正文 / 思考块 / 工具配对都按回合隔离——
+   * 尤其 thinkingBody 不清的话，本回合思考会追加进上一回合的折叠块
+   * （在滚动历史很上方，看起来就是"这次回答没有思考"）。
+   * 由 app.js 的 user_message 分支调用。
+   */
+  startTurn() {
+    this.streamBuf = "";
+    this.lastAssistant = null;
+    this.lastTool = null;
+    this.thinkingWrap = null;
+    this.thinkingBody = null;
+    this.thinkingStart = 0;
+  },
+
   clearAll() {
     const host = $("messages");
     // 只移除消息 / 元 / 思考节点；#day-divider 与 #welcome-hero 常驻，
@@ -426,10 +443,7 @@ const Chat = {
       c.remove();
     }
     host.classList.remove("streaming");
-    this.streamBuf = "";
-    this.lastAssistant = null;
-    this.lastTool = null;
-    this.thinkingBody = null;
+    this.startTurn();
     // 清屏 = 进入「无消息」空态：输入框回居中、问候可见。
     this.enterEmpty();
   },
@@ -450,25 +464,34 @@ const Chat = {
     this.autoscroll();
   },
 
+  /**
+   * 追加一段思考增量。回合进行中默认展开（流式可见，对标 DeepSeek/
+   * Claude 的 reasoning 区）；用户手动折叠后不强迫展开。收尾由
+   * finalizeTurn 折叠并标注耗时。
+   */
   appendThinking(text) {
     this.hideWelcome();
     if (!this.thinkingBody) {
       const wrap = el("div", "thinking");
+      wrap.classList.add("open");
+      this.thinkingStart = performance.now();
       const toggle = el("button", "thinking-toggle");
       toggle.type = "button";
       const caret = el("span", "caret");
       caret.textContent = "▸";
       const dot = el("span", "t-dot");
       const label = el("span", "t-label");
-      label.textContent = "思考";
+      label.textContent = "思考中";
       toggle.append(caret, dot, label);
       toggle.onclick = () => wrap.classList.toggle("open");
       const body = el("div", "thinking-body");
       wrap.append(toggle, body);
+      this.thinkingWrap = wrap;
       this.thinkingBody = body;
       $("messages").appendChild(wrap);
     }
     this.thinkingBody.textContent += text;
+    this.autoscroll();
   },
 
   /**
@@ -605,10 +628,17 @@ const Chat = {
   },
 
   /**
-   * 回合收尾：把工具折叠区收成「N 次工具调用」汇总行（点击可再展开）。
+   * 回合收尾：思考块折叠并标注耗时（对标 CLI 的 "Thought for Ns"），
+   * 工具折叠区收成「N 次工具调用」汇总行（点击可再展开）。
    * 由 app.js 在 result / interrupted 后调用；不清内容。
    */
   finalizeTurn() {
+    if (this.thinkingWrap && this.thinkingBody && this.thinkingBody.textContent.trim()) {
+      const secs = ((performance.now() - this.thinkingStart) / 1000).toFixed(1);
+      const label = this.thinkingWrap.querySelector(".t-label");
+      if (label) label.textContent = `思考了 ${secs}s`;
+      this.thinkingWrap.classList.remove("open");
+    }
     const a = this.lastAssistant;
     if (!a || !a.fold) return;
     const n = a.tools ? a.tools.children.length : 0;

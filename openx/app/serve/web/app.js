@@ -216,6 +216,9 @@ function applyEvent(ev) {
         updateBreadcrumb();
         Sidebar.activeSession = AppState.sessionId;
         Sidebar.renderAll();
+        // 新会话/切区/删除当前会话都经 init 广播——任务面板状态是
+        // 会话级的（执行计划/上下文引用/统计），一并归位（见 onSessionReset）
+        TaskPanel.onSessionReset();
       }
       break;
     case "history":
@@ -225,8 +228,7 @@ function applyEvent(ev) {
       Chat.appendUser(ev.text || "");
       AppState.streaming = true;
       $("messages").classList.add("streaming");
-      Chat.streamBuf = "";
-      Chat.lastAssistant = null;
+      Chat.startTurn();   // 正文/思考/工具缓冲按回合隔离（见 startTurn）
       showTurnBar(true);
       TaskPanel.onTurnStart(ev.text || "");
       updateBreadcrumb();
@@ -254,6 +256,14 @@ function applyEvent(ev) {
       break;
     case "artifact":
       if (typeof Artifacts !== "undefined") Artifacts.push(ev.path || "", ev.tool || "");
+      break;
+    case "todos":
+      // 执行计划快照（todo_write 全量；attach 补发）→ 任务流 tab
+      TaskPanel.onTodos(ev.todos || []);
+      break;
+    case "fleet":
+      // 子 agent 快照（task 委派；变化才广播）→ 任务流 tab
+      TaskPanel.onFleet(ev.agents || []);
       break;
     case "result":
       AppState.streaming = false;
