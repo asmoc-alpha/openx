@@ -22,14 +22,27 @@ function escapeHtml(s) {
 const PH_PREFIX = "@@OPENX_BLOCK_";
 const PH_RE = /@@OPENX_BLOCK_(\d+)@@/g;
 
+/** 围栏块分流：mermaid 围栏（或围栏内直接以 graph/flowchart 开头）走
+    graph.js 渲染 SVG；渲染失败 / graph.js 缺席回落原代码块路径。 */
+function _renderFence(info, code) {
+  const wantsGraph =
+    info === "mermaid" || /^(graph|flowchart)\b/i.test(code);
+  if (wantsGraph && typeof renderGraph === "function") {
+    const svg = renderGraph(code);   // 解析失败返回 ""（内部已 catch）
+    if (svg) return `<div class="graph-block">${svg}</div>`;
+  }
+  return `<pre><code>${escapeHtml(code)}</code></pre>`;
+}
+
 function renderMarkdown(text) {
   const blocks = [];
   let src = String(text || "");
 
-  // 1. 围栏代码块先抽离（内容只转义，不解析）；哨兵格式正常文本几乎
-  //    不可能出现，正则整段匹配不残留尾随字符。
-  src = src.replace(/```[^\n]*\n([\s\S]*?)```/g, (m, code) => {
-    blocks.push(`<pre><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`);
+  // 1. 围栏代码块先抽离（内容只转义，不解析，mermaid 除外）；哨兵格式
+  //    正常文本几乎不可能出现，正则整段匹配不残留尾随字符。只匹配已
+  //    闭合围栏——流式中的未闭合块按纯文本走，闭合瞬间才成块。
+  src = src.replace(/```([^\n]*)\n([\s\S]*?)```/g, (m, info, code) => {
+    blocks.push(_renderFence(String(info).trim(), code.replace(/\n$/, "")));
     return PH_PREFIX + (blocks.length - 1) + "@@";
   });
 
@@ -196,6 +209,24 @@ const OX = {
   get(path) { return OX.api("GET", path); },
   post(path, body) { return OX.api("POST", path, body); },
   del(path) { return OX.api("DELETE", path); },
+
+  /** 上传附件（multipart file）→ 描述符 {id,name,size,kind,mime,relPath}。 */
+  async upload(file) {
+    const fd = new FormData();
+    fd.append("file", file);
+    let res;
+    try {
+      res = await fetch("/api/upload", { method: "POST", body: fd });
+    } catch (_) {
+      throw new Error("网络错误：无法连接服务");
+    }
+    let payload = null;
+    try { payload = await res.json(); } catch (_) { /* 非 JSON 响应 */ }
+    if (!res.ok || (payload && payload.ok === false)) {
+      throw new Error((payload && payload.reason) || `HTTP ${res.status}`);
+    }
+    return payload && payload.data;
+  },
 
   _toastTimer: null,
   toast(msg, kind) {

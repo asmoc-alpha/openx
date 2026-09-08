@@ -97,8 +97,12 @@ async def _api_dirs(request: web.Request) -> web.Response:
 
 
 def create_app(session: ServeSession, workspace: str = "") -> web.Application:
-    """构建 aiohttp 应用：/ws + REST 端点 + 静态前端。"""
-    app = web.Application()
+    """构建 aiohttp 应用：/ws + REST 端点 + 静态前端。
+
+    ``client_max_size``：aiohttp 默认 1 MiB 会卡掉 web 图片/文件上传，提到
+    32 MiB（单文件另有 8 MiB 上限，见 api.MAX_UPLOAD_BYTES）。
+    """
+    app = web.Application(client_max_size=32 * 1024 * 1024)
     app[SESSION_KEY] = session
     app[WORKSPACE_KEY] = WorkspaceRef(workspace)
     # 精确路由先注册，静态前缀兜底在最后（避免 /api、/ws 被静态吞掉）
@@ -299,6 +303,7 @@ async def _api_workspace_switch(request: web.Request) -> web.Response:
         )
 
     # ── 重绑（以下无 await）──────────────────────────────────
+    session.discard_uploads()  # 离开旧工作区：其会话上传附件目录一并清理
     model = str(getattr(getattr(agent, "config", None), "model", "") or "")
     group = str(getattr(getattr(agent, "config", None), "active_group", "") or "")
     store = SessionStore.create(str(candidate), model, group=group)

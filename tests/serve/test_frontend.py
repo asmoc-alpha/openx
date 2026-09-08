@@ -271,3 +271,132 @@ def test_css_sessions_visible_only_when_group_open():
     css = _read("style.css")
     assert ".ws-sessions {" in css
     assert ".ws-group.open > .ws-sessions { display: flex; }" in css
+
+
+# ── 断连恢复：outbox + message_ack 客户端接线 ───────────────────
+
+
+def test_chat_submit_goes_through_send_message():
+    """发送走 AppState.sendMessage（outbox 至少一次投递），不再直发丢消息。"""
+    js = _read("chat.js")
+    assert "AppState.sendMessage(text, attIds)" in js
+    assert "AppState.send({ type: \"message\", text })" not in js
+
+
+def test_appjs_message_ack_and_outbox_wiring():
+    """reducer 有 message_ack 分支；outbox 的入箱/冲刷/出箱/看门狗齐全。"""
+    app = _read("app.js")
+    assert 'case "message_ack":' in app
+    assert 'AppState.ackOutbox(ev.msg_id || "")' in app
+    assert "outbox: []," in app
+    for fn in ("sendMessage", "flushOutbox", "ackOutbox", "_ackTimeout"):
+        assert f"AppState.{fn} =" in app, f"缺 AppState.{fn}"
+    # 重连 onopen 冲刷积压；发送帧携带 msg_id（服务端据此去重）
+    assert "AppState.flushOutbox()" in app
+    assert "msg_id: m.id" in app
+    # 半开连接探测：发出即武装看门狗
+    assert "ACK_WATCHDOG_MS" in app
+
+
+# ── 流程图渲染：graph.js + common.js + CSS 接线 ─────────────────
+
+
+def test_graph_script_loaded_after_common_before_app():
+    """graph.js 必须在 common.js 之后（escapeHtml 依赖）、app.js 之前加载。"""
+    html = _read("index.html")
+    i_common = html.index("/static/common.js")
+    i_graph = html.index("/static/graph.js")
+    i_app = html.index("/static/app.js")
+    assert i_common < i_graph < i_app
+
+
+def test_graph_js_defines_render_and_escapes():
+    """graph.js：导出 renderGraph；标签一律转义；异常回落空串（不抛不半渲染）。"""
+    js = _read("graph.js")
+    assert "function renderGraph(" in js
+    assert "escapeHtml" in js          # 节点/边标签 XSS 纪律
+    assert "renderGraph(code)" in js   # 供 common.js 围栏块分流调用
+    assert "svg = \"\"" in js          # 解析/布局异常 → 空串回落
+
+
+def test_common_render_fence_wires_mermaid_to_graph():
+    """renderMarkdown 的围栏块：mermaid → renderGraph 渲染，缺席/失败回落代码块。"""
+    common = _read("common.js")
+    assert "info === \"mermaid\"" in common
+    assert "typeof renderGraph === \"function\"" in common
+    assert '<div class="graph-block">' in common
+    assert "<pre><code>" in common       # 回落路径仍在
+    # 只抽已闭合围栏（流式中的未闭合块按纯文本走，闭合瞬间才成块）
+    assert "([^\\n]*)\\n([\\s\\S]*?)```" in common
+
+
+def test_css_has_graph_styles():
+    """样式齐全且配色走 CSS 变量（明暗主题自适应）。"""
+    css = _read("style.css")
+    for sel in (".graph-block", ".gg-node", ".gg-node-text", ".gg-edge",
+                ".gg-arrow", ".gg-edge-label"):
+        assert sel in css, f"缺 {sel}"
+    assert ".graph-block svg" in css
+
+# ── 上传图片/文件：前端接线 ───────────────────────────────────
+
+
+def test_composer_has_attach_button_and_input():
+    """composer 有 📎 钮 + 隐藏的多选文件输入。"""
+    html = _read("index.html")
+    assert 'id="attach-btn"' in html
+    assert 'id="attach-input"' in html
+    assert 'type="file"' in html
+    assert "multiple" in html
+
+
+def test_common_js_upload_helper():
+    """OX.upload：multipart POST /api/upload，返回描述符。"""
+    js = _read("common.js")
+    assert "async upload(file)" in js
+    assert 'fetch("/api/upload"' in js
+    assert 'fd.append("file", file)' in js
+
+
+def test_chat_pending_attachment_wiring():
+    """待发附件生命周期：选择→上传→chips→发送；空态/发送后清空。"""
+    js = _read("chat.js")
+    assert "pending: []" in js
+    for fn in ("handleAttachFiles", "renderPending", "removePending", "clearPending"):
+        assert fn + "(" in js, f"缺 {fn}"
+    assert "AppState.sendMessage(text, attIds)" in js
+    assert "this.clearPending();" in js          # enterEmpty 清待发
+    assert "OX.upload(file)" in js
+
+
+def test_chat_renders_user_content_parts():
+    """用户气泡渲染 parts：text / image_url / openx_file，XSS 走 textContent。"""
+    js = _read("chat.js")
+    assert "appendUser(msg)" in js
+    assert '"image_url"' in js
+    assert '"openx_file"' in js
+    assert "_renderUserParts(row, content)" in js
+    assert "Artifacts.preview" in js
+    assert "t.textContent = part.text" in js     # 文本不进 innerHTML
+
+
+def test_appjs_outbox_and_has_vision():
+    """发送帧携带附件 id（断连重发服务端去重）；has_vision 供图片提示。"""
+    app = _read("app.js")
+    assert "function (text, attachments)" in app
+    assert "frame.attachments = m.attachments" in app
+    assert "hasVision" in app
+
+
+def test_appjs_renders_user_content_all_paths():
+    """live + history + 复盘三条用户消息路径都改走 appendUser(content)。"""
+    app = _read("app.js")
+    assert "Chat.appendUser(ev);" in app          # live user_message
+    assert app.count("Chat.appendUser(m.content)") >= 2   # renderHistory + 复盘
+
+
+def test_css_has_attachment_styles():
+    css = _read("style.css")
+    for sel in (".attach-btn", ".attach-chip", ".chip-remove",
+                ".msg.user .u-img", ".msg.user .u-file", ".msg.user .u-text"):
+        assert sel in css, f"缺 {sel}"

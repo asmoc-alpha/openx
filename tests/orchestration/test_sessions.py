@@ -21,6 +21,7 @@ import pytest
 
 from openx.config import OpenXConfig
 from openx.orchestration.sessions import (
+    ATTACHMENT_PLACEHOLDER,
     IMAGE_PLACEHOLDER_TEXT,
     SessionMeta,
     SessionStore,
@@ -265,6 +266,33 @@ class TestImageElision:
         assert loaded[0]["content"][0] == {"type": "text", "text": "look at this"}
         assert loaded[0]["content"][1] == {
             "type": "text", "text": IMAGE_PLACEHOLDER_TEXT,
+        }
+
+
+class TestAttachmentElision:
+    """web 上传文件 part（openx_file）写盘前折叠成占位——relPath 不落盘。"""
+
+    def test_openx_file_parts_folded_never_hit_disk(self, sessions_tmp):
+        store = SessionStore.create("/ws", "m")
+        content = [
+            {"type": "text", "text": "用这个文件处理一下"},
+            {"type": "openx_file", "name": "data.csv", "size": 12,
+             "mime": "text/csv", "relPath": ".openx/uploads/sid/data.csv"},
+        ]
+        original = {"role": "user", "content": content}
+        store.append_messages([original])
+
+        raw = store.path.read_bytes()
+        assert b".openx/uploads/sid" not in raw
+        assert b"[attachment omitted" in raw
+        # 原消息（agent 历史里的对象）绝不被清洗改动
+        assert content[1]["type"] == "openx_file"
+
+        _, loaded = SessionStore.load(store.path)
+        assert loaded[0]["content"][0] == {"type": "text", "text": "用这个文件处理一下"}
+        assert loaded[0]["content"][1] == {
+            "type": "text",
+            "text": ATTACHMENT_PLACEHOLDER.format(name="data.csv"),
         }
 
 

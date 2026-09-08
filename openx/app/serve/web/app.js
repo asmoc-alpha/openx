@@ -21,6 +21,13 @@ const AppState = {
   streaming: false,
   streamBuf: "",
   replaying: false,
+  // 发件箱（至少一次投递）：[{id, text, timer}]。message 意图经
+  // sendMessage 入箱，收到服务端 message_ack 才出箱；断连期间留在箱里，
+  // 重连 onopen 冲刷重发（服务端按 msg_id 去重，回合不跑两遍）。
+  outbox: [],
+  // 是否有独立视觉模型（modal）承接图片回合；由 GET /api/info 填充。
+  // false 时附图片发送前给提示（仍允许发送）。
+  hasVision: true,
 };
 
 function setConn(stateName, label) {
@@ -225,12 +232,16 @@ function applyEvent(ev) {
       renderHistory(ev.messages || []);
       break;
     case "user_message":
-      Chat.appendUser(ev.text || "");
+      // 带附件/多模态时 ev.content 为 parts 列表（缩略图/文件 chip）；纯文本
+      // 事件无 content，仍走 text（与旧版一致）
+      Chat.appendUser(ev);
       AppState.streaming = true;
       $("messages").classList.add("streaming");
       Chat.startTurn();   // 正文/思考/工具缓冲按回合隔离（见 startTurn）
       showTurnBar(true);
-      TaskPanel.onTurnStart(ev.text || "");
+      TaskPanel.onTurnStart(
+        ev.text || (Array.isArray(ev.content) && ev.content.length ? "📎 附带内容" : "")
+      );
       updateBreadcrumb();
       break;
     case "text_delta":
@@ -256,6 +267,10 @@ function applyEvent(ev) {
       break;
     case "artifact":
       if (typeof Artifacts !== "undefined") Artifacts.push(ev.path || "", ev.tool || "");
+      break;
+    case "message_ack":
+      // 服务端收到即回执（不经回合队列）：从发件箱出箱 + 停看门狗
+      AppState.ackOutbox(ev.msg_id || "");
       break;
     case "todos":
       // 执行计划快照（todo_write 全量；attach 补发）→ 任务流 tab
@@ -311,7 +326,7 @@ function renderHistory(messages) {
   Chat.clearAll();
   for (const m of messages) {
     if (!m || typeof m !== "object") continue;
-    if (m.role === "user") Chat.appendUser(textOf(m.content));
+    if (m.role === "user") Chat.appendUser(m.content);
     else if (m.role === "assistant") {
       Chat.createAssistantCard({});
       Chat.setAssistantContent(textOf(m.content));
@@ -346,6 +361,7 @@ function connect() {
   AppState.ws = new WebSocket(`${proto}//${location.host}/ws`);
   AppState.ws.onopen = () => {
     if (!AppState.replaying) setConn("connected", "connected");
+    AppState.flushOutbox();   // 断连期间积压的消息：重连即补发（服务端按 msg_id 去重）
   };
   AppState.ws.onmessage = (e) => {
     let ev;
@@ -359,10 +375,82 @@ function connect() {
   };
 }
 
+// 网络恢复（如 DevTools Offline → Online）：不等 1s 重试计时，立即重连
+window.addEventListener("online", () => {
+  if (AppState.ws && AppState.ws.readyState !== WebSocket.OPEN) {
+    clearTimeout(AppState.reconnectTimer);
+    connect();
+  }
+});
+
 // ── AppState public API ────────────────────────────────────────────
 AppState.send = function (obj) {
+  // 瞬态意图（interrupt / permission_response / ...）直发，不排队：
+  // 断连后 request_id 已失效，权限桥 fail-closed 已兜底。
   if (AppState.ws && AppState.ws.readyState === WebSocket.OPEN) {
     AppState.ws.send(JSON.stringify(obj));
+  }
+};
+
+/* ── 用户消息的至少一次投递（outbox + message_ack）────────────────
+   只覆盖 message 意图：入箱 → 发送 → 收到回执出箱。断连时留在箱里
+   （WS 非 OPEN 发不出去），重连 onopen 冲刷重发；半开连接（表面 OPEN
+   实际已死）靠看门狗发现：回执是服务端收到即回、不经回合队列，迟迟
+   无回执 = 消息根本没到 → 主动断开触发重连。重复发送由服务端按
+   msg_id 去重（回合不跑两遍），所以客户端可以放心重发。 */
+function newMsgId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return "m-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+const ACK_WATCHDOG_MS = 10000;
+
+AppState.sendMessage = function (text, attachments) {
+  // attachments：随消息引用的上传 id 列表（/api/upload 预传；服务端解析成
+  // 图片 data-url / 文件 part）。断连重发时 id 不变，服务端按 msg_id 去重。
+  const entry = { id: newMsgId(), text, timer: 0, attachments: attachments || [] };
+  AppState.outbox.push(entry);
+  if (!AppState.flushOutbox()) {
+    OX.toast("连接断开，消息将在重连后自动发送", "err");
+  }
+};
+
+AppState.flushOutbox = function () {
+  const ws = AppState.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  let sent = false;
+  for (const m of AppState.outbox) {
+    try {
+      const frame = { type: "message", text: m.text, msg_id: m.id };
+      if (m.attachments && m.attachments.length) frame.attachments = m.attachments;
+      ws.send(JSON.stringify(frame));
+      sent = true;
+      // 发出即武装看门狗：ACK_WATCHDOG_MS 内无回执 → 判半开，断线重连
+      clearTimeout(m.timer);
+      m.timer = setTimeout(() => AppState._ackTimeout(m), ACK_WATCHDOG_MS);
+    } catch (_) {
+      return sent;   // 发送竞态抛错：后续条目留在箱里，等 onclose→重连→onopen
+    }
+  }
+  return sent;
+};
+
+AppState.ackOutbox = function (msgId) {
+  if (!msgId) return;
+  AppState.outbox = AppState.outbox.filter((m) => {
+    if (m.id !== msgId) return true;
+    clearTimeout(m.timer);
+    return false;
+  });
+};
+
+AppState._ackTimeout = function (entry) {
+  // 仍在箱里且未回执 = 服务端从未收到（回执不经回合队列，10s 足够宽）：
+  // 半开连接。主动断开 → onclose 走重连 → onopen 冲刷重发（服务端去重）。
+  if (AppState.outbox.indexOf(entry) === -1) return;
+  if (AppState.ws && AppState.ws.readyState === WebSocket.OPEN) {
+    OX.toast("连接无响应，正在重连…", "err");
+    AppState.ws.close();
   }
 };
 
@@ -389,7 +477,7 @@ function applyReplayEvent(ev) {
   if (!ev || typeof ev !== "object") return;
   if (ev.type === "message") {
     const m = ev.message || {};
-    if (m.role === "user") Chat.appendUser(textOf(m.content));
+    if (m.role === "user") Chat.appendUser(m.content);
     else if (m.role === "assistant") {
       Chat.createAssistantCard({});
       Chat.setAssistantContent(textOf(m.content));
@@ -416,6 +504,7 @@ async function loadInfo() {
     const info = await OX.get("/api/info");
     AppState.workspace = info.workspace || "";
     AppState.model = info.model || "";
+    AppState.hasVision = Boolean(info.has_vision);
     if (info.session_id) AppState.sessionId = info.session_id;
     Sidebar.activeSession = AppState.sessionId;
   } catch (_) { /* 服务未就绪：chip 留空 */ }

@@ -8,6 +8,8 @@ permission_response 行为不变（向后兼容）。
 
 from __future__ import annotations
 
+import json
+
 from openx.kernel import protocol
 
 
@@ -18,6 +20,41 @@ def test_uplink_user_message():
     m = protocol.parse_uplink('{"type": "message", "text": "hello"}')
     assert isinstance(m, protocol.UserMessage)
     assert m.text == "hello"
+
+
+def test_uplink_user_message_msg_id_cleaned():
+    """msg_id（至少一次投递的去重键）清洗：缺省/非串/超长一律视为未带。"""
+    m = protocol.parse_uplink('{"type": "message", "text": "hi", "msg_id": "m1"}')
+    assert isinstance(m, protocol.UserMessage) and m.msg_id == "m1"
+    assert protocol.parse_uplink('{"type": "message", "text": "hi"}').msg_id == ""
+    assert protocol.parse_uplink(
+        '{"type": "message", "text": "hi", "msg_id": 5}'
+    ).msg_id == ""
+    long_msg = json.dumps({"type": "message", "text": "hi", "msg_id": "x" * 200})
+    assert protocol.parse_uplink(long_msg).msg_id == ""
+
+
+def test_uplink_user_message_attachments_cleaned():
+    """attachments（上传 id）清洗：仅非空短 str、去重、封顶 12 个。"""
+    m = protocol.parse_uplink(
+        '{"type": "message", "text": "hi", "attachments": ["u1", "u2"]}'
+    )
+    assert m.attachments == ["u1", "u2"]
+    assert protocol.parse_uplink('{"type": "message", "text": "hi"}').attachments == []
+    dirty = protocol.parse_uplink(json.dumps({
+        "type": "message", "text": "hi",
+        "attachments": ["u1", 5, "", "x" * 90, "u1", "u2"],
+    }))
+    assert dirty.attachments == ["u1", "u2"], dirty.attachments
+    # 非列表 / 超上限
+    assert protocol.parse_uplink(
+        '{"type": "message", "text": "hi", "attachments": "u1"}'
+    ).attachments == []
+    many = json.dumps({
+        "type": "message", "text": "hi",
+        "attachments": [f"u{i}" for i in range(30)],
+    })
+    assert len(protocol.parse_uplink(many).attachments) == 12
 
 
 def test_uplink_interrupt():
@@ -110,6 +147,21 @@ def test_uplink_plan_response():
 
 def test_user_message_event():
     assert protocol.user_message("hi") == {"type": "user_message", "text": "hi"}
+
+
+def test_user_message_event_with_content():
+    """多模态（带附件）时事件带 content parts；纯文本版无该键（存量一致）。"""
+    parts = [{"type": "text", "text": "hi"},
+             {"type": "openx_file", "name": "a.py", "size": 3,
+              "mime": "text/x-python", "relPath": ".openx/uploads/s/a.py"}]
+    ev = protocol.user_message("hi", content=parts)
+    assert ev == {"type": "user_message", "text": "hi", "content": parts}
+    assert "content" not in protocol.user_message("hi")
+
+
+def test_message_ack_event():
+    """上行 message 的即时回执事件（收到即回，不经回合队列）。"""
+    assert protocol.message_ack("m1") == {"type": "message_ack", "msg_id": "m1"}
 
 
 def test_serve_history_shape():

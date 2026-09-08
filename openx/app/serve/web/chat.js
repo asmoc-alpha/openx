@@ -13,11 +13,14 @@ const Chat = {
   thinkingWrap: null,
   thinkingBody: null,
   thinkingStart: 0,
+  // 待发附件（composer）：{id,name,size,kind,mime,relPath,objUrl}，随消息发送
+  pending: [],
 
   init() {
     this.bindInput();
     this.bindSend();
     this.bindInterrupt();
+    this.bindAttach();
     this.bindWelcomeChips();
     this.bindPickers();
     this.setStreaming(false);
@@ -99,8 +102,7 @@ const Chat = {
     this._placeComposerInHero();
     const inp = $("input");
     if (inp) inp.value = "";
-    const att = $("composer-attachments");
-    if (att) { att.hidden = true; att.innerHTML = ""; }
+    this.clearPending();          // 离开会话/清屏：撤销待发附件本地预览
     const bar = $("turn-bar");
     if (bar) bar.hidden = true;
     this._dirClose();
@@ -409,13 +411,118 @@ const Chat = {
     $("interrupt-btn").onclick = () => AppState.send({ type: "interrupt" });
   },
 
+  // ── 附件：选择 / 上传 / 待发 chips / 发送 ─────────────────────
+  bindAttach() {
+    const btn = $("attach-btn");
+    const input = $("attach-input");
+    if (!btn || !input) return;
+    btn.addEventListener("click", () => {
+      if (typeof AppState !== "undefined" && (AppState.streaming || AppState.replaying)) {
+        OX.toast("当前回合仍在进行，先打断或等待完成", "err");
+        return;
+      }
+      input.click();
+    });
+    input.addEventListener("change", () => {
+      const files = Array.from(input.files || []);
+      input.value = "";                  // 同一文件可再次选择
+      this.handleAttachFiles(files);
+    });
+  },
+
+  /** 选择即上传（需在线）→ 记入待发；图片客户端上限与 api 同步 8MB。 */
+  async handleAttachFiles(files) {
+    for (const file of files) {
+      if (file.size > 8 * 1024 * 1024) {
+        OX.toast("单个文件不能超过 8MB：" + file.name, "err");
+        continue;
+      }
+      let up;
+      try {
+        up = await OX.upload(file);
+      } catch (err) {
+        OX.toast("上传失败：" + (err.message || err), "err");
+        continue;
+      }
+      if (this.pending.some((p) => p.id === up.id)) continue;
+      const entry = {
+        id: up.id, name: up.name, size: up.size,
+        kind: up.kind, mime: up.mime, relPath: up.relPath || "",
+        objUrl: up.kind === "image" ? URL.createObjectURL(file) : "",
+      };
+      this.pending.push(entry);
+    }
+    this.renderPending();
+  },
+
+  /** 待发 chip 的 × ：本地移除 + 通知服务端撤销上传（尽力而为）。 */
+  removePending(id) {
+    const entry = this.pending.find((p) => p.id === id);
+    if (!entry) return;
+    this.pending = this.pending.filter((p) => p.id !== id);
+    if (entry.objUrl) URL.revokeObjectURL(entry.objUrl);
+    if (typeof OX !== "undefined" && OX.del) {
+      OX.del("/api/upload/" + encodeURIComponent(id)).catch(() => {});
+    }
+    this.renderPending();
+  },
+
+  /** 清空待发（发送后 / 空态复位）：只撤本地预览，不撤服务端（已随消息引用）。 */
+  clearPending() {
+    for (const p of this.pending) if (p.objUrl) URL.revokeObjectURL(p.objUrl);
+    this.pending = [];
+    const att = $("composer-attachments");
+    if (att) { att.hidden = true; att.innerHTML = ""; }
+  },
+
+  renderPending() {
+    const att = $("composer-attachments");
+    if (!att) return;
+    att.innerHTML = "";
+    if (!this.pending.length) { att.hidden = true; return; }
+    for (const p of this.pending) {
+      const chip = el("span", "attach-chip");
+      if (p.kind === "image" && p.objUrl) {
+        const img = el("img", "chip-thumb");
+        img.src = p.objUrl;
+        img.alt = p.name;
+        chip.appendChild(img);
+      } else {
+        const ic = el("span", "chip-ic");
+        ic.textContent = "📄";
+        chip.appendChild(ic);
+      }
+      const label = el("span", "chip-label");
+      label.textContent = p.name + (p.kind === "image" ? "" : " · " + OX.humanSize(p.size));
+      label.title = p.name;
+      chip.appendChild(label);
+      const rm = el("button", "chip-remove");
+      rm.type = "button";
+      rm.title = "移除";
+      rm.textContent = "×";
+      rm.onclick = () => this.removePending(p.id);
+      chip.appendChild(rm);
+      att.appendChild(chip);
+    }
+    att.hidden = false;
+  },
+
   submit() {
     const inp = $("input");
     const text = inp.value.trim();
-    if (!text) return;
+    const attIds = this.pending.map((p) => p.id);
+    if (!text && !attIds.length) return;
     inp.value = "";
     inp.style.height = "auto";
-    AppState.send({ type: "message", text });
+    // 图无独立视觉模型：提示仍发送（主模型也许可看图）
+    if (attIds.length && this.pending.some((p) => p.kind === "image")
+        && typeof AppState !== "undefined" && AppState.hasVision === false) {
+      OX.toast("当前模型可能不支持看图，图片仍将作为内容发送", "err");
+    }
+    // 走 AppState.sendMessage（outbox 至少一次投递）：断连/半开时消息
+    // 不丢，重连自动补发；不再用 AppState.send 直发（非 OPEN 会静默丢）。
+    AppState.sendMessage(text, attIds);
+    this.clearPending();
   },
 
   // ── 渲染：单条消息 ────────────────────────────────
@@ -448,12 +555,67 @@ const Chat = {
     this.enterEmpty();
   },
 
-  appendUser(text) {
+  /**
+   * 追加一条用户消息。``msg`` 支持：
+   * - 字符串（纯文本快路径，与旧版一致）
+   * - 事件对象 ``{text, content?}``（live user_message：有 content 渲染 parts）
+   * - content parts 列表或含 parts 的对象（history / 复盘回放）
+   * parts 渲染：text → 段落；image_url → 内联缩略图；openx_file → 文件 chip。
+   */
+  appendUser(msg) {
     this.hideWelcome();
     const row = el("div", "msg user");
-    row.textContent = text;
+    const content = (msg && typeof msg === "object" && !Array.isArray(msg))
+      ? msg.content : msg;
+    if (Array.isArray(content)) {
+      this._renderUserParts(row, content);
+    } else {
+      const text = typeof msg === "string" ? msg
+        : (msg && typeof msg === "object") ? (msg.text || "")
+        : String(msg || "");
+      row.textContent = text;
+    }
     $("messages").appendChild(row);
     this.autoscroll();
+  },
+
+  /** 按 content parts 填充用户气泡（只 textContent / img src，XSS 安全）。 */
+  _renderUserParts(row, parts) {
+    const wrap = el("div", "user-parts");
+    for (const part of parts) {
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "text") {
+        const t = el("div", "u-text");
+        t.textContent = part.text || "";
+        wrap.appendChild(t);
+      } else if (part.type === "image_url") {
+        const url = part.image_url && part.image_url.url;
+        if (!url) continue;
+        const img = el("img", "u-img");
+        img.src = url;
+        img.alt = "图片";
+        img.loading = "lazy";
+        wrap.appendChild(img);
+      } else if (part.type === "openx_file") {
+        wrap.appendChild(this._fileChip(part));
+      }
+    }
+    row.appendChild(wrap);
+  },
+
+  /** 附件文件 chip：名称·大小，点击用既有预览抽屉看概况。 */
+  _fileChip(part) {
+    const chip = el("span", "u-file");
+    const name = part.name || "file";
+    const rel = part.relPath || "";
+    chip.textContent = "📄 " + name + (part.size ? " · " + OX.humanSize(part.size) : "");
+    chip.title = rel ? rel : name;
+    chip.onclick = () => {
+      if (rel && typeof Artifacts !== "undefined" && Artifacts.preview) {
+        Artifacts.preview(rel);
+      }
+    };
+    return chip;
   },
 
   appendMeta(text) {

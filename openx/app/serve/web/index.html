@@ -119,7 +119,11 @@
 
             <div class="composer-toolbar">
               <div class="toolbar-right">
+                <button id="attach-btn" class="attach-btn" title="附加图片或文件 (上传后随消息发送)" aria-label="附加图片或文件">📎</button>
                 <button id="send-btn" class="send-btn" title="发送 (Enter)" aria-label="发送">→</button>
+                <input id="attach-input" type="file" multiple
+                  accept="image/*,.txt,.md,.pdf,.csv,.json,.py,.js,.ts,.tsx,.jsx,.sh,.yaml,.yml,.toml,.html,.css,.sql,.go,.rs,.java,.c,.cpp,.rb,.php,.log"
+                  hidden aria-label="选择图片或文件">
               </div>
             </div>
           </div>
@@ -469,6 +473,7 @@
 
 <!-- 脚本（依赖顺序：工具 → 子模块 → 入口） -->
 <script src="/static/common.js"></script>
+<script src="/static/graph.js"></script>
 <script src="/static/mock.js"></script>
 <script src="/static/sidebar.js"></script>
 <script src="/static/chat.js"></script>

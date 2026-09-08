@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from openx.agent import ToolResultEvent, ToolStartEvent
-from openx.app.serve.session import ServeSession
+from openx.app.serve.session import ServeSession, Upload
 from openx.kernel import protocol
 
 
@@ -208,6 +208,215 @@ async def test_interrupt_broadcasts_and_worker_survives(agent):
     await asyncio.sleep(0.05)
     assert ws.sent[-1]["type"] == "result"
     session.stop()
+
+
+# ── msg_id 至少一次投递（收到即回执 + 重连重发去重）──────────────────
+
+
+async def test_submit_msg_id_acks_immediately_and_dedups(agent):
+    """带 msg_id 的消息：收到即回执（先于回合）、重发同 id 只跑一轮但
+    仍回执（客户端清 pending）。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    assert session.submit("hello", "m1") is True
+    await asyncio.sleep(0.05)  # 回合跑完，ack 与回合事件都已在 ws.sent
+
+    # 重发同 id：去重（不再次入队/跑轮）但再次回执
+    assert session.submit("hello", "m1") is False
+    await asyncio.sleep(0.02)
+
+    acks = [e for e in ws.sent if e["type"] == "message_ack" and e["msg_id"] == "m1"]
+    user = [e for e in ws.sent if e["type"] == "user_message" and e["text"] == "hello"]
+    results = [e for e in ws.sent if e["type"] == "result"]
+    assert len(acks) == 2, len(acks)      # 首回执 + 重发回执
+    assert len(user) == 1, len(user)      # 回合只跑一遍 → 单 user_message
+    assert len(results) == 1, len(results)
+    # 首回执必须先于回合广播（收到即回，不经回合队列）
+    assert ws.sent.index(acks[0]) < ws.sent.index(user[0])
+
+    session.stop()
+
+
+async def test_submit_without_msg_id_no_ack_no_dedup(agent):
+    """存量客户端不带 msg_id：零回执、零去重，行为不变。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    assert session.submit("legacy") is True
+    await asyncio.sleep(0.05)
+    assert not any(e["type"] == "message_ack" for e in ws.sent)
+    # 同样内容可再发一遍（无去重键）
+    ws.sent.clear()
+    assert session.submit("legacy") is True
+    await asyncio.sleep(0.05)
+    assert sum(1 for e in ws.sent if e["type"] == "user_message") == 1
+    session.stop()
+
+
+async def test_submit_blank_text_rejected(agent):
+    """空 / 纯空白消息不入队、不回执、不记去重键。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    assert session.submit("", "m2") is False
+    assert session.submit("   ", "m2") is False
+    await asyncio.sleep(0.01)
+    assert "m2" not in session._seen_msg_ids
+    assert not any(e["type"] == "message_ack" for e in ws.sent)
+    assert not any(e["type"] == "user_message" for e in ws.sent)
+    session.stop()
+
+
+def test_msg_id_dedup_cache_bounded_lru():
+    """去重缓存有上限：溢出按 LRU 淘汰最旧，淘汰后重发当新消息。"""
+    session = ServeSession(FakeAgent())  # 不起 worker：只入队+记缓存
+    for i in range(300):
+        session.submit(f"bulk {i}", f"b{i}")
+    assert len(session._seen_msg_ids) == 256
+    assert "b0" not in session._seen_msg_ids     # 最旧被淘汰
+    assert session.submit("dup", "b299") is False  # 最新仍在 → 去重
+    assert session.submit("dup", "b0") is True     # 淘汰过的 → 当新消息
+    assert session.submit("dup", "b0") is False    # 现已入缓存 → 去重
+
+
+# ── 上传附件：submit 合成 content parts + 会话清理 ────────────────
+
+
+def _register_image(session: ServeSession, name: str = "pic.png") -> str:
+    return session.register_upload(Upload(
+        name=name, size=4, kind="image", mime="image/png",
+        data_url="data:image/png;base64,AAAA",
+    ))
+
+
+def _register_file(session: ServeSession, name: str, rel: str) -> str:
+    return session.register_upload(Upload(
+        name=name, size=5, kind="file", mime="text/plain",
+        rel_path=rel,
+    ))
+
+
+async def test_submit_with_attachments_builds_content_parts(agent):
+    """带附件：submit 把上传 id 解析成 content parts 列表交给 stream_run，
+    广播的 user_message 事件带 text + content（前端渲染缩略图/文件 chip）。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    captured = []
+    original = agent.stream_run
+
+    async def record(content):
+        captured.append(content)
+        async for ev in original(content):
+            yield ev
+
+    agent.stream_run = record
+
+    img_id = _register_image(session)
+    file_id = _register_file(session, "note.txt", ".openx/uploads/sess1/note.txt")
+    assert session.submit("看看", "m-a", [img_id, file_id]) is True
+    await asyncio.sleep(0.05)
+
+    assert captured and isinstance(captured[0], list), captured
+    types = [p.get("type") for p in captured[0]]
+    assert types == ["text", "image_url", "openx_file"], types
+    assert captured[0][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert captured[0][2]["relPath"] == ".openx/uploads/sess1/note.txt"
+
+    um = [e for e in ws.sent if e["type"] == "user_message"]
+    assert um and um[-1]["text"] == "看看"
+    assert um[-1]["content"] == captured[0]
+    session.stop()
+
+
+async def test_submit_blank_text_with_attachment_allowed(agent):
+    """空文本 + 有效附件 → 仍入队（附件即内容）；纯文本空消息仍拒绝。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    img_id = _register_image(session)
+    assert session.submit("", "m-b", [img_id]) is True
+    await asyncio.sleep(0.02)
+    um = [e for e in ws.sent if e["type"] == "user_message"]
+    assert um and um[-1]["text"] == ""
+    assert isinstance(um[-1].get("content"), list)
+
+    # 无附件空消息：仍拒绝、不回执（扩展前语义）
+    ws.sent.clear()
+    assert session.submit("   ") is False
+    assert not any(e["type"] == "message_ack" for e in ws.sent)
+    session.stop()
+
+
+async def test_late_attach_replays_content(agent):
+    """回合进行中迟到客户端 attach：live 快照里 user_message 带 content。"""
+    session = ServeSession(agent)
+    session.start()
+    ws1 = FakeWS()
+    client1 = session.attach(ws1)
+    await _flush(client1)
+    ws1.sent.clear()
+
+    file_id = _register_file(session, "plan.md", ".openx/uploads/sess1/plan.md")
+    agent.sleep = 0.3
+    assert session.submit("看这份计划", "m-c", [file_id]) is True
+    await asyncio.sleep(0.05)   # 回合已开跑（慢 agent 挂起中）
+
+    ws2 = FakeWS()
+    client2 = session.attach(ws2)
+    await _flush(client2)
+    um2 = [e for e in ws2.sent if e["type"] == "user_message"]
+    assert um2 and um2[0]["content"]
+    assert any(p.get("type") == "openx_file" for p in um2[0]["content"])
+    await asyncio.sleep(0.4)   # 回合收尾
+    agent.sleep = 0.0
+    session.stop()
+
+
+def test_discard_and_remove_uploads(tmp_path):
+    """discard_uploads / remove_upload：删盘上文件并清注册表（幂等、safe）。"""
+    session = ServeSession(FakeAgent())
+    f1 = tmp_path / "u" / "a.txt"
+    f1.parent.mkdir(parents=True)
+    f1.write_bytes(b"x")
+    id1 = _register_file(session, "a.txt", ".openx/uploads/s/a.txt")
+    session._uploads[id1].path = str(f1)      # 模拟 api 写入
+    img_id = _register_image(session)
+    assert session.get_upload(id1) is not None
+
+    session.discard_uploads()
+    assert not f1.exists()
+    assert session._uploads == {}
+
+    f2 = tmp_path / "u2" / "b.txt"
+    f2.parent.mkdir(parents=True)
+    f2.write_bytes(b"y")
+    id2 = _register_file(session, "b.txt", ".openx/uploads/s/b.txt")
+    session._uploads[id2].path = str(f2)
+    assert session.remove_upload(id2) is True
+    assert not f2.exists()
+    assert session.remove_upload("missing") is False
 
 
 # ── 上行分发 ────────────────────────────────────────────────────

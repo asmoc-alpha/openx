@@ -10,6 +10,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from openx.agent import ToolResultEvent, ToolStartEvent
@@ -197,6 +198,43 @@ async def test_ws_attach_and_message_roundtrip(server):
     assert types[0] == "user_message"
     assert "text_delta" in types and "tool_use" in types and "tool_result" in types
     assert types[-1] == "result"
+    await ws.close()
+
+
+async def test_ws_msg_id_ack_immediate_then_duplicate_no_turn(server):
+    """带 msg_id 的消息经 WS：收到即回执（先于回合事件）；断连后客户端重发
+    同 id → 服务端只回执、不跑第二轮（至少一次投递的去重闭环）。"""
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)  # init
+    await ws.receive_json(timeout=5)  # history
+
+    await ws.send_json({"type": "message", "text": "hi", "msg_id": "abc"})
+    first = await ws.receive_json(timeout=5)
+    assert first["type"] == "message_ack" and first["msg_id"] == "abc"
+    # 后续回合照常跑完（只一轮）
+    while True:
+        ev = await ws.receive_json(timeout=5)
+        if ev["type"] == "result":
+            break
+
+    # 模拟重连重发：同一 msg_id 再发一次 → 仅回执，不产生新回合
+    await ws.send_json({"type": "message", "text": "hi", "msg_id": "abc"})
+    again = await ws.receive_json(timeout=5)
+    assert again["type"] == "message_ack" and again["msg_id"] == "abc"
+    # 之后短暂静默：不该有第二轮 user_message / result
+    with pytest.raises(asyncio.TimeoutError):
+        await ws.receive_json(timeout=0.3)
+    await ws.close()
+
+
+async def test_ws_message_without_msg_id_no_ack(server):
+    """存量客户端不带 msg_id：收不到回执，首事件即 user_message（零改动）。"""
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)  # init
+    await ws.receive_json(timeout=5)  # history
+    await ws.send_json({"type": "message", "text": "hi"})
+    first = await ws.receive_json(timeout=5)
+    assert first["type"] == "user_message"
     await ws.close()
 
 
@@ -559,3 +597,89 @@ class TestWorkspaceTree:
         assert agent.history.messages == []           # 上下文清空
         # 旧会话文件原样保留（新建 ≠ 删除）
         assert SessionStore.resolve_anywhere(old_id) is not None
+
+
+# ── 上传附件（/api/upload）与带附件消息 ───────────────────────
+
+
+async def test_upload_image_kept_in_memory(server, workspace):
+    """图片上传：只在 session 注册表（data-url），工作区不落盘。"""
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    fd = FormData()
+    fd.add_field("file", b"\x89PNG\r\n\x1a\nfake-pixels",
+                 filename="pic.png", content_type="image/png")
+    resp = await server.post("/api/upload", data=fd)
+    assert resp.status == 200, await resp.text()
+    up = (await resp.json())["data"]
+    assert up["kind"] == "image" and up["name"] == "pic.png"
+    assert up["mime"] == "image/png"
+    assert not (Path(workspace) / ".openx").exists()
+
+
+async def test_upload_file_stored_and_delete_removes(server, workspace):
+    """普通文件上传：写入工作区 .openx/uploads/<sid>/；DELETE 清盘。"""
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    fd = FormData()
+    fd.add_field("file", b"hello upload", filename="notes.txt",
+                 content_type="text/plain")
+    resp = await server.post("/api/upload", data=fd)
+    assert resp.status == 200, await resp.text()
+    up = (await resp.json())["data"]
+    assert up["kind"] == "file"
+    rel = up["relPath"]
+    assert rel.startswith(".openx/uploads/")
+    target = Path(workspace) / rel
+    assert target.read_bytes() == b"hello upload"
+
+    resp2 = await server.delete("/api/upload/" + up["id"])
+    assert resp2.status == 200
+    assert not target.exists()
+    assert (await server.delete("/api/upload/" + up["id"])).status == 404
+
+
+async def test_upload_too_large_413(server, workspace):
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    big = b"x" * (8 * 1024 * 1024 + 1)
+    fd = FormData()
+    fd.add_field("file", big, filename="big.bin", content_type="application/octet-stream")
+    resp = await server.post("/api/upload", data=fd)
+    assert resp.status == 413
+
+
+async def test_ws_message_with_attachments_builds_content(server, workspace):
+    """带附件上传 id 的 WS 消息：stream_run 收到 content parts（openx_file），
+    user_message 事件带 content（前端渲染文件 chip）。"""
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    fd = FormData()
+    fd.add_field("file", b"# plan\nstep1\nstep2", filename="plan.md",
+                 content_type="text/markdown")
+    up = (await (await server.post("/api/upload", data=fd)).json())["data"]
+
+    agent = server.app[SESSION_KEY].agent
+    captured = []
+    original = agent.stream_run
+
+    async def recv(content):
+        captured.append(content)
+        async for ev in original(content):
+            yield ev
+
+    agent.stream_run = recv
+
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)  # init
+    await ws.receive_json(timeout=5)  # history
+    await ws.send_json({
+        "type": "message", "text": "看下这个文件", "attachments": [up["id"]],
+    })
+    while True:
+        ev = await ws.receive_json(timeout=5)
+        if ev["type"] == "user_message":
+            assert isinstance(ev.get("content"), list)
+            assert any(p.get("type") == "openx_file" for p in ev["content"])
+        if ev["type"] == "result":
+            break
+    assert captured and isinstance(captured[0], list)
+    assert any(p.get("type") == "openx_file" for p in captured[0])
+    assert captured[0][0]["text"] == "看下这个文件"
+    await ws.close()

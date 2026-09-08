@@ -41,8 +41,12 @@ if __name__ == "__main__" and not __package__:
 import asyncio
 import logging
 import re
+import shutil
 import time
+import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from aiohttp import web
@@ -73,6 +77,17 @@ _PANEL_TICK = 0.25
 # 轮询 FleetMonitor 快照，变化才广播（同面板通道的纪律）。
 _FLEET_TICK = 0.25
 
+# msg_id 去重缓存上限（条）：重连重发的重复总是在原消息后数秒内到达，
+# 窗口只需覆盖活跃重连期的数量级；溢出按 LRU 淘汰最旧。服务重启清空
+# 缓存 → 重发照常入队跑一轮（至少一次语义下依然恰好一轮——原消息从未
+# 被投递过）。
+_MSG_ID_CACHE = 256
+
+# 单条消息的图片/文件附件数上限（服务端防呆；前端也限）——图与文件太多
+# 会撑爆单轮上下文（base64 图按 provider 侧分辨率计费）。
+_MAX_IMG_PER_MSG = 6
+_MAX_FILE_PER_MSG = 6
+
 
 @dataclass
 class Client:
@@ -92,6 +107,38 @@ def _panels_sig(panels: list[dict]) -> tuple:
     return tuple((p["name"], tuple(p["lines"])) for p in panels)
 
 
+@dataclass
+class Upload:
+    """一次上传的附件（/api/upload 产物；submit 按注册 id 解析）。
+
+    - ``kind == "image"``：只存 base64 data-url 于**内存**（项目策略：
+      base64 图片绝不落盘），不写文件；
+    - ``kind == "file"``：写入工作区 ``.openx/uploads/<session>/``，
+      ``path``（绝对）供 read_file，``rel_path``（workspace 相对）供
+      web 展示与预览；随会话结束整体删除。
+    """
+
+    id: str = ""
+    name: str = ""
+    size: int = 0
+    kind: str = "file"             # "image" | "file"
+    mime: str = ""
+    rel_path: str = ""             # workspace 相对（file）
+    path: Optional[str] = None     # 绝对路径（file）
+    data_url: str = ""             # base64 data URL（image）
+
+
+@dataclass
+class _Pending:
+    """回合队列项：用户消息（可能带多模态 content）。
+
+    ``content`` 为 ``str``（纯文本快路径）或 OpenAI parts 列表（带附件）。
+    """
+
+    text: str
+    content: Any
+
+
 class ServeSession:
     """长存会话宿主：agent + 客户端 + 串行回合 + 权限桥。"""
 
@@ -104,11 +151,18 @@ class ServeSession:
         self.agent = agent            # 鸭子类型：stream_run / history / config / ...
         self.console = console
         self._clients: dict[int, Client] = {}
-        self._queue: "asyncio.Queue[str]" = asyncio.Queue()
+        self._queue: "asyncio.Queue[_Pending]" = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._turn_task: Optional[asyncio.Task] = None
+        # 上行 message 的 msg_id 去重缓存（OrderedDict 当 LRU 用）：
+        # 重连重发同一 msg_id 不再入队（回合不跑两遍），但仍回执
+        # message_ack 让客户端清掉待决条目。
+        self._seen_msg_ids: "OrderedDict[str, None]" = OrderedDict()
+        # /api/upload 上传注册表：id → Upload（submit 按 id 解析成 content）。
+        # 图片只存 data-url 于内存；文件写工作区上传目录、会话结束清理。
+        self._uploads: dict[str, Upload] = {}
         # 回合中的 live 快照：attach 重放给迟到客户端（history 只在回合末更新）
-        self._live_user: Optional[str] = None
+        self._live_user: Optional[dict] = None
         self._live_events: list[dict] = []
         # 权限桥：ServeConsole.ask_permission 经 console.bridge 委托至此
         self.bridge = bridge if bridge is not None else WebPermissionBridge(self)
@@ -131,7 +185,7 @@ class ServeSession:
             self._worker_task = asyncio.ensure_future(self._worker())
 
     def stop(self) -> None:
-        """停止：先打断当前回合，再停 worker 与面板 ticker。幂等。"""
+        """停止：先打断当前回合，再停 worker 与面板 ticker；清上传区。幂等。"""
         if self._turn_task is not None:
             self._turn_task.cancel()
         if self._worker_task is not None:
@@ -142,6 +196,7 @@ class ServeSession:
         if self._fleet_task is not None:
             self._fleet_task.cancel()
             self._fleet_task = None
+        self.discard_uploads()
 
     def has_clients(self) -> bool:
         """是否有已 attach 的客户端（权限桥据此判定 fail-closed）。"""
@@ -184,7 +239,7 @@ class ServeSession:
         elif isinstance(msg, protocol.PlanResponse):
             self.bridge.on_plan_response(msg.request_id, msg.approved)
         elif isinstance(msg, protocol.UserMessage):
-            self.submit(msg.text)
+            self.submit(msg.text, msg.msg_id, msg.attachments)
         elif isinstance(msg, protocol.Interrupt):
             self.interrupt()
         elif isinstance(msg, protocol.UplinkUnknown):
@@ -207,7 +262,7 @@ class ServeSession:
         ))
         self._enqueue(client, protocol.serve_history(self._history_messages()))
         if self._live_user is not None:
-            self._enqueue(client, protocol.user_message(self._live_user))
+            self._enqueue(client, dict(self._live_user))
         for ev in list(self._live_events):
             self._enqueue(client, ev)
         # 执行计划 / 子 agent 快照：状态型数据（非增量事件），attach 即补发，
@@ -374,10 +429,124 @@ class ServeSession:
 
     # ── 回合驱动 ─────────────────────────────────────────────────
 
-    def submit(self, text: str) -> None:
-        """用户消息入队（任一客户端可发；回合串行消费）。"""
+    def submit(
+        self,
+        text: str,
+        msg_id: str = "",
+        attachments: Optional[list[str]] = None,
+    ) -> bool:
+        """用户消息入队（任一客户端可发；回合串行消费）。
+
+        ``msg_id`` 至少一次投递闭环：带上即**收到即回执**（``message_ack``,
+        不等 worker 出队跑回合——客户端据此探测半开连接）；重复的
+        ``msg_id``（重连重发）不再入队（回合不跑两遍）但**仍回执**（无
+        副作用的纯重放）。空 ``msg_id`` = 存量客户端，走原路径零改动。
+
+        ``attachments``：随消息引用的上传 id（/api/upload 预传）——按注册
+        表解析成多模态 content parts 入队；空/无效 = 纯文本快路径（content
+        恒为 ``str``）。纯文本 + 无有效附件才拒绝（行为与扩展前一致）。
+        返回是否真正入队。
+        """
+        content = self._compose(text, list(attachments or []))
+        # 空文本且（无附件 / 附件解析不出内容）→ 拒绝（同扩展前：不回执）
+        if not (text and text.strip()) and not (
+            isinstance(content, list) and content
+        ):
+            return False
+        if msg_id:
+            if msg_id in self._seen_msg_ids:
+                self._seen_msg_ids.move_to_end(msg_id)
+                self.broadcast(protocol.message_ack(msg_id))
+                _log.info("duplicate msg_id %s dropped (re-sent by client)", msg_id)
+                return False
+            self._seen_msg_ids[msg_id] = None
+            while len(self._seen_msg_ids) > _MSG_ID_CACHE:
+                self._seen_msg_ids.popitem(last=False)
+            self.broadcast(protocol.message_ack(msg_id))
+        self._queue.put_nowait(_Pending(text, content))
+        return True
+
+    # ── 上传附件（/api/upload 产物；submit 按 id 解析成 content）───────
+
+    def register_upload(self, upload: Upload) -> str:
+        """登记一次上传并返回注册 id。调用方负责填好内容（data_url/path）。"""
+        upload.id = uuid.uuid4().hex[:12]
+        self._uploads[upload.id] = upload
+        return upload.id
+
+    def get_upload(self, upload_id: str) -> Optional[Upload]:
+        """按 id 取上传记录（供 api 删除/校验）。"""
+        return self._uploads.get(upload_id)
+
+    def remove_upload(self, upload_id: str) -> bool:
+        """撤销一次上传（FE 取消待发）：删盘上文件 + 出注册表。"""
+        upload = self._uploads.pop(upload_id, None)
+        if upload is None:
+            return False
+        if upload.kind == "file" and upload.path:
+            self._remove_file_dir(Path(upload.path))
+        return True
+
+    def discard_uploads(self) -> None:
+        """清空上传区（会话新建/删除/切区/停服调用）。幂等、绝不上抛。"""
+        if not self._uploads:
+            return
+        dirs: set[Path] = set()
+        for upload in self._uploads.values():
+            if upload.kind == "file" and upload.path:
+                try:
+                    dirs.add(Path(upload.path).parent)
+                    Path(upload.path).unlink(missing_ok=True)
+                except OSError:
+                    _log.warning("upload cleanup failed: %s", upload.path)
+        for d in dirs:
+            try:
+                if d.is_dir():
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                _log.warning("upload dir cleanup failed: %s", d)
+        self._uploads.clear()
+
+    @staticmethod
+    def _remove_file_dir(path: Path) -> None:
+        """删单个上传文件；其父目录若空则一并删（不留空的会话上传目录）。"""
+        try:
+            path.unlink(missing_ok=True)
+            parent = path.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            _log.warning("upload remove failed: %s", path)
+
+    def _compose(self, text: str, attachments: list[str]):
+        """按上传注册表把 (text, 附件 id) 合成 content。
+
+        无有效附件 → 返回原 ``text``（纯文本快路径）；有 → 返回 parts 列表
+        （text part + 每图一个 ``image_url`` + 每文件一个 ``openx_file``）。
+        每类防呆取前 N 个，超出静默丢弃（前端已限，服务端兜底）。
+        """
+        resolved = [self._uploads[a] for a in attachments if a in self._uploads]
+        if not resolved:
+            return text
+        images = [u for u in resolved if u.kind == "image"][:_MAX_IMG_PER_MSG]
+        files = [u for u in resolved if u.kind == "file"][:_MAX_FILE_PER_MSG]
+        parts: list[dict] = []
         if text and text.strip():
-            self._queue.put_nowait(text)
+            parts.append({"type": "text", "text": text})
+        for u in images:
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": u.data_url, "detail": "auto"},
+            })
+        for u in files:
+            parts.append({
+                "type": "openx_file",
+                "name": u.name,
+                "size": u.size,
+                "mime": u.mime,
+                "relPath": u.rel_path,
+            })
+        return parts
 
     def interrupt(self) -> None:
         """打断当前回合（Web 的 Esc）：cancel _turn_task。"""
@@ -388,21 +557,29 @@ class ServeSession:
     async def _worker(self) -> None:
         """串行回合循环：每条消息 await 一个 _run_turn 子任务。"""
         while True:
-            text = await self._queue.get()
-            self._turn_task = asyncio.ensure_future(self._run_turn(text))
+            pending = await self._queue.get()
+            self._turn_task = asyncio.ensure_future(self._run_turn(pending))
             try:
                 await self._turn_task
             finally:
                 self._turn_task = None
 
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(self, pending: "_Pending") -> None:
         """跑一轮：stream_run 事件投影广播 + 终局 result / interrupted。"""
         from ...agent import ToolResultEvent
 
+        text = pending.text
         started = time.monotonic()
-        self._live_user = text
         self._live_events = []
-        self.broadcast(protocol.user_message(text))
+        # 带附件/多模态时广播 content（端据此渲染缩略图与文件 chip）；
+        # 纯文本事件不含 content 键（与存量逐字节一致）
+        event = (
+            protocol.user_message(text)
+            if isinstance(pending.content, str)
+            else protocol.user_message(text, content=pending.content)
+        )
+        self._live_user = event
+        self.broadcast(event)
         # 子 agent 视图按回合隔离（镜像 CLI StreamingService.start 的
         # fleet.reset()）：上轮委派的子代理不该挂在本轮任务流里
         fleet = getattr(self.agent, "fleet", None)
@@ -415,7 +592,7 @@ class ServeSession:
         self._fleet_sig = ()
         self._fleet_task = asyncio.ensure_future(self._fleet_ticker())
         try:
-            async for ev in self.agent.stream_run(text):
+            async for ev in self.agent.stream_run(pending.content):
                 # 产物：写类工具入参 → artifact 增量广播（右侧面板实时增长）
                 for tool, path in self._artifacts_of(ev):
                     art = protocol.artifact(path, tool)
@@ -582,6 +759,21 @@ if __name__ == "__main__":
         all_text = "".join(e.get("text", "") for e in ws.sent if e["type"] == "text_delta")
         assert "[dim]" not in all_text and "● Compacting" in all_text
         assert types[-1] == "result" and ws.sent[-1]["subtype"] == "success"
+        # 不带 msg_id 的存量消息：无回执、不去重（零行为改动）
+        assert "message_ack" not in types
+
+        # msg_id 至少一次闭环：收到即回执；重发同 id 去重（只跑一轮）
+        # 但仍回执（客户端清 pending）。
+        ws.sent.clear()
+        assert session.submit("again", "m1") is True
+        await asyncio.sleep(0)
+        assert any(e["type"] == "message_ack" and e["msg_id"] == "m1"
+                   for e in ws.sent)            # 回执先于回合（worker 未跑）
+        assert session.submit("again", "m1") is False
+        await asyncio.sleep(0.05)
+        acks = [e for e in ws.sent if e["type"] == "message_ack" and e["msg_id"] == "m1"]
+        results = [e for e in ws.sent if e["type"] == "result"]
+        assert len(acks) == 2 and len(results) == 1, (len(acks), len(results))
 
         # 回合进行中 attach：慢 agent 先 yield 一个 token 即挂起，此时
         # _live_user/_live_events 未清——迟到客户端应看到 live 快照
@@ -612,6 +804,16 @@ if __name__ == "__main__":
         session.stop()
 
     asyncio.run(_check())
+
+    # LRU 上限（纯数据测试：不起 worker——submit 只入队+记缓存，无任务产生；
+    # 起了 worker 会排 300 个真回合，与收尾的 stop()/cancel 交错出假死）
+    idle = ServeSession(_FakeAgent())
+    for i in range(300):
+        idle.submit(f"bulk {i}", f"b{i}")
+    assert len(idle._seen_msg_ids) == _MSG_ID_CACHE
+    assert "b0" not in idle._seen_msg_ids       # 最旧被淘汰
+    assert idle.submit("dup", "b299") is False   # 最新仍在 → 去重
+    assert idle.submit("dup", "b0") is True      # 淘汰过的 → 当新消息
 
     # 投影剥离测试（纯函数，无需事件循环）
     session = ServeSession(_FakeAgent())

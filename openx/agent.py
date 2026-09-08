@@ -1223,6 +1223,13 @@ class OpenXAgent:
             *self.history.messages,
             user_msg,
         ]
+        # 给 provider 的消息序列只读副本：自定义附件 part 折成文本指引
+        # （历史与 new_turn 仍持丰富 parts 供 serve 展示/记录）
+        state.messages = [
+            dict(m, content=_fold_openx_files(m.get("content")))
+            if isinstance(m.get("content"), list) else m
+            for m in state.messages
+        ]
         new_turn: list[dict[str, Any]] = [user_msg]  # 本轮待并入历史的新消息
         # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
         # provider（tool-call 序列对 provider 格式敏感）。
@@ -1347,6 +1354,13 @@ class OpenXAgent:
             {"role": "system", "content": self._system_prompt},
             *self.history.messages,
             user_msg,
+        ]
+        # 给 provider 的消息序列只读副本：自定义附件 part 折成文本指引
+        # （历史与 new_turn 仍持丰富 parts 供 serve 展示/记录）
+        state.messages = [
+            dict(m, content=_fold_openx_files(m.get("content")))
+            if isinstance(m.get("content"), list) else m
+            for m in state.messages
         ]
         new_turn: list[dict[str, Any]] = [user_msg]
         # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
@@ -1521,6 +1535,45 @@ def _has_image(user_message: Any) -> bool:
     return any(
         isinstance(p, dict) and p.get("type") == "image_url" for p in parts
     )
+
+
+# Web 上传附件在 content 里的自定义 part 类型：仅供 serve 展示/记录用，
+# provider（openai 透传、anthropic 只收 text/image_url）不认识 → 发送前
+# 必须折成文本指引。写盘侧同样折叠（sessions._sanitize_message），relPath
+# 绝不上磁盘。
+_OPENX_FILE_PART = "openx_file"
+
+
+def _fold_openx_files(content: Any) -> Any:
+    """把 content（str 或 parts 列表）里的 ``openx_file`` part 折成文本指引。
+
+    返回**新列表**（绝不动调用方历史里的原 content）；无 ``openx_file``
+    时原样返回。图片（image_url）与用户文本保留原位。
+    """
+    if not isinstance(content, list):
+        return content
+    files = [
+        p for p in content
+        if isinstance(p, dict) and p.get("type") == _OPENX_FILE_PART
+    ]
+    if not files:
+        return content
+    guide = "".join(
+        "\n\n[已附加文件，请用 read_file 打开读取："
+        + str(p.get("name") or "file")
+        + "] 相对路径：" + str(p.get("relPath") or "")
+        for p in files
+    )
+    out: list[Any] = []
+    for p in content:
+        if isinstance(p, dict) and p.get("type") == _OPENX_FILE_PART:
+            continue
+        out.append(p)
+    for i, p in enumerate(out):   # 指引并入既有 text part（有图无字也成句）
+        if isinstance(p, dict) and p.get("type") == "text":
+            out[i] = {**p, "text": str(p.get("text") or "") + guide}
+            return out
+    return [{"type": "text", "text": guide.strip()}, *out]
 
 
 def _plain_text_preview(content: Any, limit: int = 80) -> str:

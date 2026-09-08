@@ -22,11 +22,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
 # P1：严格相等。未来minor 演进时在此放宽（如 client <= server 且同 major）。
 PROTOCOL_VERSION = 1
+
+# 上行 message 的 attachments（上传 id）上限：图/文件数太多会撑爆单轮
+# 上下文，也防脏值撑开解析缓存。单个 id 超 64 视为脏值丢弃。
+_MAX_ATTACHMENTS = 12
 
 
 # ── 事件信封（K2a）：账本条目 = 协议下行事件的超集 ────────────────
@@ -170,9 +174,30 @@ def permission_request(
 
 # ── serve 扩展（P4）：会话快照与终局事件（协议 = 账本外化的服务端应用）─
 
-def user_message(text: str) -> dict[str, Any]:
-    """serve 下行：一条用户消息（live 广播 / attach 快照共用）。"""
-    return {"type": "user_message", "text": text}
+def user_message(text: str, content: Any = None) -> dict[str, Any]:
+    """serve 下行：一条用户消息（live 广播 / attach 快照共用）。
+
+    ``content``：带图片/文件时的多模态 parts 列表（serve 扩展，可选）——
+    前端据此渲染缩略图与文件 chip。不带则事件与纯文本版完全一致
+    （无 ``content`` 键），存量消费者零改动。
+    """
+    ev = {"type": "user_message", "text": text}
+    if content is not None:
+        ev["content"] = content
+    return ev
+
+
+def message_ack(msg_id: str) -> dict[str, Any]:
+    """serve 下行：上行 ``message`` 的**回执**（收到即回，非回合开始）。
+
+    至少一次投递的闭环：客户端带 ``msg_id`` 发消息、持有到回执为止；
+    断连重连后重发，服务端按 ``msg_id`` 去重（回合不跑两遍）并**再次
+    回执**让客户端清掉待决条目。回执只在 uplink 解析处发出、不经回合
+    队列，对客户端是即时的——据此可实现半开连接探测（发了消息迟迟无
+    回执 = 连接已死）。其它客户端收到未知 ``msg_id`` 的回执是 no-op
+    （reducer 未知事件容忍），重放无副作用。
+    """
+    return {"type": "message_ack", "msg_id": msg_id}
 
 
 def serve_history(messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -320,9 +345,20 @@ class PlanResponse:
 
 @dataclass
 class UserMessage:
-    """用户发送的聊天消息（serve 上行意图：message）。"""
+    """用户发送的聊天消息（serve 上行意图：message）。
+
+    ``msg_id``：客户端生成的消息标识（serve 扩展字段，可选）——服务端
+    按它去重（重连重发不跑两遍）并即时回 ``message_ack``。空串 = 存量
+    客户端未带，不参与去重/回执，行为与扩展前完全一致。
+
+    ``attachments``：随消息上传的图片/文件 id 列表（serve 扩展字段，可选；
+    由 /api/upload 预先上传、此处引用）——服务端据注册表解析成多模态
+    content。空列表 = 纯文本消息，走原路径零改动。
+    """
 
     text: str
+    msg_id: str = ""
+    attachments: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -372,7 +408,23 @@ def parse_uplink(line: str) -> Optional[UplinkMessage]:
         text = obj.get("text")
         if not isinstance(text, str):
             return None
-        return UserMessage(text)
+        # msg_id 清洗：非串 / 超长（防脏值撑爆去重缓存键）→ 视为未带
+        msg_id = obj.get("msg_id", "")
+        if not isinstance(msg_id, str) or len(msg_id) > 128:
+            msg_id = ""
+        # attachments 清洗：仅非空短 str、去重、封顶（防脏值撑大单轮上下文）
+        attachments: list[str] = []
+        raw_att = obj.get("attachments")
+        if isinstance(raw_att, list):
+            for att in raw_att:
+                if len(attachments) >= _MAX_ATTACHMENTS:
+                    break
+                if (
+                    isinstance(att, str) and att
+                    and len(att) <= 64 and att not in attachments
+                ):
+                    attachments.append(att)
+        return UserMessage(text, msg_id, attachments)
     if kind == "ask_user_response":
         request_id = obj.get("request_id")
         answers = obj.get("answers")
@@ -406,6 +458,25 @@ if __name__ == "__main__":
     # 上行解析：message / interrupt / permission_response / 未知 / 畸形
     _m = parse_uplink('{"type": "message", "text": "hello"}')
     assert isinstance(_m, UserMessage) and _m.text == "hello"
+    # msg_id：合法 / 缺失 / 非串 / 超长（至少一次投递的去重键）
+    _m2 = parse_uplink('{"type": "message", "text": "hi", "msg_id": "m1"}')
+    assert isinstance(_m2, UserMessage) and _m2.msg_id == "m1"
+    assert parse_uplink('{"type": "message", "text": "hi"}').msg_id == ""
+    assert parse_uplink('{"type": "message", "text": "hi", "msg_id": 5}').msg_id == ""
+    _long = json.dumps({"type": "message", "text": "hi", "msg_id": "x" * 200})
+    assert parse_uplink(_long).msg_id == ""
+    # attachments：合法列表 / 脏值清洗（非串、超长、重复、超上限）
+    _ma = parse_uplink('{"type": "message", "text": "hi", "attachments": ["u1", "u2"]}')
+    assert _ma.attachments == ["u1", "u2"]
+    _ma2 = parse_uplink(json.dumps({
+        "type": "message", "text": "hi",
+        "attachments": ["u1", 5, "", "x" * 90, "u1", "u2"],
+    }))
+    assert _ma2.attachments == ["u1", "u2"], _ma2.attachments
+    _many = json.dumps({"type": "message", "text": "hi",
+                        "attachments": [f"u{i}" for i in range(30)]})
+    assert len(parse_uplink(_many).attachments) == _MAX_ATTACHMENTS
+    assert parse_uplink('{"type": "message", "text": "hi", "attachments": "u1"}').attachments == []
     assert isinstance(parse_uplink('{"type": "interrupt"}'), Interrupt)
     _p = parse_uplink('{"type": "permission_response", "request_id": "r1", "allowed": true, "remember": true}')
     assert isinstance(_p, PermissionResponse) and _p.allowed and _p.remember
@@ -419,7 +490,12 @@ if __name__ == "__main__":
 
     # serve 下行扩展：用户消息 / 历史快照 / 终局事件 / permission_request 带 can_remember
     _um = user_message("hi")
-    assert _um["type"] == "user_message" and _um["text"] == "hi"
+    assert _um == {"type": "user_message", "text": "hi"}   # 无 content 键（存量一致）
+    _umc = user_message("hi", content=[{"type": "text", "text": "hi"}])
+    assert _umc == {"type": "user_message", "text": "hi",
+                    "content": [{"type": "text", "text": "hi"}]}
+    _ack = message_ack("m1")
+    assert _ack == {"type": "message_ack", "msg_id": "m1"}
     _h = serve_history([{"role": "user", "content": "hi"}])
     assert _h["type"] == "history" and _h["messages"][0]["content"] == "hi"
     _r = result_event("done", False, 10, 2, "s1", {"input_tokens": 1, "output_tokens": 2})

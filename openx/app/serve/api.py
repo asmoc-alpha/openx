@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,9 @@ from aiohttp import web
 from ...config import OpenXConfig
 from ... import model_groups as _mg
 from ... import skills as _skills
+from ...image import IMAGE_EXTENSIONS, image_to_base64_url
 from ...orchestration.sessions import SessionStore
+from .session import Upload
 
 # ── 常量 ────────────────────────────────────────────────────────
 
@@ -48,6 +51,12 @@ MAX_PREVIEW_BYTES = 512 * 1024
 
 #: 原始文件（图片等）返回上限
 MAX_RAW_BYTES = 8 * 1024 * 1024
+
+#: 上传附件（web 对话附件）单文件上限：与 files_raw 预览上限一致
+MAX_UPLOAD_BYTES = MAX_RAW_BYTES
+
+#: 附件在工作区内的存放根（相对）：隐藏点目录，会话结束整目录删除
+UPLOAD_REL_ROOT = ".openx/uploads"
 
 _IMAGE_SUFFIXES = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
@@ -120,6 +129,35 @@ def _resolve_in_workspace(workspace: Path, rel: str) -> Path | None:
     if candidate != workspace and workspace not in candidate.parents:
         return None
     return candidate
+
+
+def _has_vision(agent: Any) -> bool:
+    """是否有**独立**的视觉模型（modal 角色）承接图片回合。
+
+    判定 = modal 角色解析出的 settings 与主绑定不同（``client_for("modal")``
+    只在 distinct 时才新建 modal client；否则图会落到主模型）。探测失败按
+    False——宁可让前端提示，也不让图片在无视觉时静默送错模型。
+    """
+    try:
+        settings = agent.role_settings("openx-modal-model")
+        return not bool(agent._same_binding(settings))
+    except Exception:
+        return False
+
+
+def _sanitize_filename(name: str) -> str:
+    """上传文件名清洗：只取 basename，剔除控制符与路径分隔符，限长。"""
+    base = Path(name or "upload").name
+    base = "".join(ch for ch in base if ch not in "/\\" and ord(ch) >= 32).strip()
+    return (base or "upload.bin")[:120]
+
+
+def _unique_upload_name(base: Path, name: str) -> str:
+    """同目录重名时加短随机后缀（不覆盖已有上传）。"""
+    if not (base / name).exists():
+        return name
+    p = Path(name)
+    return f"{p.stem}-{uuid.uuid4().hex[:6]}{p.suffix}"
 
 
 def _mask_secret(value: Any) -> tuple[str, bool]:
@@ -237,6 +275,8 @@ async def session_info(request: web.Request) -> web.Response:
         "session_id": str(getattr(agent, "session_id", "") or ""),
         "model": str(getattr(getattr(agent, "config", None), "model", "") or ""),
         "tools": sorted(getattr(agent, "tools", {}) or {}),
+        # 供前端判断图片附件是否会被模型真正“看到”（无独立视觉 → 提示）
+        "has_vision": _has_vision(agent),
     })
 
 
@@ -251,6 +291,8 @@ def _reset_live_session(session: Any, workspace: str) -> str:
     （前端侧栏据此高亮新会话）。新会话文件惰性创建（``SessionStore
     .create``）：不发言不落盘——空白会话不保存。
     """
+    # 会话结束：清掉本会话的上传附件（新对话=丢当前上下文）
+    session.discard_uploads()
     agent = session.agent
     model = str(getattr(getattr(agent, "config", None), "model", "") or "")
     group = str(getattr(getattr(agent, "config", None), "active_group", "") or "")
@@ -789,6 +831,84 @@ async def plugins_toggle(request: web.Request) -> web.Response:
     return _ok({"id": plugin_id, "disabled": disabled_flag, "restartRequired": True})
 
 
+# ── 上传附件（web 对话图片/文件）──────────────────────────────
+
+
+async def upload_create(request: web.Request) -> web.Response:
+    """POST /api/upload（multipart ``file``）→ 存附件并登记，返回描述符。
+
+    - **图片**（raster 后缀）→ 只存 base64 data-url 于 session 内存注册表，
+      不落盘（项目策略：base64 图片绝不写磁盘）；模型以 ``image_url`` 承接。
+    - **其它文件** → 写入 ``<workspace>/.openx/uploads/<session_id>/``，随
+      会话结束整体删除；模型用 read_file 按相对路径读取。
+
+    返回 ``{id, name, size, kind, mime, relPath}``，消息上行用 ``id`` 引用。
+    """
+    session = request.app.get(SESSION_KEY)
+    agent = _agent(request)
+    workspace = _workspace(request)
+    if session is None or not workspace.is_dir():
+        return _fail("upload unavailable", status=500)
+    try:
+        post = await request.post()
+    except Exception as exc:               # 巨型/畸形 multipart → 413 而非 500
+        return _fail(f"cannot read upload: {exc}", status=413)
+    field = post.get("file")
+    if field is None or getattr(field, "file", None) is None:
+        return _fail("missing file field", status=400)
+    name = _sanitize_filename(str(getattr(field, "filename", "") or "upload"))
+    try:
+        raw = field.file.read()
+    except (OSError, ValueError) as exc:
+        return _fail(f"cannot read upload: {exc}", status=400)
+    if not raw:
+        return _fail("empty file", status=400)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return _fail("file too large", status=413)
+
+    mime, _ = mimetypes.guess_type(name)
+    mime = mime or "application/octet-stream"
+    if Path(name).suffix.lower() in IMAGE_EXTENSIONS:
+        upload = Upload(
+            name=name, size=len(raw), kind="image", mime=mime,
+            data_url=image_to_base64_url(raw, mime),
+        )
+    else:
+        sid = str(getattr(agent, "session_id", "") or "anon")
+        base = workspace / UPLOAD_REL_ROOT / sid
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            target = base / _unique_upload_name(base, name)
+            target.write_bytes(raw)
+        except OSError as exc:
+            return _fail(f"cannot store upload: {exc}", status=500)
+        upload = Upload(
+            name=target.name, size=len(raw), kind="file", mime=mime,
+            path=str(target),
+            rel_path=str(target.relative_to(workspace)).replace("\\", "/"),
+        )
+    session.register_upload(upload)
+    return _ok({
+        "id": upload.id,
+        "name": upload.name,
+        "size": upload.size,
+        "kind": upload.kind,
+        "mime": upload.mime,
+        "relPath": upload.rel_path,
+    })
+
+
+async def upload_delete(request: web.Request) -> web.Response:
+    """DELETE /api/upload/<id> → 撤销一次待发上传（删盘 + 出注册表）。"""
+    session = request.app.get(SESSION_KEY)
+    upload_id = request.match_info.get("upload_id", "")
+    if session is None:
+        return _fail("upload unavailable", status=500)
+    if not session.remove_upload(upload_id):
+        return _fail("unknown upload", status=404)
+    return _ok({"deleted": upload_id})
+
+
 # ── 文件树 / 产物 ───────────────────────────────────────────────
 
 def _is_ignored(path: Path) -> bool:
@@ -992,6 +1112,9 @@ def register_api(app: web.Application, session: Any, workspace: str) -> None:
 
     app.router.add_get("/api/plugins", plugins_get)
     app.router.add_post("/api/plugins/{id}/toggle", plugins_toggle)
+
+    app.router.add_post("/api/upload", upload_create)
+    app.router.add_delete("/api/upload/{upload_id}", upload_delete)
 
     app.router.add_get("/api/files", files_get)
     app.router.add_get("/api/files/content", files_content)

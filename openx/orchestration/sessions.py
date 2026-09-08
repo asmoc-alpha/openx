@@ -52,6 +52,10 @@ SESSIONS_DIR = Path.home() / ".openx" / "sessions"
 # 写盘时图片 part 的占位文本 —— base64 data URL 绝不落盘
 IMAGE_PLACEHOLDER_TEXT = "[image omitted from session log]"
 
+# 写盘时 web 上传文件 part（openx_file）的占位文本 —— 上传目录随会话结束
+# 删除，relPath 若落盘会在回放里悬空，故与图片同策略折叠成占位。
+ATTACHMENT_PLACEHOLDER = "[attachment omitted from session log: {name}]"
+
 # meta_update 允许前向合并的字段白名单（其余键一律忽略）
 _META_UPDATE_FIELDS = (
     "total_input_tokens",
@@ -143,8 +147,21 @@ def _sanitize_message(message: dict[str, Any]) -> dict[str, Any]:
     parts: list[Any] = []
     changed = False
     for part in content:
-        if isinstance(part, dict) and part.get("type") == "image_url":
+        if not isinstance(part, dict):
+            parts.append(part)
+            continue
+        ptype = part.get("type")
+        if ptype == "image_url":
             parts.append({"type": "text", "text": IMAGE_PLACEHOLDER_TEXT})
+            changed = True
+        elif ptype == "openx_file":
+            # web 上传附件：折叠成占位（同图片策略），relPath 绝不落盘
+            parts.append({
+                "type": "text",
+                "text": ATTACHMENT_PLACEHOLDER.format(
+                    name=part.get("name") or "file"
+                ),
+            })
             changed = True
         else:
             parts.append(part)
