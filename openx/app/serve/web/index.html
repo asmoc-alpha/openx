@@ -159,8 +159,10 @@
 
     <nav class="tp-tabs" id="tp-tabs">
       <button class="tp-tab active" data-tab="flow">任务流 <span class="tp-tab-count" id="flow-tab-count" hidden>0</span></button>
+      <button class="tp-tab" data-tab="trace">路径</button>
       <button class="tp-tab" data-tab="context">上下文</button>
       <button class="tp-tab" data-tab="artifacts">产物</button>
+      <button class="tp-tab" data-tab="webplugins">插件</button>
     </nav>
 
     <div class="tp-body scroll">
@@ -228,6 +230,35 @@
         </div>
       </section>
 
+      <!-- 任务路径：REST 拉取（GET /api/trace），按回合折叠展示
+           用户 prompt / 工具调用 / 工具输出 / 最终回复；系统 prompt 是
+           会话级块（实时=运行时装配值，回放=未记录的诚实空态） -->
+      <section class="tp-panel" data-panel="trace">
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">任务路径</span>
+            <span class="tp-section-meta" id="trace-meta">0 轮</span>
+            <button id="refresh-trace" class="tp-icon-btn" title="刷新">↻</button>
+          </div>
+          <div class="tp-empty inline" id="trace-empty">
+            <div class="tp-empty-text">还没有对话回合</div>
+            <div class="tp-empty-hint">每轮的用户 prompt、工具调用与系统输出会按回合展示在这里</div>
+          </div>
+          <div id="trace-rounds" class="trace-rounds"></div>
+        </div>
+
+        <div class="tp-section">
+          <details id="trace-system" class="trace-system" hidden>
+            <summary class="trace-sys-summary">系统 prompt</summary>
+            <pre class="trace-sys-body" id="trace-system-body"></pre>
+          </details>
+          <div class="tp-empty inline" id="trace-system-empty" hidden>
+            <div class="tp-empty-text">本会话未记录系统 prompt</div>
+            <div class="tp-empty-hint">系统 prompt 是运行时装配、不随会话文件落盘；历史回放看不到它</div>
+          </div>
+        </div>
+      </section>
+
       <!-- 上下文 -->
       <section class="tp-panel" data-panel="context">
         <div class="tp-section">
@@ -269,6 +300,22 @@
             <input id="file-filter" type="search" placeholder="过滤文件名..." autocomplete="off">
           </div>
           <div id="file-tree" class="tree scroll"></div>
+        </div>
+      </section>
+
+      <!-- Web 插件：沙箱 iframe 卡片（后端 web_plugins.py；渲染 web-plugins.js） -->
+      <section class="tp-panel" data-panel="webplugins">
+        <div class="tp-section">
+          <div class="tp-section-head">
+            <span class="tp-section-title">Web 插件</span>
+            <span class="tp-section-meta" id="wp-meta"></span>
+            <button id="refresh-web-plugins" class="tp-icon-btn" title="重新扫描插件目录">↻</button>
+          </div>
+          <div class="tp-empty inline" id="wp-empty" hidden>
+            <div class="tp-empty-text" id="wp-empty-text">还没有 web 插件</div>
+            <div class="tp-empty-hint" id="wp-empty-hint"></div>
+          </div>
+          <div id="wp-cards" class="wp-cards"></div>
         </div>
       </section>
     </div>
@@ -478,9 +525,11 @@
 <script src="/static/sidebar.js"></script>
 <script src="/static/chat.js"></script>
 <script src="/static/task-panel.js"></script>
+<script src="/static/trace.js"></script>
 <script src="/static/modals.js"></script>
 <script src="/static/artifacts.js"></script>
 <script src="/static/settings.js"></script>
+<script src="/static/web-plugins.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

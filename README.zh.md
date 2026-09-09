@@ -20,7 +20,7 @@ OpenX 是一个用 Python 构建的开源终端 coding agent。用自然语言�
 - 🛡️ 三种权限模式：`manual` / `auto` / `plan`
 - 🤖 Subagents——内置类型 + 自定义 `.openx/agents/*.md`，可选结构化输出
 - 🔁 Workflows——用 Python 脚本做确定性多 agent 编排
-- 🪝 Hooks——Claude-Code 兼容的 shell hooks，覆盖工具调用、prompt 与 stop
+- 🪝 Hooks——Claude-Code 兼容的 shell hooks，按会话阶段插入（SessionStart/UserPromptSubmit/工具前后/子代理收尾/PreCompact/Stop/SessionEnd）
 - 🔌 MCP——stdio servers，零额外依赖
 - 💾 会话——持久化与恢复（`--continue` / `--resume`）
 - 🌗 后台任务 · 🗜️ 自动压缩（compaction） · 🧠 持久记忆

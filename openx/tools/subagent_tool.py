@@ -166,6 +166,33 @@ class TaskTool(Tool):
             finally:
                 if fleet is not None and view is not None:
                     fleet.complete(view, is_error=errored)  # 幂等
+                # SubagentStop 用户钩子（通知型）：子代理收尾即触发于**父
+                # 会话**（子代理复用父 HookRunner）。放 finally——正常/
+                # 出错/打断三种收尾都算"停"；异常吞掉，绝不打断父回合。
+                try:
+                    hooks = getattr(self._agent, "hooks", None)
+                    if hooks is not None and hooks.has_hooks("SubagentStop"):
+                        from ..kernel.audit.hooks import build_subagentstop_payload
+
+                        outcome = await hooks.run(
+                            "SubagentStop",
+                            build_subagentstop_payload(
+                                subagent_type,
+                                description or "",
+                                workspace=hooks.workspace,
+                                session_id=hooks.session_id,
+                            ),
+                        )
+                        warn = getattr(getattr(self._agent, "console", None),
+                                       "print_warning", None)
+                        if callable(warn):
+                            for w in outcome.warnings:
+                                try:
+                                    warn(w)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
         except Exception as e:
             return ToolResult(error=f"Subagent failed: {e}")
         # 结构化契约：带 schema 时只认 structured_output 捕获的结果——

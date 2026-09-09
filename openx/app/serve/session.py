@@ -580,6 +580,40 @@ class ServeSession:
         )
         self._live_user = event
         self.broadcast(event)
+        # ── UserPromptSubmit 用户钩子（对齐 CLI REPL，Phase 5）─────
+        # 提示词送达模型之前的最后一道关卡：策略钩子可整条驳回本次提问
+        # （blocked → 广播阻断说明 + result 收尾，不跑回合）。钩子自身
+        # 故障一律降级放行——绝不让钩子系统锁死 web 会话。此处阻断走
+        # text_delta：user_message 已把前端置为流式态，说明文字随 result
+        # 一并提交成回复。
+        hooks = getattr(self.agent, "hooks", None)
+        if hooks is not None and callable(getattr(hooks, "has_hooks", None)) \
+                and hooks.has_hooks("UserPromptSubmit"):
+            from ...kernel.audit.hooks import build_userprompt_payload
+
+            try:
+                outcome = await hooks.run(
+                    "UserPromptSubmit",
+                    build_userprompt_payload(
+                        text,
+                        workspace=hooks.workspace,
+                        session_id=hooks.session_id,
+                    ),
+                )
+            except Exception:
+                outcome = None
+            if outcome is not None:
+                for w in outcome.warnings:
+                    _log.warning("UserPromptSubmit hook: %s", w)
+                if outcome.blocked:
+                    self.broadcast(protocol.text_delta(
+                        f"⛔ 提问被 UserPromptSubmit 钩子拦截：{outcome.reason}"
+                    ))
+                    self.broadcast(self._result_event(
+                        started, error=f"blocked by hook: {outcome.reason}"
+                    ))
+                    self._live_user = None
+                    return
         # 子 agent 视图按回合隔离（镜像 CLI StreamingService.start 的
         # fleet.reset()）：上轮委派的子代理不该挂在本轮任务流里
         fleet = getattr(self.agent, "fleet", None)

@@ -1,7 +1,7 @@
 "use strict";
 
 /* OpenX Serve — 右栏任务面板。
-   三标签：任务流 / 上下文 / 产物。
+   四标签：任务流 / 路径 / 上下文 / 产物（路径见 trace.js，REST 拉取）。
 
    **数据全部来自真实会话事件，没有 mock**：
    - 任务流：一次回合 = 一个任务。步骤 = 本轮**真实发生过**的工具调用
@@ -65,6 +65,12 @@ const TaskPanel = {
     });
     if (name === "artifacts" && typeof Artifacts !== "undefined") {
       Artifacts.load(Artifacts.sessionId);
+    }
+    if (name === "trace" && typeof Trace !== "undefined") {
+      Trace.load(Trace.sessionId);
+    }
+    if (name === "webplugins" && typeof WebPlugins !== "undefined") {
+      WebPlugins.load();   // 幂等：首次激活拉清单，启停/↻ 内部强制重拉
     }
   },
 

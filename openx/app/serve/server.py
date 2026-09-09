@@ -43,6 +43,7 @@ from ...orchestration.sessions import SessionStore
 from .api import WORKSPACE_KEY as API_WORKSPACE_KEY
 from .api import WorkspaceRef, register_api, _reset_live_session
 from .session import ServeSession
+from .web_plugins import register_web_plugins
 
 _log = logging.getLogger("openx.serve")
 
@@ -115,6 +116,8 @@ def create_app(session: ServeSession, workspace: str = "") -> web.Application:
     app.router.add_get("/api/dirs", _api_dirs)
     # 管理端点（模型 / MCP / skill / plugin / 文件产物）——见 api.py
     register_api(app, session, workspace)
+    # web 插件端点（发现/启停/静态 iframe 卡片）——见 web_plugins.py
+    register_web_plugins(app)
     app.router.add_get("/", _index)
     # 静态前端：统一 no-store，杜绝浏览器缓存旧版 JS/CSS（前端零构建、改动即生效）
     app.router.add_get("/static/{name}", _static_file)

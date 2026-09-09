@@ -65,7 +65,13 @@ from typing import Any, AsyncIterator, Optional
 
 from . import model_groups as _model_groups
 from .config import OpenXConfig
-from .kernel.audit.hooks import HookRunner, build_stop_payload
+from .kernel.audit.hooks import (
+    HookRunner,
+    build_precompact_payload,
+    build_sessionend_payload,
+    build_sessionstart_payload,
+    build_stop_payload,
+)
 from .instructions import (
     build_system_prompt,
     load_instructions,
@@ -745,6 +751,13 @@ class OpenXAgent:
         await self.mcp.connect_all(self.console)
         self.tools.update(self.mcp.tools)
         self.tool_schemas = self._compute_tool_schemas()
+        # 用户阶段钩子（SessionStart / source=startup）：CLI 与 serve 都经
+        # 此入口，一次接线两端生效。通知型——失败/阻断绝不炸启动。
+        await self._fire_hook("SessionStart", build_sessionstart_payload(
+            "startup",
+            workspace=self.hooks.workspace,
+            session_id=self.hooks.session_id,
+        ))
         # P-D 生命周期协议（lifecycle/v1）：会话启动钩子按注册序回调。
         # 钩子异常由内核捕获记账（插件异常 = observation），不炸启动。
         try:
@@ -755,43 +768,62 @@ class OpenXAgent:
             pass
 
     async def shutdown(self) -> None:
-        """关闭所有 MCP 连接。幂等、绝不抛出。"""
+        """关闭所有 MCP 连接。幂等、绝不抛出。
+
+        收尾先触发 SessionEnd 用户钩子（通知型），再关 MCP——钩子拿到的
+        会话事实（session_id / workspace）在关停前后一致。未 startup 过
+        （测试/嵌入式）不触发：没有会话开始就无所谓结束。
+        """
         if not self._started:
             return
         self._started = False
+        await self._fire_hook("SessionEnd", build_sessionend_payload(
+            "shutdown",
+            workspace=self.hooks.workspace,
+            session_id=self.hooks.session_id,
+        ))
         try:
             await self.mcp.shutdown()
         except Exception:
             pass
 
-    # ── Stop 钩子（Phase 5）─────────────────────────────────────
+    # ── 阶段钩子（Stop / SessionStart / SessionEnd / PreCompact）───
 
-    async def _fire_stop_hook(self, stop_reason: str) -> None:
-        """触发 Stop 钩子：v1 仅打印警告（blocked 标志忽略）。
+    async def _fire_hook(self, event: str, payload: dict) -> None:
+        """触发一个**通知型**阶段钩子：仅打印警告（blocked 标志忽略）。
 
-        在 ``run()`` / ``stream_run()`` 的最终回复点与达到最大轮次点调用。
-        钩子系统绝不能打断回合收尾——任何异常全部吞掉。
+        会话不能被自己的审计脚本锁死：生命周期阶段（回合收尾 / 会话启停 /
+        压缩前夜）没有"拦截"语义，exit 2 的 reason 也只降级为警告。真阻断
+        只属于 UserPromptSubmit（拦提问，REPL/serve 侧）与 PreToolUse
+        （拦工具，guard 管线）。
+
+        任何异常全部吞掉——钩子系统绝不能打断生命周期本身。
         """
         try:
-            if not self.hooks.has_hooks("Stop"):
+            if not self.hooks.has_hooks(event):
                 return
-            outcome = await self.hooks.run(
-                "Stop",
-                build_stop_payload(
-                    stop_reason,
-                    workspace=self.hooks.workspace,
-                    session_id=self.hooks.session_id,
-                ),
-            )
+            outcome = await self.hooks.run(event, payload)
             warn = getattr(self.console, "print_warning", None)
             if callable(warn):
-                for w in outcome.warnings:
+                messages = list(outcome.warnings)
+                if outcome.blocked and outcome.reason:
+                    messages.append(f"{event} hook blocked (ignored): {outcome.reason}")
+                for w in messages:
                     try:
                         warn(w)
                     except Exception:
                         pass
         except Exception:
             pass
+
+    async def _fire_stop_hook(self, stop_reason: str) -> None:
+        """触发 Stop 钩子（通知型）：在 ``run()`` / ``stream_run()`` 的最终
+        回复点与达到最大轮次点调用。"""
+        await self._fire_hook("Stop", build_stop_payload(
+            stop_reason,
+            workspace=self.hooks.workspace,
+            session_id=self.hooks.session_id,
+        ))
 
     # ── 历史管理（委托给 ConversationHistory）───────────────────
 
@@ -806,8 +838,14 @@ class OpenXAgent:
     async def compact_history(self, keep_last: int = 4) -> str:
         """压缩历史：把旧历史摘要成一条 user 消息，保留最近若干轮原文。
 
-        走 mini 角色（最简模型做廉价摘要）；mini 未配置回落 main。
+        压缩前触发 PreCompact 钩子（trigger=manual，通知型）。走 mini 角色
+        （最简模型做廉价摘要）；mini 未配置回落 main。
         """
+        await self._fire_hook("PreCompact", build_precompact_payload(
+            "manual",
+            workspace=self.hooks.workspace,
+            session_id=self.hooks.session_id,
+        ))
         return await self.history.compact(
             self.client_for("mini"), keep_last=keep_last
         )
@@ -828,6 +866,13 @@ class OpenXAgent:
         threshold = int(self.config.max_history_tokens * 0.8)
         if self.history.estimate_tokens() <= threshold:
             return False
+        # 压缩前夜（PreCompact / trigger=auto，通知型）——审计脚本可在
+        # 此快照上下文。触发本身不参与 go/no-go（阻断也不阻止压缩）。
+        await self._fire_hook("PreCompact", build_precompact_payload(
+            "auto",
+            workspace=self.hooks.workspace,
+            session_id=self.hooks.session_id,
+        ))
         try:
             await self.history.compact(self.client_for("mini"), keep_last=4)
         except Exception:

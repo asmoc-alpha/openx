@@ -6,6 +6,7 @@
    - sidebar.js：左栏（工作区树 / 会话 / 用户）
    - chat.js：中栏（消息 + 输入）
    - task-panel.js：右栏（任务流 / 上下文 / 产物）
+   - trace.js：右栏「路径」标签（任务路径，REST 拉取）
    - modals.js：弹窗（permission / ask_user / plan）+ 插件面板
    - artifacts.js：产物标签内容（沿用旧版）
    - settings.js：设置弹窗（沿用旧版）
@@ -289,6 +290,8 @@ function applyEvent(ev) {
       Chat.finalizeTurn();
       TaskPanel.onResult(ev);
       Sidebar.reload().then(() => Sidebar.renderAll());
+      // 回合结束 = 路径多了一轮：标签可见时才拉（不可见等切标签时拉）
+      if (typeof Trace !== "undefined" && Trace.visible()) Trace.load(Trace.sessionId);
       break;
     case "interrupted":
       AppState.streaming = false;
@@ -298,6 +301,7 @@ function applyEvent(ev) {
       Chat.appendMeta("⏹ Interrupted");
       Chat.finalizeTurn();
       TaskPanel.onInterrupted();
+      if (typeof Trace !== "undefined" && Trace.visible()) Trace.load(Trace.sessionId);
       break;
     case "permission_request":
       Modals.showPermission(ev);
@@ -471,6 +475,8 @@ AppState.openReplay = async function (sessionId) {
   } catch (err) {
     Chat.appendMeta("Failed to load replay: " + err.message);
   }
+  // 路径面板随之切到被回放的会话（系统 prompt 如实显示"未记录"）
+  if (typeof Trace !== "undefined") Trace.load(sessionId);
 };
 
 function applyReplayEvent(ev) {
@@ -522,8 +528,10 @@ async function boot() {
   Chat.init();
   Modals.init();
   TaskPanel.init();
+  if (typeof Trace !== "undefined") Trace.init();
   if (typeof Artifacts !== "undefined") Artifacts.init();
   if (typeof Settings !== "undefined") Settings.init();
+  if (typeof WebPlugins !== "undefined") WebPlugins.init();
   await Sidebar.init();
   await loadInfo();
   connect();

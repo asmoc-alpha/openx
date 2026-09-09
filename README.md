@@ -22,7 +22,7 @@ controls, sessions, subagents, workflows, and MCP support.
 - 🛡️ Three permission modes: `manual` / `auto` / `plan`
 - 🤖 Subagents — builtin types plus custom `.openx/agents/*.md`, optional structured output
 - 🔁 Workflows — deterministic multi-agent orchestration in Python scripts
-- 🪝 Hooks — Claude-Code-compatible shell hooks on tool use, prompts, and stop
+- 🪝 Hooks — Claude-Code-compatible shell hooks at every session phase (SessionStart/UserPromptSubmit/tool use/SubagentStop/PreCompact/Stop/SessionEnd)
 - 🔌 MCP — stdio servers, zero extra dependencies
 - 💾 Sessions — persistence and resume (`--continue` / `--resume`)
 - 🌗 Background tasks · 🗜️ auto-compaction · 🧠 persistent memory

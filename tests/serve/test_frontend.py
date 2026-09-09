@@ -169,11 +169,35 @@ def test_three_pane_resizers_present():
 
 
 def test_task_panel_three_tabs():
-    """右栏任务面板三个标签都存在：任务流 / 上下文 / 产物。"""
+    """右栏任务面板标签都存在：任务流 / 路径 / 上下文 / 产物。"""
     html = _read("index.html")
     assert 'data-tab="flow"' in html
+    assert 'data-tab="trace"' in html
     assert 'data-tab="context"' in html
     assert 'data-tab="artifacts"' in html
+
+
+def test_trace_tab_dom_and_wiring():
+    """路径 tab：面板骨架 + trace.js 引入 + app.js / task-panel.js 接线。"""
+    html = _read("index.html")
+    assert 'data-panel="trace"' in html
+    assert 'id="trace-rounds"' in html
+    assert 'id="refresh-trace"' in html
+    assert 'src="/static/trace.js"' in html
+    # 切标签拉取 + 回合结束（标签可见时）刷新 + 回放切换会话
+    tp = _read("task-panel.js")
+    assert 'name === "trace"' in tp and "Trace.load" in tp
+    appjs = _read("app.js")
+    assert "Trace.visible()" in appjs and "Trace.init()" in appjs
+    assert "Trace.load(sessionId)" in appjs
+
+
+def test_tracejs_textcontent_discipline():
+    """trace.js：prompt / 工具名 / 输出全走 textContent（XSS 纪律）。"""
+    js = _read("trace.js")
+    # innerHTML 只允许清空（= ""），绝不写入模型文本
+    assert not re.search(r"innerHTML\s*=\s*(?!\"\")\S", js)
+    assert js.count("textContent") >= 6
 
 
 def test_flow_tab_plan_and_agent_sections():
@@ -399,4 +423,52 @@ def test_css_has_attachment_styles():
     css = _read("style.css")
     for sel in (".attach-btn", ".attach-chip", ".chip-remove",
                 ".msg.user .u-img", ".msg.user .u-file", ".msg.user .u-text"):
+        assert sel in css, f"缺 {sel}"
+
+
+# ── Web 插件 tab：清单 + 沙箱 iframe 卡片 ─────────────────────────
+
+
+def test_web_plugins_tab_dom_and_wiring():
+    """插件 tab：面板骨架 + web-plugins.js 引入 + 接线（切标签幂等拉取）。"""
+    html = _read("index.html")
+    assert 'data-tab="webplugins"' in html
+    assert 'data-panel="webplugins"' in html
+    assert 'id="wp-cards"' in html
+    assert 'id="refresh-web-plugins"' in html
+    assert 'id="wp-meta"' in html
+    assert 'src="/static/web-plugins.js"' in html
+    # 空态必须起始 hidden（CSS display:flex 不得覆盖；见 test_css_forces_hidden_to_win）
+    assert re.search(r'id="wp-empty"[^>]*\bhidden\b', html)
+    # 切标签拉清单（task-panel.js）+ boot 时 init（app.js）
+    tp = _read("task-panel.js")
+    assert 'name === "webplugins"' in tp and "WebPlugins.load" in tp
+    appjs = _read("app.js")
+    assert "WebPlugins.init()" in appjs
+
+
+def test_web_plugins_js_endpoints_and_sandbox():
+    """web-plugins.js：走 REST 清单/启停端点；iframe 只给 allow-scripts。"""
+    js = _read("web-plugins.js")
+    assert 'OX.get("/api/web-plugins")' in js
+    assert "encodeURIComponent(name)}/toggle" in js
+    assert "encodeURIComponent(p.name)}/index.html" in js
+    # 沙箱纪律：只 allow-scripts、无 allow-same-origin（opaque origin → 读不到父页）
+    assert 'frame.setAttribute("sandbox", "allow-scripts")' in js
+    # keyed reconcile：同启停态的卡不重建（iframe 不重跑、插件状态不丢）
+    assert "card.dataset.enabled" in js and "card.replaceWith" in js
+
+
+def test_web_plugins_js_textcontent_discipline():
+    """web-plugins.js：标题/描述是本地文件文本，一律 textContent，零 innerHTML。"""
+    js = _read("web-plugins.js")
+    assert not re.search(r"innerHTML\s*=", js)
+    assert "title.textContent = p.title || p.name" in js
+    assert "desc.textContent = p.description" in js
+
+
+def test_css_has_web_plugin_styles():
+    css = _read("style.css")
+    for sel in (".wp-card", ".wp-head", ".wp-frame", ".wp-frame iframe",
+                ".wp-toggle", ".wp-off", ".wp-src"):
         assert sel in css, f"缺 {sel}"

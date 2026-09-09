@@ -3,7 +3,9 @@
 覆盖：exit 0 放行 / exit 2 阻断 / stdout decision:block / 超时非阻塞警告 /
 matcher 作用域 / 配置缺失与全局-项目合并 / PostToolUse payload 投递 /
 UserPromptSubmit payload 与 matcher 忽略 / agent 级 Stop 钩子与 session_id
-接线 / set_plan_mode 重复启用不覆盖保存值。
+接线 / set_plan_mode 重复启用不覆盖保存值 / 会话阶段钩子
+（SessionStart · SessionEnd · PreCompact · SubagentStop：payload、生命周期
+触发点、通知型不拦截）。
 
 钩子脚本是真实写入 tmp_path 并 chmod +x 的 shell 脚本；settings.json 路径
 经 monkeypatch 隔离，绝不触碰真实 ~/.openx。
@@ -22,11 +24,16 @@ import pytest
 from openx.config import OpenXConfig
 from openx.kernel.audit.hooks import (
     TOOL_RESPONSE_LIMIT,
+    HOOK_EVENTS,
     HookOutcome,
     HookRunner,
     build_posttooluse_payload,
+    build_precompact_payload,
     build_pretooluse_payload,
+    build_sessionend_payload,
+    build_sessionstart_payload,
     build_stop_payload,
+    build_subagentstop_payload,
     build_userprompt_payload,
 )
 from openx.permissions import PermissionRules
@@ -476,6 +483,28 @@ class TestPayloadBuilders:
         p = build_stop_payload("end_turn", "/ws", "s1")
         assert p["stop_reason"] == "end_turn" and p["hook_event_name"] == "Stop"
 
+    def test_phase_payloads(self):
+        """会话阶段事件 payload：字段固定、不带 tool_name（无 matcher 语义）。"""
+        p = build_sessionstart_payload("startup", "/ws", "s1")
+        assert p == {"hook_event_name": "SessionStart", "source": "startup",
+                     "workspace": "/ws", "session_id": "s1"}
+        p = build_sessionend_payload("shutdown", "/ws", "s1")
+        assert p == {"hook_event_name": "SessionEnd", "reason": "shutdown",
+                     "workspace": "/ws", "session_id": "s1"}
+        p = build_subagentstop_payload("explore", "find hooks", "/ws", "s1")
+        assert p == {"hook_event_name": "SubagentStop", "subagent_type": "explore",
+                     "description": "find hooks", "workspace": "/ws",
+                     "session_id": "s1"}
+        p = build_precompact_payload("auto", "/ws", "s1")
+        assert p == {"hook_event_name": "PreCompact", "trigger": "auto",
+                     "workspace": "/ws", "session_id": "s1"}
+
+    def test_phase_events_in_hook_events(self):
+        """八个会话阶段事件全部在白名单里（load 只认 HOOK_EVENTS）。"""
+        assert set(HOOK_EVENTS) >= {
+            "SessionStart", "SessionEnd", "SubagentStop", "PreCompact",
+        }
+
 
 # ── describe() 与 /hooks ────────────────────────────────────────
 
@@ -581,3 +610,139 @@ class TestPlanModeSaveGuard:
         agent.set_plan_mode(False)  # 退出：原样还原并清空
         assert agent.tool_executor.auto_approve is True
         assert agent._pre_plan_auto_approve is None
+
+
+# ── 会话阶段钩子：SessionStart / SessionEnd / PreCompact / SubagentStop ──
+
+
+class TestSessionPhaseHooks:
+    """会话分阶段插入钩子：各生命周期触发点 + 通知型（blocked 不拦截）。"""
+
+    @staticmethod
+    def _project_hooks(tmp_path, event, dump_name):
+        """项目级 settings.json 写一个把 payload 落盘的阶段钩子，返回 dump 路径。"""
+        dump = tmp_path / dump_name
+        (tmp_path / ".openx").mkdir(exist_ok=True)
+        (tmp_path / ".openx" / "settings.json").write_text(json.dumps({
+            "hooks": {event: [
+                {"hooks": [{"type": "command", "command": f'cat > "{dump}"'}]}
+            ]},
+        }))
+        return dump
+
+    @pytest.mark.asyncio
+    async def test_sessionstart_fires_on_startup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        )
+        dump = self._project_hooks(tmp_path, "SessionStart", "start.json")
+        agent = _make_agent(tmp_path, [])
+        await agent.startup()
+        data = json.loads(dump.read_text())
+        assert data["hook_event_name"] == "SessionStart"
+        assert data["source"] == "startup"
+        assert data["session_id"] == agent.session_id
+
+    @pytest.mark.asyncio
+    async def test_sessionend_fires_on_shutdown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        )
+        dump = self._project_hooks(tmp_path, "SessionEnd", "end.json")
+        agent = _make_agent(tmp_path, [])
+        await agent.startup()
+        await agent.shutdown()
+        data = json.loads(dump.read_text())
+        assert data["hook_event_name"] == "SessionEnd"
+        assert data["reason"] == "shutdown"
+
+    @pytest.mark.asyncio
+    async def test_precompact_fires_on_manual_compact(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        )
+        dump = self._project_hooks(tmp_path, "PreCompact", "compact.json")
+        agent = _make_agent(tmp_path, [])
+
+        async def fake_compact(llm, keep_last=4):
+            return "[summary] ok"
+
+        monkeypatch.setattr(agent.history, "compact", fake_compact)
+        await agent.compact_history()
+        data = json.loads(dump.read_text())
+        assert data["hook_event_name"] == "PreCompact"
+        assert data["trigger"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_precompact_fires_on_auto_compact(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        )
+        dump = self._project_hooks(tmp_path, "PreCompact", "compact.json")
+        agent = _make_agent(tmp_path, [])
+        monkeypatch.setattr(agent.history, "estimate_tokens", lambda: 10_000_000)
+
+        async def fake_compact(llm, keep_last=4):
+            return "[summary] ok"
+
+        monkeypatch.setattr(agent.history, "compact", fake_compact)
+        await agent._maybe_auto_compact()
+        data = json.loads(dump.read_text())
+        assert data["hook_event_name"] == "PreCompact"
+        assert data["trigger"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_phase_hook_block_is_notification_only(self, tmp_path, monkeypatch):
+        """阶段钩子 exit 2：只降级为警告，绝不拦截生命周期（startup 照常返回）。"""
+        monkeypatch.setattr(
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        )
+        block = _script(tmp_path / "block.sh", 'echo "no sessions here" >&2\nexit 2\n')
+        (tmp_path / ".openx").mkdir()
+        (tmp_path / ".openx" / "settings.json").write_text(json.dumps({
+            "hooks": {"SessionStart": [
+                {"hooks": [{"type": "command", "command": block}]}
+            ]},
+        }))
+        agent = _make_agent(tmp_path, [])
+        await agent.startup()  # 不抛、不拦截
+        assert agent._started is True
+
+    @pytest.mark.asyncio
+    async def test_subagentstop_fires_on_child_completion(self, tmp_path, monkeypatch):
+        """task 工具：子代理收尾触发 SubagentStop 于父会话（payload 带类型）。"""
+        monkeypatch.setattr(
+            "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-such-settings.json"
+        )
+        dump = self._project_hooks(tmp_path, "SubagentStop", "substop.json")
+
+        import openx.tools.subagent_tool as st
+        from openx.orchestration.subagent import SubagentSpec
+
+        class _FakeChild:
+            class _Hist:
+                messages = []
+
+            class _FakeExec:  # 仅承载弹窗回调/锁拷贝的可写对象
+                pass
+
+            history = _Hist()
+            tool_executor = _FakeExec()
+
+            async def stream_run(self, prompt):
+                if False:
+                    yield  # 空 async generator：子代理零事件收尾
+
+        monkeypatch.setattr(st, "build_child_agent", lambda *a, **k: _FakeChild())
+        agent = _make_agent(tmp_path, [])
+        from openx.orchestration.fleet import FleetMonitor
+        agent.fleet = FleetMonitor()
+        tool = st.TaskTool(agent, {"general-purpose": SubagentSpec(
+            "general-purpose", "for tests")})
+        result = await tool.execute(description="find hooks", prompt="go")
+        assert not result.error
+        data = json.loads(dump.read_text())
+        assert data["hook_event_name"] == "SubagentStop"
+        assert data["subagent_type"] == "general-purpose"
+        assert data["description"] == "find hooks"
+        assert data["session_id"] == agent.session_id

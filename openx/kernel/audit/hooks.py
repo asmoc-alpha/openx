@@ -1,7 +1,23 @@
 """User-defined hooks system (Claude Code-compatible schema).
 
-在工具执行 / 用户提问 / 回合结束等事件点运行用户自定义的 shell 钩子，
-让外部策略脚本（合规检查、审计、护栏）参与决策。
+在会话的各阶段运行用户自定义的 shell 钩子，让外部策略脚本（合规检查、
+审计、护栏）参与决策。
+
+会话阶段模型（事件按发生顺序）::
+
+    SessionStart(startup|clear)                     会话开始
+    └─ 每轮：UserPromptSubmit                        用户提问送达模型前
+              └─ PreToolUse → 工具执行 → PostToolUse  工具往返
+                 └─ SubagentStop                     子代理收尾
+              └─ PreCompact(auto) → 历史压缩          上下文逼近上限
+              └─ Stop(end_turn|max_rounds)           回合收尾
+    SessionEnd(shutdown)                             会话结束
+
+阻断能力分级：**只有 UserPromptSubmit 与 PreToolUse 真阻断**（前者拦下
+本轮提问、后者拦下工具调用）；其余阶段事件（SessionStart / SessionEnd /
+SubagentStop / PreCompact / Stop / PostToolUse）是**通知型**——exit 2 /
+``decision: block`` 一律降级为警告，绝不拦截生命周期本身（会话不能被
+自己的审计脚本锁死）。
 
 Config schema（镜像 Claude Code），配置在 ``~/.openx/settings.json``（全局）
 和/或项目 ``<workspace>/.openx/settings.json``（项目级，**按事件扩展**全局——
@@ -15,15 +31,18 @@ Config schema（镜像 Claude Code），配置在 ``~/.openx/settings.json``（�
         ],
         "PostToolUse": [...],
         "UserPromptSubmit": [...],
-        "Stop": [...]
+        "Stop": [...],
+        "SessionStart": [...],
+        "SessionEnd": [...],
+        "SubagentStop": [...],
+        "PreCompact": [...]
       }
     }
 
 钩子语义（镜像 Claude Code）
 ============================
 - ``matcher`` 是对工具名的 fnmatch 模式（缺省或 ``"*"`` = 所有工具）；
-  仅工具事件（PreToolUse / PostToolUse）使用 matcher，UserPromptSubmit /
-  Stop 忽略它。
+  仅工具事件（PreToolUse / PostToolUse）使用 matcher，其余阶段事件忽略它。
 - 事件 payload 以 JSON 写入钩子进程 stdin。
 - **exit 0** → 放行；若 stdout 能解析成 ``{"decision": "block", "reason": ...}``
   则阻断，剩余钩子不再运行。
@@ -31,6 +50,7 @@ Config schema（镜像 Claude Code），配置在 ``~/.openx/settings.json``（�
   不再运行。
 - **timeout** → kill 进程，追加非阻塞警告。
 - **其他非零** → 非阻塞警告（stderr 首行），不影响模型。
+- 是否消费 ``blocked`` 由**触发点**决定（见上方分级）——runner 层只聚合。
 """
 
 from __future__ import annotations
@@ -55,8 +75,19 @@ from typing import Any, Optional
 
 from ...config import SETTINGS_PATH
 
-# 支持的事件类型（其余键一律忽略）
-HOOK_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop")
+# 支持的事件类型（其余键一律忽略）。会话阶段模型见模块 docstring：
+# SessionStart → (UserPromptSubmit → PreToolUse/PostToolUse → SubagentStop
+# → PreCompact → Stop)* → SessionEnd
+HOOK_EVENTS = (
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "Stop",
+    "SessionStart",
+    "SessionEnd",
+    "SubagentStop",
+    "PreCompact",
+)
 # 仅工具事件使用 matcher；其余事件忽略 matcher，有条目即触发
 _TOOL_EVENTS = ("PreToolUse", "PostToolUse")
 # 默认单钩子超时（秒）；条目里的 "timeout" 覆盖
@@ -166,6 +197,72 @@ def build_stop_payload(
     return {
         "hook_event_name": "Stop",
         "stop_reason": stop_reason,
+        "workspace": workspace,
+        "session_id": session_id,
+    }
+
+
+def build_sessionstart_payload(
+    source: str,
+    workspace: str = "",
+    session_id: str = "",
+) -> dict[str, Any]:
+    """SessionStart 事件 payload。
+
+    ``source`` 取 ``"startup"``（进程启动）或 ``"clear"``（清上下文重开
+    会话——CLI /clear、serve 新建对话）。
+    """
+    return {
+        "hook_event_name": "SessionStart",
+        "source": source,
+        "workspace": workspace,
+        "session_id": session_id,
+    }
+
+
+def build_sessionend_payload(
+    reason: str,
+    workspace: str = "",
+    session_id: str = "",
+) -> dict[str, Any]:
+    """SessionEnd 事件 payload（agent 关停：CLI 退出 / serve 停服）。"""
+    return {
+        "hook_event_name": "SessionEnd",
+        "reason": reason,
+        "workspace": workspace,
+        "session_id": session_id,
+    }
+
+
+def build_subagentstop_payload(
+    subagent_type: str,
+    description: str = "",
+    workspace: str = "",
+    session_id: str = "",
+) -> dict[str, Any]:
+    """SubagentStop 事件 payload（一个子代理收尾时触发于父会话）。"""
+    return {
+        "hook_event_name": "SubagentStop",
+        "subagent_type": subagent_type,
+        "description": description,
+        "workspace": workspace,
+        "session_id": session_id,
+    }
+
+
+def build_precompact_payload(
+    trigger: str,
+    workspace: str = "",
+    session_id: str = "",
+) -> dict[str, Any]:
+    """PreCompact 事件 payload。
+
+    ``trigger`` 取 ``"manual"``（显式 /compact）或 ``"auto"``（历史逼近
+    上限的自动压缩）。
+    """
+    return {
+        "hook_event_name": "PreCompact",
+        "trigger": trigger,
         "workspace": workspace,
         "session_id": session_id,
     }
@@ -458,5 +555,28 @@ if __name__ == "__main__":
             SETTINGS_PATH = _saved_settings
         assert not empty.has_hooks("PreToolUse", "shell")
         assert asyncio.run(empty.run("Stop", {"hook_event_name": "Stop"})).warnings == []
+
+        # 会话阶段事件：matcher 被忽略（有条目即触发），payload 形状固定
+        phase_runner = HookRunner({
+            "SessionStart": [{"matcher": "ignored",
+                              "hooks": [{"type": "command", "command": ok}]}],
+            "SessionEnd": [{"hooks": [{"type": "command", "command": ok}]}],
+            "SubagentStop": [{"hooks": [{"type": "command", "command": ok}]}],
+            "PreCompact": [{"hooks": [{"type": "command", "command": js}]}],
+        }, workspace=_td, session_id="selftest")
+        for event in ("SessionStart", "SessionEnd", "SubagentStop"):
+            # matcher 缺省/无关都不影响触发（非工具事件一律忽略 matcher）
+            assert phase_runner.has_hooks(event) is True
+        for event, payload in (
+            ("SessionStart", build_sessionstart_payload("startup", str(_td), "s")),
+            ("SessionEnd", build_sessionend_payload("shutdown", str(_td), "s")),
+            ("SubagentStop",
+             build_subagentstop_payload("general-purpose", "find X", str(_td), "s")),
+            ("PreCompact", build_precompact_payload("auto", str(_td), "s")),
+        ):
+            out = asyncio.run(phase_runner.run(event, payload))
+            assert not out.warnings, (event, out.warnings)
+        assert build_sessionstart_payload("clear")["source"] == "clear"
+        assert build_precompact_payload("manual")["trigger"] == "manual"
 
     print("openx/kernel/audit/hooks.py OK ✓")

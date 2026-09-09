@@ -7,6 +7,7 @@ TestServer 与测试同进程同事件循环（pytest-asyncio auto）。
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -52,12 +53,15 @@ class FakeAgent:
     class _Hooks:
         def __init__(self):
             self.session_id = "sess-live"
+            self.workspace = "/tmp/x"
 
     def __init__(self):
         self.session_id = "sess-live"
         self.config = self._Cfg()
         self.hooks = self._Hooks()
         self.history = FakeHistory()
+        self._system_prompt = "fake system prompt"
+        self.fired_hooks = []   # _fire_hook 记录器（阶段钩子接线断言用）
         self.todos = []
         self.session_store = None
         self.workspace = None
@@ -70,6 +74,10 @@ class FakeAgent:
 
     def clear_history(self):
         self.history.clear()
+
+    async def _fire_hook(self, event, payload):
+        """阶段钩子触发点记录（SessionStart 等）；真实 agent 走通知型实现。"""
+        self.fired_hooks.append((event, payload))
 
     def _build_tools(self):
         return dict(self.tools)
@@ -175,6 +183,89 @@ async def test_session_events_replay(server):
 async def test_session_events_404(server):
     resp = await server.get("/api/sessions/no-such-id/events")
     assert resp.status == 404
+
+
+# ── 任务路径（GET /api/trace）────────────────────────────────────
+
+
+async def test_trace_live(server):
+    """实时会话：内存历史按回合分组 + 当前运行时系统 prompt + 工具清单。"""
+    resp = await server.get("/api/trace")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["ok"] is True
+    assert data["data"]["session_id"] == "sess-live"
+    assert data["data"]["system_prompt"] == "fake system prompt"
+    assert data["data"]["system_prompt_live"] is True
+    assert data["data"]["tools"] == ["read_file", "write_file"]
+    rounds = data["data"]["rounds"]
+    assert len(rounds) == 1
+    assert rounds[0]["user"] == "hi"
+    assert rounds[0]["assistant"] == "hello!"
+    assert rounds[0]["steps"] == [] and rounds[0]["tool_outputs"] == []
+
+
+async def test_trace_replay_with_tool_round(server, workspace):
+    """历史会话：盘上消息分组；tool 消息按 tool_call_id 回配工具名；
+    系统 prompt 未落盘 -> 如实置空并标记非实时。"""
+    store = SessionStore.create(workspace, "test-model", session_id="sess-tools")
+    store.append_messages([
+        {"role": "user", "content": "read the file"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call-1", "function": {"name": "read_file",
+                                          "arguments": json.dumps({"path": "a.py"})}},
+        ]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "file body"},
+        {"role": "assistant", "content": "done"},
+    ])
+    resp = await server.get("/api/trace?session=sess-tools")
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["ok"] is True
+    # 历史会话：系统 prompt / 工具清单未持久化——空且非实时，绝不冒充
+    assert data["data"]["system_prompt"] == ""
+    assert data["data"]["system_prompt_live"] is False
+    assert data["data"]["tools"] == []
+    rounds = data["data"]["rounds"]
+    assert len(rounds) == 1
+    r = rounds[0]
+    assert r["user"] == "read the file"
+    assert r["assistant"] == "done"
+    # 工具调用：入参只派生短串（target = a.py），绝不原样回传
+    assert r["steps"] == [{"name": "read_file", "args_summary": "a.py", "target": "a.py"}]
+    # 工具输出：按 tool_call_id 回配名称
+    assert r["tool_outputs"] == [
+        {"name": "read_file", "output": "file body", "truncated": False},
+    ]
+
+
+async def test_trace_truncates_long_output(server, workspace):
+    """超 MAX_TRACE_TEXT 的输出截断并置 truncated 标记。"""
+    from openx.app.serve.api import MAX_TRACE_TEXT
+
+    store = SessionStore.create(workspace, "test-model", session_id="sess-long")
+    store.append_messages([
+        {"role": "user", "content": "big"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c", "function": {"name": "shell",
+                                     "arguments": json.dumps({"command": "cat big"})}},
+        ]},
+        {"role": "tool", "tool_call_id": "c", "content": "x" * (MAX_TRACE_TEXT + 100)},
+        {"role": "assistant", "content": "ok"},
+    ])
+    resp = await server.get("/api/trace?session=sess-long")
+    data = await resp.json()
+    out = data["data"]["rounds"][0]["tool_outputs"][0]
+    assert out["truncated"] is True
+    assert len(out["output"]) < MAX_TRACE_TEXT + 100
+    assert "已截断" in out["output"]
+
+
+async def test_trace_404(server):
+    resp = await server.get("/api/trace?session=no-such-id")
+    assert resp.status == 404
+    data = await resp.json()
+    assert data["ok"] is False
 
 
 # ── WebSocket 往返 ──────────────────────────────────────────────
@@ -682,4 +773,60 @@ async def test_ws_message_with_attachments_builds_content(server, workspace):
     assert captured and isinstance(captured[0], list)
     assert any(p.get("type") == "openx_file" for p in captured[0])
     assert captured[0][0]["text"] == "看下这个文件"
+    await ws.close()
+
+
+# ── 会话阶段钩子（web 侧接线）────────────────────────────────────
+
+
+async def test_session_new_fires_sessionstart_clear(server, agent):
+    """POST /api/session/new → SessionStart(source=clear) 阶段钩子触发
+    （后台 create_task，稍等一个事件循环刻度后可见）。"""
+    resp = await server.post("/api/session/new")
+    assert resp.status == 200
+    await asyncio.sleep(0.1)
+    hits = [p for e, p in agent.fired_hooks if e == "SessionStart"]
+    assert len(hits) == 1
+    assert hits[0]["hook_event_name"] == "SessionStart"
+    assert hits[0]["source"] == "clear"
+
+
+async def test_ws_userpromptsubmit_hook_blocks_turn(server, agent, tmp_path):
+    """UserPromptSubmit 钩子 exit 2 → web 端同样拦下本轮提问（对齐 CLI
+    REPL）：广播 user_message + 拦截说明 text_delta + result(error)，
+    回合从不真正启动（FakeAgent 的 tool 事件绝不出现）。"""
+    from openx.kernel.audit.hooks import HookRunner
+
+    block = tmp_path / "block.sh"
+    block.write_text("#!/bin/sh\necho 'prompt vetoed' >&2\nexit 2\n")
+    block.chmod(0o755)
+    agent.hooks = HookRunner(
+        {"UserPromptSubmit": [
+            {"hooks": [{"type": "command", "command": str(block)}]}
+        ]},
+        workspace="/tmp/x",
+        session_id="sess-live",
+    )
+
+    ws = await server.ws_connect("/ws")
+    await ws.receive_json(timeout=5)  # init
+    await ws.receive_json(timeout=5)  # history
+    await ws.send_json({"type": "message", "text": "dangerous prompt"})
+
+    events = []
+    for _ in range(20):
+        ev = await ws.receive_json(timeout=5)
+        events.append(ev)
+        if ev["type"] == "result":
+            break
+    types = [e["type"] for e in events]
+    assert types[0] == "user_message"
+    assert types[-1] == "result"
+    # 回合被拦：FakeAgent stream_run 的工具事件绝不出现
+    assert "tool_use" not in types and "tool_result" not in types
+    result = events[-1]
+    assert result["is_error"] is True
+    assert "blocked by hook" in result["error"]
+    delta = next(e for e in events if e["type"] == "text_delta")
+    assert "prompt vetoed" in delta["text"]
     await ws.close()

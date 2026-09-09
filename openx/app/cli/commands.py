@@ -183,6 +183,15 @@ async def _cmd_plugins(agent, console, args):
 @register("clear", description="Clear screen and conversation history")
 async def _cmd_clear(agent, console, args):
     agent.clear_history()
+    # 清上下文重开 = 会话阶段事件 SessionStart(source=clear)——与 serve
+    # 新建对话同源（通知型，失败静默）
+    from ...kernel.audit.hooks import build_sessionstart_payload
+
+    await agent._fire_hook("SessionStart", build_sessionstart_payload(
+        "clear",
+        workspace=agent.hooks.workspace,
+        session_id=agent.hooks.session_id,
+    ))
     console.raw.clear()
     console.print_header(instructions_loaded=agent.instructions.has_any)
     console.print_status_line()
@@ -1014,8 +1023,10 @@ async def _cmd_hooks(agent, console, args):
         console.print_info(
             "No hooks configured.\n\n"
             "Add hooks under the \"hooks\" key in ~/.openx/settings.json or\n"
-            "<workspace>/.openx/settings.json (events: PreToolUse, PostToolUse,\n"
-            "UserPromptSubmit, Stop)."
+            "<workspace>/.openx/settings.json. A session is divided into\n"
+            "phases; hooks can be inserted at any of them (events:\n"
+            "SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,\n"
+            "SubagentStop, PreCompact, Stop, SessionEnd)."
         )
         return True
     console.raw.print("\n[bold]Configured Hooks[/bold]\n")

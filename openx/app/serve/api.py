@@ -16,6 +16,7 @@ serve 原本只有三个只读端点（``/ws``、``/api/sessions``、复盘）�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import uuid
@@ -335,6 +336,26 @@ def _reset_live_session(session: Any, workspace: str) -> str:
 
     session._live_events = []
     session._live_user = None
+    # 会话重开（SessionStart 用户钩子 / source=clear，通知型）：与 CLI
+    # /clear 同一阶段。本函数是同步重绑（调用方依赖全程无 await 的原子
+    # 纪律），钩子命令是异步的——挂到当前事件循环后台触发。强引用存
+    # 在 session 上（asyncio 对 task 只持弱引用，防被 GC 中途回收）。
+    try:
+        from ...kernel.audit.hooks import build_sessionstart_payload
+
+        fire = agent._fire_hook("SessionStart", build_sessionstart_payload(
+            "clear",
+            workspace=agent.hooks.workspace,
+            session_id=agent.hooks.session_id,
+        ))
+        tasks = getattr(session, "_phase_hook_tasks", None)
+        if tasks is None:
+            tasks = session._phase_hook_tasks = []
+        task = asyncio.get_running_loop().create_task(fire)
+        tasks.append(task)
+        task.add_done_callback(tasks.remove)
+    except Exception:
+        pass  # 钩子是审计附件；触发失败绝不影响重绑
     try:
         from ...kernel import protocol
 
@@ -1084,6 +1105,153 @@ async def artifacts_get(request: web.Request) -> web.Response:
     return _ok({"session_id": session_id, "artifacts": items})
 
 
+# ── 任务路径（trace）────────────────────────────────────────────
+
+#: 路径面板单条文本（用户 prompt / 工具输出）的截断上限；系统 prompt
+#: 属运行时事实、整段下发（前端折叠展示，不截）
+MAX_TRACE_TEXT = 6000
+
+
+def _content_text(content: Any) -> str:
+    """message content（str 或 parts 列表）→ 纯文本。
+
+    会话文件里的图片/附件 part 落盘时已折叠为占位文本（见
+    ``sessions._sanitize_message``）；内存历史仍持丰富 parts——只取
+    text 段，与列表页标题的抽取语义一致但**不截断**（这里要全文）。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [p.get("text", "") for p in content if isinstance(p, dict)]
+        return "\n".join(t for t in parts if t)
+    return ""
+
+
+def _clip(text: str) -> tuple[str, bool]:
+    """超限截断 → ``(文本, 是否截断)``；前端据此提示"已截断"。"""
+    text = text or ""
+    if len(text) <= MAX_TRACE_TEXT:
+        return text, False
+    return text[: MAX_TRACE_TEXT] + "\n…（已截断）", True
+
+
+def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """消息序列 → 按用户回合分组的路径视图（读侧派生，绝不抛）。
+
+    回合边界 = 每条 ``user`` 消息；回合内：
+    - ``steps``：assistant 的 ``tool_calls`` 逐个展开——入参只经
+      ``tool_display`` 派生短串（``write_file`` 的 content 可能含整个
+      文件，绝不原样回传）；
+    - ``tool_outputs``：``role=tool`` 消息按 ``tool_call_id`` 回配步骤名
+      （消息本身不带工具名）；
+    - ``assistant``：无工具调用的 assistant 消息 = 本轮最终回复。
+
+    压缩后的历史可能以 assistant 开头（无先导 user）——兜底一个空
+    user 回合开头，消息不丢；纯 tool 序列前的孤儿（加载时已被
+    ``_drop_orphan_tool_messages`` 清掉）防御性跳过。
+    """
+    rounds: list[dict[str, Any]] = []
+    id2name: dict[str, str] = {}
+
+    def current() -> dict[str, Any] | None:
+        return rounds[-1] if rounds else None
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            text, _ = _clip(_content_text(msg.get("content")))
+            rounds.append({
+                "index": len(rounds) + 1,
+                "user": text,
+                "steps": [],
+                "tool_outputs": [],
+                "assistant": "",
+            })
+        elif role == "assistant":
+            round_ = current()
+            if round_ is None:
+                round_ = {"index": 1, "user": "", "steps": [],
+                          "tool_outputs": [], "assistant": ""}
+                rounds.append(round_)
+            calls = msg.get("tool_calls") or []
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") or {}
+                name = str(fn.get("name") or "tool")
+                call_id = str(call.get("id") or "")
+                if call_id:
+                    id2name[call_id] = name
+                summary, target = tool_display(name, fn.get("arguments"))
+                round_["steps"].append({
+                    "name": name,
+                    "args_summary": summary,
+                    "target": target,
+                })
+            if not calls:
+                # 最终回复（一轮可能有多段：如触顶收尾），拼接保留全文
+                text, _ = _clip(_content_text(msg.get("content")))
+                if round_["assistant"]:
+                    round_["assistant"] += "\n" + text
+                else:
+                    round_["assistant"] = text
+        elif role == "tool":
+            round_ = current()
+            if round_ is None:
+                continue
+            output, truncated = _clip(_content_text(msg.get("content")))
+            name = id2name.get(
+                str(msg.get("tool_call_id") or ""),
+                str(msg.get("name") or "tool"),
+            )
+            round_["tool_outputs"].append({
+                "name": name,
+                "output": output,
+                "truncated": truncated,
+            })
+    return rounds
+
+
+async def trace_get(request: web.Request) -> web.Response:
+    """GET /api/trace?session=<id> → 任务路径：按回合分组的执行轨迹。
+
+    每回合含用户 prompt / 工具调用（派生短串）/ 工具输出 / 最终回复。
+    **系统 prompt 只在实时会话可得**——它是运行时装配（``agent
+    ._system_prompt``），不随会话文件落盘：复盘历史会话时如实置空并
+    ``system_prompt_live=false``，绝不拿当前 prompt 冒充历史。同理，
+    ``tools`` 清单也只在实时会话返回（历史会话的工具表未持久化）。
+    """
+    session_id = request.rel_url.query.get("session", "").strip()
+    agent = _agent(request)
+
+    if session_id:
+        from ...orchestration.sessions import SessionStore
+        meta = SessionStore.resolve_anywhere(session_id)
+        if meta is None or meta.path is None:
+            return _fail(f"session not found: {session_id}", status=404)
+        _meta, messages = SessionStore.load(meta.path)
+        system_prompt = ""
+        prompt_live = False
+        tools: list[str] = []
+    else:
+        history = getattr(agent, "history", None)
+        messages = list(getattr(history, "messages", None) or [])
+        system_prompt = str(getattr(agent, "_system_prompt", "") or "")
+        prompt_live = bool(system_prompt)
+        tools = sorted(getattr(agent, "tools", {}) or {})
+        session_id = str(getattr(agent, "session_id", "") or "")
+
+    return _ok({
+        "session_id": session_id,
+        "system_prompt": system_prompt,
+        "system_prompt_live": prompt_live,
+        "tools": tools,
+        "rounds": _trace_rounds(messages),
+    })
+
+
 # ── 路由注册 ────────────────────────────────────────────────────
 
 def register_api(app: web.Application, session: Any, workspace: str) -> None:
@@ -1120,3 +1288,4 @@ def register_api(app: web.Application, session: Any, workspace: str) -> None:
     app.router.add_get("/api/files/content", files_content)
     app.router.add_get("/api/files/raw", files_raw)
     app.router.add_get("/api/artifacts", artifacts_get)
+    app.router.add_get("/api/trace", trace_get)
