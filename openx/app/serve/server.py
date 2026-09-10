@@ -410,17 +410,43 @@ async def run_serve(
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
+
+    def _request_stop() -> None:
+        """收到停止信号：先把在途回合落成可续跑的 checkpoint，再停服务。
+
+        次序是有意的--反序就是"先丢了状态再想存"。``flush_checkpoint`` 是
+        同步落盘、不抛异常（失败只降级），所以它不会挡住关停。
+
+        serve 用 ``add_signal_handler`` 而非 ``signal.signal``（事件循环
+        线程内回调，符合 asyncio 惯例）；CLI 侧的 InterruptController 因此
+        不需要在这里装信号--两处各管一段，互不干扰。
+        """
+        try:
+            agent.flush_checkpoint("signal")
+        except Exception:
+            _log.debug("checkpoint flush on shutdown failed", exc_info=True)
+        stop_event.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, stop_event.set)
+            loop.add_signal_handler(sig, _request_stop)
         except (NotImplementedError, RuntimeError):
             pass  # 非主线程 / 平台不支持信号 → 靠 KeyboardInterrupt 兜底
 
     try:
         await stop_event.wait()
     except KeyboardInterrupt:
-        pass
+        # 兜底路径（信号处理器装不上）：同样先落盘再退
+        try:
+            agent.flush_checkpoint("signal")
+        except Exception:
+            _log.debug("checkpoint flush on interrupt failed", exc_info=True)
     finally:
+        # 关停前再兜一次：即使 stop 由其它路径触发，也不让在途进展丢掉
+        try:
+            agent.flush_checkpoint("signal")
+        except Exception:
+            _log.debug("checkpoint flush on shutdown failed", exc_info=True)
         try:
             session.stop()
         except Exception:

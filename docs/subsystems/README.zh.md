@@ -11,3 +11,4 @@
 | 后台任务 | [background-tasks.zh.md](background-tasks.zh.md) | 分离式 shell 命令，可 tail 日志、可停止 |
 | Hooks | [hooks.zh.md](hooks.zh.md) | 四个生命周期事件上的 Claude-Code 兼容 shell hooks |
 | MCP | [mcp.zh.md](mcp.zh.md) | stdio 方式的 Model Context Protocol servers，零额外依赖 |
+| 容灾 | [recovery.zh.md](recovery.zh.md) | 回合级 checkpoint：恢复被打断的回合，且不重放已完成的工具调用 |

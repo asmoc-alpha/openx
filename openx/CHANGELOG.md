@@ -4,6 +4,62 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.2 — Recovery checkpoints & interrupt handling
+
+### Recovery: turn-level checkpoints
+
+- Added turn-level checkpoints — after **every tool round** OpenX persists the
+  in-flight turn, so a crash, power loss, Ctrl-C or `kill` no longer throws away
+  the work already done. Previously a session was only saved at turn boundaries
+- Added `--recover` (with `--continue` / `--resume`) to resume an interrupted turn,
+  and `--recover-mode {auto,strict,drop}` to choose what happens when the
+  checkpoint is unusable
+- Completed tool calls are **never replayed**. A checkpoint is committed only once
+  every tool result for the round is in the message log, so the log itself is the
+  idempotency unit — no skip-list, no retry heuristics
+- Calls that were still in flight when the process died are reported to the model
+  as `[status: interrupted]` instead of being re-run, since their side effects are
+  genuinely unknown
+- Added the `on_checkpoint` / `on_resume` plugin lifecycle hooks — declared since
+  the lifecycle protocol landed, now actually triggered
+- Added the `checkpoint`, `checkpoint_discarded`, `turn_started` and `resume`
+  ledger events, and implemented the `interrupt` / `resource_gate_tripped` events
+  that were already reserved in the kernel design
+- Interrupts are additive to the existing exit paths: Ctrl-C still raises
+  `KeyboardInterrupt` and `SIGTERM` still terminates normally — OpenX only flushes
+  the in-flight turn before the process unwinds. Esc and the web client interrupt
+  reuse the existing cancellation path
+- Fixed the ledger hash chain restarting whenever a session was resumed — `seq`
+  continued but `digest` started over from empty, which broke the chain exactly
+  when it was needed to prove the history was unmodified
+
+### Web UI
+
+- Added file uploads and image attachments to the web chat
+- Added graph rendering and artifact/path panels
+- Added the three-pane layout, with collapsible sidebars
+- Added hook activity to the web surface
+
+### CLI
+
+- Fixed thinking output not being shown for resumed sessions
+- Added the current tool (`name(summary)`) to the fleet view so the deck shows
+  what each agent is doing right now
+
+### Search
+
+- `web_search` now routes CJK queries to the Chinese-language region (affects
+  ranking only) and detects rate-limit / anomaly challenge pages as backend
+  failures, so they fall through the degradation chain instead of being reported
+  as "no results"
+
+### Install
+
+- Added `install.sh` — install with
+  `curl -fsSL https://raw.githubusercontent.com/asmoc-alpha/openx/main/install.sh | bash`;
+  prefers pipx, then uv, then a venv at `~/.openx/venv`, and honours `OPENX_REF`
+  (git ref) and `OPENX_EXTRAS` (e.g. `web`)
+
 ## 0.1.1 — Model groups & Anthropic-compatible protocol
 
 ### Configuration: model groups

@@ -49,12 +49,19 @@ class Ledger:
         sink: Callable[[Event], None],
         session: str = "",
         start_seq: int = 0,
+        start_digest: str = "",
     ) -> None:
-        """挂接账本出口：seq 从 start_seq 续起（恢复会话不重号）。"""
+        """挂接账本出口：seq 从 start_seq 续起（恢复会话不重号）。
+
+        ``start_digest`` 是**哈希链**的续接起点（会话文件的末条 digest）。
+        缺省空串 = 从新链起头，与过去行为一致；但恢复会话时必须传入--
+        否则 seq 续上了、链却从头再来，恰好在我们最需要它证明"这段历史
+        没被改过"的时刻断掉。取值见 ``SessionStore.ledger_tail_digest()``。
+        """
         self._sink = sink
         self._session = session
         self._seq = start_seq
-        self._prev_digest = ""
+        self._prev_digest = start_digest or ""
 
     def emit(
         self,
@@ -114,4 +121,16 @@ if __name__ == "__main__":
     ledger2 = Ledger()
     ledger2.attach(_Boom())
     ledger2.emit("c", {"type": "c"})  # 不抛
+
+    # 恢复续接：seq 与哈希链**都**从既有末条续起（chain 不断）
+    ledger3 = Ledger()
+    ledger3.attach(_Sink(), session="s1", start_seq=5, start_digest="prev-digest")
+    e3 = ledger3.emit("d", {"type": "d"})
+    assert e3.seq == 6, e3.seq
+    assert e3.digest == digest_of("prev-digest", e3)
+    # 缺省 start_digest：行为与过去一致（从新链起头）
+    ledger4 = Ledger()
+    ledger4.attach(_Sink(), session="s1", start_seq=5)
+    e4 = ledger4.emit("d", {"type": "d"})
+    assert e4.digest == digest_of("", e4)
     print("openx/kernel/ledger.py OK ✓")

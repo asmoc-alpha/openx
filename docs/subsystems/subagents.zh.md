@@ -35,8 +35,10 @@ Report findings as a numbered list with file:line references.
 
 agent 流式输出期间，输入框**下方**渲染一个状态面板，实时更新（5 Hz）：
 
-- **Plan 面板**——agent 的 todos 清单：`✓` 已完成（绿色）、进行中显示 spinner 加任务的 `activeForm`、`○` 待办；长列表折叠为六行加 `+N more`。
-- **Agents 行**——每个运行中的子 agent（`task` 工具或 workflow）一行：spinner、描述标签、工具计数、耗时；结束时 `✓`/`✗`。超过四个 agent 后折叠。
+- **Plan 面板**——agent 的 todos 清单：`✓` 已完成（绿色）、进行中显示 spinner 加任务的 `activeForm`、`○` 待办；长列表折叠为六行加 `+N more`。**全部**完成后整块折叠成一行汇总（`✓ Plan 3/3`），把版面还给正文。
+- **Agents 行**——每个运行中的子 agent（`task` 工具或 workflow）一行：spinner、描述标签、工具计数、耗时；结束时 `✓`/`✗`。超过四个 agent 后折叠。**运行中**的 agent 在其行下多一条缩进活动行（`⎿ read_file(path=src/auth.py)`），显示它此刻在做什么；已结束的不显示。
+
+spinner 用 Claude Code 的星形家族（`· ✢ ✳ ✶ ✻ ✽`，每帧 120ms）。回合结束时正文末尾落一行收尾：`✻ Cooked for 12.3s`，过去式动词随机取。
 
 流式输出期间按 **Ctrl-O** 可把主响应区循环切入某个子 agent 的详情视图（其捕获的工具活动与文本）再切回来。turn 结束面板消失；短终端预算会在面板挤占回复之前先裁剪它。
 

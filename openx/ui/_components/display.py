@@ -17,8 +17,8 @@ from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
 
-from .._helpers import trunc
-from .._style import DIM, ERROR_STYLE
+from .._helpers import done_line, trunc
+from .._style import DIM, ERROR_STYLE, SPIN_FRAMES
 
 
 class DisplayMixin:
@@ -29,24 +29,28 @@ class DisplayMixin:
 
     # ── streaming status ────────────────────────────────────────
 
-    _SPINNER_FRAMES = ["●", "○", "◌", "○"]
+    # 与流式路径同一份星形家族（定义在 _style.py）。--no-stream 无动画，
+    # 故本路径只取家族首帧作静态指示，不逐帧推进。
+    _SPINNER_FRAMES = list(SPIN_FRAMES)
 
     def print_streaming_start(self) -> None:
         """Print the *Thinking…* spinner before generation begins."""
         self._console.print()
-        self._console.print("[dim]● Thinking…[/dim]")
+        self._console.print(f"[dim]{SPIN_FRAMES[0]} Thinking…[/dim]")
 
     def print_streaming_done(
         self, elapsed: float, tokens: int, tool_calls: int = 0
     ) -> None:
-        """Dim summary line replacing the spinner after generation."""
+        """回合结束行 ``✻ Cooked for 42s``（对标 Claude Code）。
+
+        与流式路径同款收尾行，唯一差别是这里附上用量摘要——流式路径的
+        输入框状态行已常驻展示 in/out 用量，本路径没有，不在这里给就无处可查。
+        """
         tok_s = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
-        parts = f"● Done  ·  {elapsed:.1f}s  ·  {tok_s} tokens"
+        suffix = f"{tok_s} tokens"
         if tool_calls > 0:
-            parts += (
-                f"  ·  {tool_calls} tool call{'s' if tool_calls > 1 else ''}"
-            )
-        self._console.print(f"[dim]{parts}[/dim]")
+            suffix += f"  ·  {tool_calls} tool call{'s' if tool_calls > 1 else ''}"
+        self._console.print(done_line(elapsed, suffix=suffix))
 
     # ── tool calls ──────────────────────────────────────────────
 
@@ -77,8 +81,8 @@ class DisplayMixin:
         self._console.print()
         md = Markdown(text, code_theme=self.config.syntax_theme)
         self._console.print(md)
-        # 与流式分支同款留白：正文与下一轮输入框之间恒隔 2 行。
-        self._console.print()
+        # 与流式分支同款留白：正文之后恒隔 1 行（= _BODY_FRAME_GAP，对标
+        # Claude Code）。紧随其后是 print_streaming_done 的结束行。
         self._console.print()
 
     def print_code(self, code: str, language: str = "python") -> None:

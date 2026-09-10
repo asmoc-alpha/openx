@@ -90,11 +90,14 @@ from .mcp import MCPManager
 from .permissions import PermissionLevel
 from .orchestration.fleet import FleetMonitor
 from .orchestration.history import ConversationHistory, SUMMARY_MARKER
+from .kernel.recovery import REASON_GATE_TRIPPED, REASON_TOOL_ROUND, ResumePlan
 from .orchestration.sessions import SessionMeta, SessionStore
 from .orchestration.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
 from .kernel.sandbox.host import ToolHost
 from .kernel.assembly.plugin_spec import PLUGIN_SPEC
 from .services import assembly
+from .services.checkpoint import CheckpointManager
+from .services.interrupt import InterruptController
 from .tools.ask_user_tool import AskUserTool
 from .tools.mode_tools import ChooseModeTool
 from .tools.plan_tools import ExitPlanModeTool
@@ -276,7 +279,20 @@ class OpenXAgent:
                 session_store.append_event,
                 session=self.session_id,
                 start_seq=session_store.ledger_start_seq(),
+                # 哈希链也续接：只续 seq 不续链，等于在恢复后的第一条事件上
+                # 断链--恰好是我们最需要链来证明"历史没被改过"的时刻。
+                start_digest=session_store.ledger_tail_digest(),
             )
+        # 容灾（回合级 checkpoint）：无会话存储时整体 no-op（子代理正是如此
+        # --委派任务的中间过程不该进会话文件，也就无所谓续跑）。
+        self._checkpoint = CheckpointManager(self, session_store)
+        # 中断控制器：由端层安装信号（signal 只在主线程可用）、端层登记
+        # 取消目标。agent 只在取消分支里向它问一句"是谁打断的"。
+        self.interrupt: InterruptController | None = None
+        # CLI 挂上的待用恢复方案（--recover 路径）。放这里而不是穿参数，
+        # 是为了不动 interactive / single_shot / serve 三处的调用签名；
+        # 取用即清空（见 _consume_resume）。
+        self.pending_resume: Any = None
         # provider_selected（M5，origin=kernel）：agent 绑定 provider 留痕--
         # "这次回答用了哪个模型"的答案来源。须在 attach_ledger 之后 emit
         # 才落账本；emit 本身安全（未挂接 sink 时仅内存计数，绝不炸）。
@@ -1252,33 +1268,173 @@ class OpenXAgent:
         except Exception:
             pass
 
+    # ── 容灾：回合级 checkpoint 与中断恢复 ───────────────────────
+    #
+    # 机制在 ``kernel/recovery/``（快照形状/原子落盘/恢复裁决），提交策略在
+    # ``services/checkpoint.py``；这里只是"什么时候调"的三个接线点。全部包
+    # try/except：持久化是优化，坏了只是少一次恢复机会，绝不能打断对话
+    # （与 ``_persist_turn`` 同一条纪律）。
+
+    def _begin_checkpoint(
+        self,
+        state: AgentState,
+        new_turn: list[dict[str, Any]],
+        *,
+        engine: str,
+        modal: bool,
+        resumed: bool = False,
+    ) -> None:
+        """回合开始：持有活引用 + 记起点 + 记一条 ``turn_started``。
+
+        ``turn_started`` 是"某个回合曾经开着"的无状态证据：即使没有任何
+        checkpoint 落盘（比如崩在第一个模型请求期间），账本尾部也能看出
+        上一回合没跑完。
+        """
+        try:
+            self._checkpoint.begin_turn(
+                state, new_turn,
+                history_len=len(self.history.messages),
+                engine=engine, modal=modal, resumed=resumed,
+            )
+            from .kernel import get_kernel
+            from .kernel.protocol import turn_started
+
+            get_kernel().emit(
+                "turn_started",
+                turn_started(self.session_id, len(self.history.messages), resumed),
+                origin="user",
+            )
+        except Exception:
+            pass
+
+    def _mark_inflight_checkpoint(self) -> None:
+        """① 工具执行**之前**：标记"这些调用在跑、结果未知"。
+
+        必须在 ``asyncio.gather`` 之前--续跑时据此给这些调用补合成结果
+        而不是重跑它们（它们的副作用可能已经发生了一半）。
+        """
+        try:
+            self._checkpoint.mark_inflight()
+        except Exception:
+            pass
+
+    def _commit_checkpoint(
+        self, *, reason: str = REASON_TOOL_ROUND, gate: str = ""
+    ) -> None:
+        """② 工具轮**收口之后**：提交一个已完成轮次。
+
+        调用点必须在结果消息全部 append 完之后--那时 ``new_turn`` 里每个
+        ``tool_call`` 才有配对结果，消息日志才构成幂等单元，续跑才不会重放。
+        """
+        try:
+            self._checkpoint.commit(reason=reason, gate=gate)
+        except Exception:
+            pass
+
+    def _finish_checkpoint(self) -> None:
+        """回合收口：记一条终局事实 + 删旁挂文件，让"无陈旧 checkpoint"成为默认。"""
+        try:
+            self._checkpoint.finish_turn()
+        except Exception:
+            pass
+
+    def _on_gate_tripped(self, state: AgentState) -> None:
+        """资源闸触顶：先记账、再落一份可续跑的 checkpoint，然后才走收尾。
+
+        价值落点：触顶后的收尾本身**还要再调一次模型**，那次请求同样可能
+        崩溃。有了这份 checkpoint，崩在收尾期间也能 ``--recover`` 回来，
+        而不是丢掉整个回合。
+        """
+        try:
+            from .kernel import get_kernel
+            from .kernel.protocol import resource_gate_tripped
+
+            rounds = int(getattr(state, "tool_rounds", 0) or 0)
+            get_kernel().emit(
+                "resource_gate_tripped",
+                resource_gate_tripped(
+                    "max_tool_rounds", int(self.config.max_tool_rounds), rounds
+                ),
+                origin="kernel",
+            )
+            self._checkpoint.commit(reason=REASON_GATE_TRIPPED, gate="max_tool_rounds")
+        except Exception:
+            pass
+
+    def flush_checkpoint(self, kind: str = "signal") -> int:
+        """中断兜底落盘（**端层 API**，在取消/退出分支里调用）。
+
+        端层（REPL / serve / 单发）捕获取消或 Ctrl-C 之后、清理终端之前调
+        本方法，把当前**在途**进展写成可续跑的 checkpoint。因为提交器持有
+        本回合 ``state`` / ``new_turn`` 的活引用，端层不必知道它们在哪。
+        """
+        try:
+            return self._checkpoint.flush_current(kind)
+        except Exception:
+            return 0
+
+    def note_interrupt(self, kind: str) -> None:
+        """登记中断来源（端层的 Esc / 客户端打断已自行取消了任务）。"""
+        try:
+            if self.interrupt is not None:
+                self.interrupt.note(kind)
+        except Exception:
+            pass
+
+    def enable_interrupts(self) -> InterruptController:
+        """创建并安装中断控制器（端层调用；``signal`` 只在主线程可用）。"""
+        ctl = InterruptController(console=getattr(self, "console", None))
+        ctl.install_signals()
+        self.interrupt = ctl
+        return ctl
+
+    def set_interrupt_target(self, task: Any) -> None:
+        """把当前回合任务登记为取消目标（端层在 await 之前调用）。"""
+        try:
+            if self.interrupt is not None:
+                self.interrupt.set_turn_task(task)
+        except Exception:
+            pass
+
+    def clear_interrupt(self) -> None:
+        """回合收尾：清掉本回合的中断状态（下一次中断重新计数）。"""
+        try:
+            if self.interrupt is not None:
+                self.interrupt.clear()
+        except Exception:
+            pass
+
+    def recover_session(self) -> ResumePlan:
+        """裁决并（可用时）套用磁盘上的 checkpoint。
+
+        由 CLI 在 ``load_session`` 之后、``--recover`` 路径上调用；返回的
+        plan 供调用方决定是否把 ``new_turn`` 作为本轮起点（见 ``stream_run``
+        的 ``resume`` 参数）。
+        """
+        try:
+            return self._checkpoint.recover()
+        except Exception:
+            return ResumePlan()
+
     # ── 非流式运行 ───────────────────────────────────────────────
 
-    async def run(self, user_message: str | list[dict[str, Any]]) -> str:
+    async def run(
+        self,
+        user_message: str | list[dict[str, Any]],
+        *,
+        resume: Any = None,
+    ) -> str:
         """运行一轮对话（非流式）。
 
         基于 ``self.history.messages``：把历史 + 本轮用户消息一并发给 LLM，循环执行
-        工具直到得到最终文本，最后把本轮消息并入历史。
+        工具直到得到最终文本，最后把本轮消息并入历史。``resume`` 非空时从
+        checkpoint 快照接续（同 ``stream_run``；已完成的工具调用不重放）。
         """
-        state = AgentState()
-        user_msg = {"role": "user", "content": user_message}
-        # 消息序列 = system + 历史 + 本轮用户消息
-        state.messages = [
-            {"role": "system", "content": self._system_prompt},
-            *self.history.messages,
-            user_msg,
-        ]
-        # 给 provider 的消息序列只读副本：自定义附件 part 折成文本指引
-        # （历史与 new_turn 仍持丰富 parts 供 serve 展示/记录）
-        state.messages = [
-            dict(m, content=_fold_openx_files(m.get("content")))
-            if isinstance(m.get("content"), list) else m
-            for m in state.messages
-        ]
-        new_turn: list[dict[str, Any]] = [user_msg]  # 本轮待并入历史的新消息
-        # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
-        # provider（tool-call 序列对 provider 格式敏感）。
-        turn_llm = self.llm if not _has_image(user_message) else self.client_for("modal")
+        state, new_turn, turn_llm, modal = self._seed_turn(user_message, resume)
+        self._begin_checkpoint(
+            state, new_turn, engine="run", modal=modal,
+            resumed=resume is not None,
+        )
 
         while state.tool_rounds < self.config.max_tool_rounds:
             response = await turn_llm.chat(
@@ -1304,6 +1460,8 @@ class OpenXAgent:
                         fn["name"], tool, fn["arguments"], tc.get("id", ""),
                     ))
 
+                # ① 在途标记（同 stream_run：先于执行，崩在这里不重跑）
+                self._mark_inflight_checkpoint()
                 results = await asyncio.gather(*(
                     self.tool_executor.execute_prepared(pc) for pc in prepared
                 ))
@@ -1327,8 +1485,11 @@ class OpenXAgent:
                     new_turn.append({"role": "assistant", "content": payload})
                     self.history.add(new_turn)
                     self._persist_turn(new_turn)
+                    self._finish_checkpoint()
                     self.last_tool_rounds = state.tool_rounds
                     return payload
+                # ② 本轮收口（同 stream_run）
+                self._commit_checkpoint()
                 continue
 
             # 无工具调用 —— 最终回复
@@ -1338,6 +1499,7 @@ class OpenXAgent:
             self.history.add(new_turn)
             # 会话持久化（Phase 6）：只写本轮新增消息 + 元数据增量；失败静默
             self._persist_turn(new_turn)
+            self._finish_checkpoint()
             # 逼近上限就自动压缩（失败静默，绝不打断回合）
             await self._maybe_auto_compact()
             # Stop 钩子（v1 仅警告；失败静默）
@@ -1345,6 +1507,8 @@ class OpenXAgent:
             self.last_tool_rounds = state.tool_rounds
             return content
 
+        # 资源闸触顶：先记账 + 落 checkpoint，再走收尾请求
+        self._on_gate_tripped(state)
         # 触顶：追加一次无工具请求让模型收尾总结（失败才回落原提示）。
         # 指引只出现在当次请求（_wrap_up_turn 内部），不落盘。
         wrap = await self._wrap_up_turn(turn_llm, state.messages)
@@ -1352,12 +1516,15 @@ class OpenXAgent:
             new_turn.append({"role": "assistant", "content": wrap})
             self.history.add(new_turn)
             self._persist_turn(new_turn)
+            self._finish_checkpoint()
             await self._maybe_auto_compact()
             await self._fire_stop_hook("end_turn")
             self.last_tool_rounds = state.tool_rounds
             return wrap
         await self._fire_stop_hook("max_rounds")
         self.last_tool_rounds = state.tool_rounds
+        # 收尾请求失败：回合没产出最终回复，但已完成的轮次值得留下
+        self._commit_checkpoint(reason=REASON_GATE_TRIPPED, gate="max_tool_rounds")
         return "Reached maximum tool call rounds without a final response."
 
     async def _wrap_up_turn(
@@ -1383,34 +1550,102 @@ class OpenXAgent:
 
     # ── 流式运行（REPL 主路径）───────────────────────────────────
 
+    @staticmethod
+    def _fold_for_provider(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """给 provider 的消息序列只读副本：附件 part 折成文本指引。
+
+        历史与 ``new_turn`` 仍持丰富 parts 供 serve 展示/记录--只有发往
+        provider 的那份被折叠。
+        """
+        return [
+            dict(m, content=_fold_openx_files(m.get("content")))
+            if isinstance(m.get("content"), list) else m
+            for m in messages
+        ]
+
+    def _consume_resume(self, resume: Any) -> Any:
+        """取出本轮要用的恢复方案：显式参数优先，否则用 CLI 挂上的 pending。
+
+        **取用即清空**：一个 checkpoint 只能被恢复一次。留在槽里会让下一轮
+        又把同一批消息当起点注入，历史里就会出现重复的一轮。
+        """
+        if resume is not None:
+            return resume
+        plan = getattr(self, "pending_resume", None)
+        self.pending_resume = None
+        return plan
+
+    def _seed_turn(
+        self,
+        user_message: str | list[dict[str, Any]],
+        resume: Any,
+    ) -> tuple[AgentState, list[dict[str, Any]], LLMClient, bool]:
+        """准备一次回合的 ``(state, new_turn, turn_llm, modal)``。
+
+        正常路径：system + 历史 + 本轮用户消息，客户端按是否带图选。
+
+        恢复路径（``resume`` 非空）：消息序列取快照里**已完成的前缀**
+        （含为在途调用补的合成结果），轮数从快照续起，provider 选择
+        **沿用快照记录的那一个**--整轮固定同一客户端是硬约束（tool-call
+        序列对 provider 格式敏感），多模回合更不能在恢复时换回 main。
+        """
+        resume = self._consume_resume(resume)
+        state = AgentState()
+        if resume is not None and resume.new_turn:
+            state.tool_rounds = int(resume.tool_rounds or 0)
+            state.messages = self._fold_for_provider([
+                {"role": "system", "content": self._system_prompt},
+                *self.history.messages,
+                *resume.new_turn,
+            ])
+            modal = bool(resume.modal)
+            return (
+                state,
+                [dict(m) for m in resume.new_turn],
+                self.client_for("modal") if modal else self.llm,
+                modal,
+            )
+
+        user_msg = {"role": "user", "content": user_message}
+        state.messages = self._fold_for_provider([
+            {"role": "system", "content": self._system_prompt},
+            *self.history.messages,
+            user_msg,
+        ])
+        # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
+        # provider（tool-call 序列对 provider 格式敏感）。
+        modal = _has_image(user_message)
+        return (
+            state,
+            [user_msg],
+            self.client_for("modal") if modal else self.llm,
+            modal,
+        )
+
     async def stream_run(
-        self, user_message: str | list[dict[str, Any]]
+        self,
+        user_message: str | list[dict[str, Any]],
+        *,
+        resume: Any = None,
     ) -> AsyncIterator[str]:
         """流式运行一轮对话，逐 token yield 文本。
 
         - 文本 token 随到随 yield（打字机效果）；
         - 工具调用以紧凑指示行内显示；
         - 本轮消息最终并入 ``self.history.messages``，实现跨轮记忆；
-        - 生成器耗尽即表示本轮完成，无需哨兵值。
+        - 生成器耗尽即表示本轮完成，无需哨兵值；
+        - ``resume`` 非空时从 checkpoint 快照接续（见 ``_seed_turn``），
+          **已完成的工具调用不重放**。
+
+        容灾接线（见 ``services/checkpoint.py``）：每个工具轮结束提交一次
+        checkpoint；工具执行前留一个在途标记；回合收口删除旁挂文件；
+        取消/中断时兜底落盘。
         """
-        state = AgentState()
-        user_msg = {"role": "user", "content": user_message}
-        state.messages = [
-            {"role": "system", "content": self._system_prompt},
-            *self.history.messages,
-            user_msg,
-        ]
-        # 给 provider 的消息序列只读副本：自定义附件 part 折成文本指引
-        # （历史与 new_turn 仍持丰富 parts 供 serve 展示/记录）
-        state.messages = [
-            dict(m, content=_fold_openx_files(m.get("content")))
-            if isinstance(m.get("content"), list) else m
-            for m in state.messages
-        ]
-        new_turn: list[dict[str, Any]] = [user_msg]
-        # 多模回合（带图）走 modal 角色；整轮固定同一客户端——绝不中途换
-        # provider（tool-call 序列对 provider 格式敏感）。
-        turn_llm = self.llm if not _has_image(user_message) else self.client_for("modal")
+        state, new_turn, turn_llm, modal = self._seed_turn(user_message, resume)
+        self._begin_checkpoint(
+            state, new_turn, engine="stream_run", modal=modal,
+            resumed=resume is not None,
+        )
 
         while state.tool_rounds < self.config.max_tool_rounds:
             done: StreamDone | None = None
@@ -1455,6 +1690,10 @@ class OpenXAgent:
                         fn["name"], tool, fn["arguments"], tc.get("id", ""),
                     ))
 
+                # ① 在途标记：先于执行。此刻 new_turn 已含本轮带 tool_calls 的
+                # assistant 消息、尚无任何结果--崩在这里时，续跑会给这些调用
+                # 补一条 [status: interrupted]，绝不重跑（副作用可能已发生）。
+                self._mark_inflight_checkpoint()
                 results = await asyncio.gather(*(
                     self.tool_executor.execute_prepared(pc) for pc in prepared
                 ))
@@ -1489,8 +1728,12 @@ class OpenXAgent:
                     new_turn.append({"role": "assistant", "content": payload})
                     self.history.add(new_turn)
                     self._persist_turn(new_turn)
+                    self._finish_checkpoint()
                     self.last_tool_rounds = state.tool_rounds
                     return
+                # ② 本**轮**收口：结果消息已全部入列，消息序列成为幂等单元。
+                # 放在结构化输出分支之后：那条路径立即结束回合，不必再提交。
+                self._commit_checkpoint()
                 continue
 
             # ── 最终文本回复 —— 本轮结束 ──────────────────────
@@ -1499,6 +1742,9 @@ class OpenXAgent:
             self.history.add(new_turn)
             # 会话持久化（Phase 6）：只写本轮新增消息 + 元数据增量；失败静默
             self._persist_turn(new_turn)
+            # 回合已完整落进历史，旁挂文件就此作废（先持久化、后删，
+            # 崩在中间时账本末条 reason=turn_end 会让裁决判 ABSENT）
+            self._finish_checkpoint()
             # 逼近上限就自动压缩；通知行只用白名单内的 [dim] 标签
             # （StreamingService._RICH_TAG 只剥离这些标签）
             if await self._maybe_auto_compact():
@@ -1509,6 +1755,9 @@ class OpenXAgent:
             self.last_tool_rounds = state.tool_rounds
             return
 
+        # 资源闸触顶：先记账 + 落 checkpoint，再走收尾请求--收尾本身还要
+        # 调一次模型，崩在那里的概率与之前任何一次请求相同。
+        self._on_gate_tripped(state)
         # 触顶收尾（同 run()）：一次不带工具的最终流请求，让模型总结进度
         done: StreamDone | None = None
         try:
@@ -1533,6 +1782,7 @@ class OpenXAgent:
                 new_turn.append({"role": "assistant", "content": wrap})
                 self.history.add(new_turn)
                 self._persist_turn(new_turn)
+                self._finish_checkpoint()
                 if await self._maybe_auto_compact():
                     yield "\n\n[dim]● Compacting conversation…[/dim]\n"
                 await self._fire_stop_hook("end_turn")
@@ -1541,6 +1791,9 @@ class OpenXAgent:
         yield "\n\n[dim]Max tool rounds reached[/dim]"
         await self._fire_stop_hook("max_rounds")
         self.last_tool_rounds = state.tool_rounds
+        # 收尾请求失败（连总结都没拿到）：回合没产出最终回复，但已完成的
+        # 轮次值得留下 -> 保留旁挂文件，用户可 --recover 接上。
+        self._commit_checkpoint(reason=REASON_GATE_TRIPPED, gate="max_tool_rounds")
 
     # ── 项目探索（委托给 services/exploration）───────────────────
 

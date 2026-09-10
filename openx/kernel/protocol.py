@@ -308,6 +308,134 @@ def result_event(
     }
 
 
+# ── 容灾（recovery）：回合级 checkpoint 与控制事件（内核第六件）─────
+#
+# 事件族归属（openx-kernel-design §3.2）：全部落**控制族**（会话账本）。
+# 与转录族的分工：转录说"发生了什么"，控制说"为什么停下/为什么能继续"。
+
+
+def checkpoint_event(
+    *,
+    phase: str,
+    reason: str,
+    tool_rounds: int,
+    gate: str = "",
+    completed_tool_calls: list[str] | None = None,
+    snapshot_digest: str = "",
+    snapshot_bytes: int = 0,
+    repaired_calls: list[str] | None = None,
+) -> dict[str, Any]:
+    """一次 checkpoint 提交的**事实**（快照体在旁挂文件里，不在这里）。
+
+    账本只存元信息是刻意的：``iter_events`` 会把 payload 原样喂给 Web 回放，
+    把几百 KB 的工具输出塞进事件流会让每次回放都被撑爆。``snapshot_digest``
+    与旁挂文件里的同名字段互为绑定--两侧数据谁被改过都能被发现。
+
+    ``phase``：``committed``（某轮已收口）/ ``inflight``（工具执行中）。
+    ``reason``：谁触发的（tool_round / gate_tripped / esc / signal / turn_end）。
+    """
+    return {
+        "type": "checkpoint",
+        "phase": phase,
+        "reason": reason,
+        "tool_rounds": int(tool_rounds),
+        "gate": gate,
+        "completed_tool_calls": list(completed_tool_calls or []),
+        "snapshot_digest": snapshot_digest,
+        "snapshot_bytes": int(snapshot_bytes),
+        "repaired_calls": list(repaired_calls or []),
+    }
+
+
+def interrupt_event(
+    kind: str,
+    checkpoint_seq: int = 0,
+    tool_rounds: int = 0,
+) -> dict[str, Any]:
+    """一次中断（SIGINT / SIGTERM / Esc / 客户端）及其落盘结果。
+
+    ``kind``：``sigint`` / ``sigterm`` / ``esc`` / ``client``。
+    ``checkpoint_seq``：中断时落下的 checkpoint 事件 seq；**0 表示没落成**
+    （写盘失败或二次信号跳过 flush）--"记了没执行"可接受，"执行了没记"不行，
+    故这里如实记 0 而不是省略字段。
+    """
+    return {
+        "type": "interrupt",
+        "kind": kind,
+        "checkpoint_seq": int(checkpoint_seq),
+        "tool_rounds": int(tool_rounds),
+    }
+
+
+def resource_gate_tripped(
+    gate: str,
+    limit: int,
+    rounds: int,
+    checkpoint_seq: int = 0,
+) -> dict[str, Any]:
+    """资源闸触顶（内核 §2.3）：触顶即记账、即停止，且**可续跑**。
+
+    与中断的区别：中断是外部事件，触顶是内生边界。共同点是都要先落
+    checkpoint 再停--这样触顶从"回合丢失"变成"可从该点继续"。
+    """
+    return {
+        "type": "resource_gate_tripped",
+        "gate": gate,
+        "limit": int(limit),
+        "rounds": int(rounds),
+        "checkpoint_seq": int(checkpoint_seq),
+    }
+
+
+def turn_started(
+    session_id: str,
+    history_len: int,
+    resumed: bool = False,
+) -> dict[str, Any]:
+    """一个回合开始（``resumed`` 标记它是从 checkpoint 接续的）。
+
+    这是"某个回合曾经开着"的无状态证据：即使没有任何 checkpoint 落盘
+    （比如崩在第一个模型请求期间），账本尾部也能看出上一回合没跑完。
+    """
+    return {
+        "type": "turn_started",
+        "session_id": session_id,
+        "history_len": int(history_len),
+        "resumed": bool(resumed),
+    }
+
+
+def resume_event(
+    verdict: str,
+    checkpoint_seq: int = 0,
+    tool_rounds: int = 0,
+    repaired: int = 0,
+    detail: str = "",
+) -> dict[str, Any]:
+    """一次恢复裁决的结论（含被拒的那些--弃用也要留痕）。
+
+    ``verdict`` 取值同 ``recovery.ResumeVerdict``；非 ``ok`` 的记录是审计
+    的关键：它解释"为什么这一轮没被恢复"。
+    """
+    return {
+        "type": "resume",
+        "verdict": verdict,
+        "checkpoint_seq": int(checkpoint_seq),
+        "tool_rounds": int(tool_rounds),
+        "repaired": int(repaired),
+        "detail": detail,
+    }
+
+
+def checkpoint_discarded(reason: str, checkpoint_seq: int = 0) -> dict[str, Any]:
+    """checkpoint 被丢弃（陈旧 / 撕裂 / 身份不符）：弃用本身也是决策。"""
+    return {
+        "type": "checkpoint_discarded",
+        "reason": reason,
+        "checkpoint_seq": int(checkpoint_seq),
+    }
+
+
 # ── 上行（client → server）──────────────────────────────────────
 
 @dataclass
@@ -510,5 +638,41 @@ if __name__ == "__main__":
     _fl = serve_fleet([{"id": 1, "label": "find X", "subagent_type": "explore",
                         "status": "running", "tools_count": 2, "elapsed": 3}])
     assert _fl["type"] == "fleet" and _fl["agents"][0]["tools_count"] == 2
+
+    # 容灾控制事件（第七组：checkpoint / interrupt / 资源闸 / 回合起止 / 恢复）
+    _ck = checkpoint_event(
+        phase="committed", reason="tool_round", tool_rounds=2,
+        completed_tool_calls=["t1", "t2"], snapshot_digest="abc", snapshot_bytes=99,
+    )
+    assert _ck["type"] == "checkpoint" and _ck["phase"] == "committed"
+    assert _ck["completed_tool_calls"] == ["t1", "t2"] and _ck["snapshot_bytes"] == 99
+    # 默认值：可选序列字段恒为 list（消费者可无条件迭代）
+    _ck_min = checkpoint_event(phase="inflight", reason="tool_round", tool_rounds=0)
+    assert _ck_min["completed_tool_calls"] == [] and _ck_min["repaired_calls"] == []
+    assert _ck_min["gate"] == "" and _ck_min["snapshot_digest"] == ""
+
+    _it = interrupt_event("sigint", checkpoint_seq=7, tool_rounds=3)
+    assert _it["type"] == "interrupt" and _it["kind"] == "sigint"
+    assert _it["checkpoint_seq"] == 7
+    # 没落成 checkpoint 时如实记 0，而不是省略字段
+    assert interrupt_event("sigterm")["checkpoint_seq"] == 0
+
+    _gt = resource_gate_tripped("max_tool_rounds", 30, 30, checkpoint_seq=8)
+    assert _gt["type"] == "resource_gate_tripped"
+    assert _gt["gate"] == "max_tool_rounds" and _gt["limit"] == 30 and _gt["rounds"] == 30
+
+    _ts = turn_started("s1", 4)
+    assert _ts["type"] == "turn_started" and _ts["history_len"] == 4
+    assert _ts["resumed"] is False and turn_started("s1", 0, True)["resumed"] is True
+
+    _rs = resume_event("ok", 9, 3, repaired=1, detail="resumed at tool round 3")
+    assert _rs["type"] == "resume" and _rs["verdict"] == "ok" and _rs["repaired"] == 1
+    assert resume_event("torn", detail="x")["checkpoint_seq"] == 0
+
+    _cd = checkpoint_discarded("stale")
+    assert _cd["type"] == "checkpoint_discarded" and _cd["reason"] == "stale"
+    # 全部新事件可 JSON 序列化（要落账本）
+    for _ev in (_ck, _it, _gt, _ts, _rs, _cd):
+        json.loads(json.dumps(_ev))
 
     print("openx/kernel/protocol.py OK ✓")

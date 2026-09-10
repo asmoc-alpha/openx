@@ -32,6 +32,14 @@ OpenX 是一个用 Python 构建的开源终端 coding agent。用自然语言�
 ## 安装
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/asmoc-alpha/openx/main/install.sh | bash
+```
+
+安装脚本按 pipx → `uv` → `~/.openx/venv` 虚拟环境的顺序选择，并在结束时自检。设 `OPENX_EXTRAS=web` 可一并装上 Web 端（`curl … | OPENX_EXTRAS=web bash`），设 `OPENX_REF=<git-ref>` 可安装最新 tag 之外的版本。
+
+从 clone 安装亦可：
+
+```bash
 git clone https://github.com/asmoc-alpha/openx.git
 cd openx
 pip install -e .
@@ -65,7 +73,7 @@ openx "fix the failing test" --output-format json   # headless / CI
 | 页面 | 内容 |
 |---|---|
 | [用户指南](docs/user/index.zh.md) | 命令、模式与权限、配置、会话 |
-| [子系统参考](docs/subsystems/README.zh.md) | subagents、workflows、后台任务、hooks、MCP |
+| [子系统参考](docs/subsystems/README.zh.md) | subagents、workflows、后台任务、hooks、MCP、容灾 |
 | [架构](docs/architecture.zh.md) | 模块树与运行时循环 |
 | [开发指南](docs/development.zh.md) | 贡献者环境、测试、lint |
 | [Cookbook](docs/cookbook/extending.zh.md) | 用自定义 tool 扩展 OpenX |

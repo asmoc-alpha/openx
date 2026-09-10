@@ -70,6 +70,19 @@ inside a section are fine, only `- ` bullets are collected. To cut a release:
 
 1. Prepend the new section to `openx/CHANGELOG.md`.
 2. Bump `version` in `pyproject.toml` and `__version__` in `openx/__init__.py`.
+3. Run `python -m pytest tests -q` — CI runs the same on 3.10 and 3.12.
+4. Commit, then tag and push the tag:
+   ```bash
+   git tag -a v<version> -m "<version> — <title>"
+   git push origin main && git push origin v<version>
+   ```
+5. Create the GitHub release from the same notes:
+   ```bash
+   gh release create v<version> --title "v<version> — <title>" --notes-file <file>
+   ```
+   GitHub attaches the source tarballs automatically, which is what
+   `install.sh` installs from (`git+…@v<version>`) — so the tag must exist
+   before the installer can resolve the default `OPENX_REF`.
 
 ## Documentation
 

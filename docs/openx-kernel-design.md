@@ -1,5 +1,11 @@
-# OpenX 内核详设 v2.1 · 编排 / 沙箱执行 / 插件维护 / 记账
+# OpenX 内核详设 v2.2 · 编排 / 沙箱执行 / 插件维护 / 记账 / 容灾
 
+> v2.2（2026-09-11）增补 **§3.6 容灾**：回合级 checkpoint 与中断恢复落地
+> （`kernel/recovery/` + `services/checkpoint.py` / `services/interrupt.py`），
+> 兑现 §2.3 的 `resource_gate_tripped` 与 §3.2 控制族的 `interrupt`；
+> `on_checkpoint` / `on_resume` 生命周期钩子由"随 P-E"改为**已接线**；
+> 顺带修复 `Ledger.attach` 在恢复会话时哈希链断链的既有缺陷。
+>
 > v2.1（2026-08-27）修订，均来自对 K1/K2 落地代码的审视：
 > ① **实例化期给予面 ToolHost**（§1.4）——注册期拒绝面延伸到工具
 > 实例化，插件任何阶段拿不到 agent 本体；② **内核 API 收敛**回四件 +
@@ -345,6 +351,7 @@ Event = {
 |---|---|---|
 | 转录 | text / thinking / tool_use / tool_result | 会话账本 |
 | 控制 | permission_request / permission_decision / resource_gate_tripped / interrupt | 会话账本 |
+| 容灾 | turn_started / checkpoint / checkpoint_discarded / resume | 会话账本（§3.6） |
 | 组合 | composition_resolved / plugin_loaded / plugin_failed / plugin_skipped / registered / rejected / unregistered | 会话账本（引用全局条目） |
 | 决策 | plugin_promoted / plugin_rolled_back / scaffold_retired / scaffold_restored / ratchet_tightened | **全局账本** |
 
@@ -387,6 +394,73 @@ Event = {
 
 ---
 
+### 3.6 容灾：checkpoint 与中断恢复（v0.1.2 落地）
+
+会话持久化只在**回合边界**发生（`_persist_turn`），且不在关键路径上。
+一次跑几十个工具的回合，第 N 个工具崩溃就归零。容灾补的就是这段窗口：
+**每个工具轮之后把可续跑的状态落盘**，重启从最近的提交点继续，且
+**已完成的工具调用不重放**。
+
+**落点分工（本节的关键决定）**：账本只能追加，而 checkpoint 的语义是
+"最新态取代旧态"。故拆成两处，用摘要互指：
+
+| 落点 | 内容 | 形态 |
+|---|---|---|
+| `~/.openx/sessions/<hash>/<sid>.ckpt.json` | **快照体**（本轮消息、轮数、todos、token） | 覆盖式，原子写 |
+| `<sid>.jsonl` 的 `checkpoint` 事件 | **事实**（phase / reason / seq / 快照摘要） | append-only |
+
+理由：`iter_events` 会把账本 payload 原样喂给 Web 回放，把几 MB 的工具
+输出塞进事件流会让每次回放都被撑爆。摘要互指让"两侧谁被改过"都能被发现。
+
+**提交时机即"不重放"的全部保证**：
+
+```
+回合开始  begin_turn   记 history_len（陈旧判定的精确依据）
+工具轮 ①  inflight     进 asyncio.gather **之前**（结果未知）
+工具轮 ②  committed    结果消息**全部**追加完之后
+回合结束  turn_end     emit 终局事实 + 删旁挂文件
+中断      flush        取消/退出路径的兜底
+```
+
+②必须在结果 append 循环**之后**：只有那时每个 `tool_call` 才有配对的
+`tool` 结果，消息日志才构成幂等单元--**循环里没有"跳过表"**，恢复即
+带着这段前缀重入循环，模型不可能重发已应答的调用。
+
+**在途轮（phase=inflight）不是撕裂**：崩在工具执行途中时那些调用的
+副作用结果未知（文件可能已写、请求可能已发）。默认**绝不重跑**--恢复
+为每个在途调用合成一条 `[status: interrupted]` 结果，让模型看到并自行
+决定。不重放是硬承诺，不因猜测而重复产生副作用。
+
+**中断处理**（§2.3 的 grace 语义在此兑现）：
+
+- 信号处理器只做两件事：登记来源、**链式交回原处理器**。于是 Ctrl-C
+  仍是 `KeyboardInterrupt`、SIGTERM 仍是默认终止--既有退出路径逐字不变，
+  容灾对信号只做加法。
+- **不在信号处理器里做 IO**：它运行在主线程任意两条字节码之间，可能打断
+  一次文件写入。真正的落盘由取消路径调用 `flush_current()` 完成。
+- **没有"二次信号强制退出"**：直觉上会加一个"再按一次就 `os._exit`"，
+  但信号处理器既不做 IO 便无卡住的落盘可催，而同一套逻辑若被客户端重复
+  Esc 触发就会把 web 服务杀掉。宁可少一层机制，也不要一个能让服务端
+  失控的开关。
+- 资源闸触顶先记账 + 落 checkpoint **再**走收尾：收尾本身还要调一次模型，
+  崩在那里的概率与之前任何一次请求相同。
+
+**恢复裁决**（`kernel/recovery/resume.py`，不认识 agent、不碰事件循环）：
+`ok / absent / already_complete / torn / mismatch`。任何不可用路径都退化为
+"普通恢复会话"，**绝不挡住启动**（与 `SessionStore.load` 跳过损坏行同纪律）。
+`already_complete` 是正常路径：崩在持久化与删旁挂文件之间时，回合其实已
+落进历史，用 `len(history) > snapshot.history_len` 精确判定。
+
+**顺带修掉的既有缺陷**：`Ledger.attach` 过去把 `_prev_digest` 清零，导致
+恢复会话后 seq 续上了、**哈希链却从头再来**--链恰好在最需要它证明"这段
+历史没被改过"的时刻断掉。现增 `start_digest`（取
+`SessionStore.ledger_tail_digest()`），seq 与链一并续接。
+
+**职责边界**：内核给机制（快照形状/原子落盘/裁决），消费方给策略
+（何时快照、快照什么）--`kernel/recovery/` 不认识 agent，
+`services/checkpoint.py` 持有本回合的活引用并决定提交点。与 `Guard` 由
+executor 持有同款分工。
+
 ## 4. 与现有代码的对齐与落地切片
 
 | 现有 | 本设计归属 | 差距 |
@@ -396,6 +470,7 @@ Event = {
 | `kernel/validate.py` 形状校验 | §1.1 | 已落地（随 K1 目录化） |
 | `builtin/tools.py` base bundle | §1.3 计算组合的内置项 | 已对齐 |
 | ~~`permissions.py` + executor prepare 闸门~~ | §2.2 升格入 `kernel/guard.py` | 已落地（K3）：七站管线 + 半格折叠 + `permission_decision` 记账；prompter/rules/mode 闭包注入，UI 不进内核 |
+| ~~无（回合级持久化缺口）~~ | §3.6 容灾 | 已落地（v0.1.2）：`kernel/recovery/`（模型/存储/裁决）+ `services/checkpoint.py`、`services/interrupt.py`（策略/信号）；`on_checkpoint` / `on_resume` 接线完成，`interrupt` / `resource_gate_tripped` 事件兑现 |
 | `kernel/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
 | `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；双账本与决策事件族随 K5 |
 | `app/cli/commands.py` 内置命令 dict | §1.1 commands | 半插件化：插件命令已走注册表，27 个内置命令仍硬编码、消费方双源合并；升格 builtin-commands 插件随 K8 |

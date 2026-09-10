@@ -50,10 +50,17 @@ real time (5 Hz):
 
 - **Plan panel** — the agent's todos as a checklist: `✓` done (green), a spinner plus
   the task's `activeForm` while in progress, `○` pending; long lists collapse to six
-  rows plus `+N more`.
+  rows plus `+N more`. Once **every** item is complete the panel folds into a single
+  summary row (`✓ Plan 3/3`), handing the space back to the response.
 - **Agents rows** — one row per running sub-agent (`task` tool or workflow): spinner,
   description label, tool count, elapsed time; `✓`/`✗` when finished. Rows collapse
-  past four agents.
+  past four agents. A **running** agent gets one extra indented activity line under
+  its row (`⎿ read_file(path=src/auth.py)`) showing what it is doing right now —
+  finished agents show none.
+
+The spinner is the Claude Code star family (`· ✢ ✳ ✶ ✻ ✽`, 120 ms per frame). When a
+turn ends, a completion line lands in the transcript: `✻ Cooked for 12.3s`, with the
+past-tense verb picked at random.
 
 Press **Ctrl-O** during streaming to cycle the main response area into a sub-agent's
 detail view (its captured tool activity and text) and back. The deck disappears when

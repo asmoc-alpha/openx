@@ -401,6 +401,119 @@ class TestWebTools:
         assert "bad" not in text
         assert "x{}" not in text
 
+    def test_is_cjk_query(self):
+        assert web_tools._is_cjk_query("今天的新闻")
+        assert web_tools._is_cjk_query("python 教程")
+        assert not web_tools._is_cjk_query("python tutorial")
+        assert not web_tools._is_cjk_query("")
+
+    def test_diversify_domains_reorders_same_host(self):
+        rs = [
+            {"title": "A1", "url": "https://a.example.com/1", "snippet": ""},
+            {"title": "A2", "url": "https://a.example.com/2", "snippet": ""},
+            {"title": "B1", "url": "https://b.example.com/", "snippet": ""},
+            {"title": "A3", "url": "https://www.a.example.com/3", "snippet": ""},  # www 归一
+            {"title": "C1", "url": "https://c.example.com/", "snippet": ""},
+        ]
+        out = web_tools._diversify_domains(rs)
+        assert [r["title"] for r in out] == ["A1", "B1", "C1", "A2", "A3"]
+
+    @pytest.mark.asyncio
+    async def test_web_search_output_has_date_anchor(self, monkeypatch):
+        monkeypatch.setattr(
+            web_tools, "_ddg_search",
+            lambda q, max_results=8: [{"title": "T", "url": "https://x.com", "snippet": ""}],
+        )
+        result = await web_tools.WebSearchTool().execute(query="test")
+        assert result.success
+        assert "current date:" in result.output
+
+    @pytest.mark.asyncio
+    async def test_web_search_blocked_backend_is_not_no_results(self, monkeypatch):
+        """DDG 被限流（后端失败）+ Bing 真无结果 → 软提示"无结果"并附限流注记。"""
+        def ddg_blocked(q, max_results=8):
+            raise RuntimeError("rate-limited by DuckDuckGo (anomaly challenge)")
+
+        monkeypatch.setattr(web_tools, "_ddg_search", ddg_blocked)
+        monkeypatch.setattr(web_tools, "_bing_search", lambda q, max_results=8: [])
+
+        result = await web_tools.WebSearchTool().execute(query="obscure")
+        assert result.success  # bing 正常应答过 → 确实搜过，软提示而非报错
+        assert "No results" in result.output
+        assert "rate-limited" in result.output  # 限流如实附注，模型可换措辞重试
+
+    def test_ddg_anomaly_page_raises_backend_error(self, monkeypatch):
+        """_ddg_search：HTTP 202 / anomaly modal → 抛后端失败，不返回空列表。"""
+        class FakeResponse:
+            status_code = 202
+            text = "<html><body id='anomaly-modal'>challenge</body></html>"
+            def raise_for_status(self):
+                pass
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def post(self, url, headers=None, data=None):
+                return FakeResponse()
+
+        monkeypatch.setattr(web_tools.httpx, "Client", FakeClient)
+        with pytest.raises(RuntimeError, match="rate-limited"):
+            web_tools._ddg_search("test")
+
+    def test_bing_unexpected_structure_raises(self, monkeypatch):
+        """_bing_search：页面有内容但无 b_algo/b_no → 结构变化识别为后端失败。"""
+        class FakeResponse:
+            text = "<html><body><p>consent wall</p></body></html>"
+            def raise_for_status(self):
+                pass
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def get(self, url, headers=None, params=None):
+                return FakeResponse()
+
+        monkeypatch.setattr(web_tools.httpx, "Client", FakeClient)
+        with pytest.raises(RuntimeError, match="unexpected Bing page structure"):
+            web_tools._bing_search("test")
+
+    def test_bing_cjk_query_uses_chinese_locale(self, monkeypatch):
+        """_bing_search：中文查询走中文区参数（setlang/cc/Accept-Language）。"""
+        captured = {}
+
+        class FakeResponse:
+            text = ("<li class='b_algo'><h2><a href='https://x.com'>T</a></h2>"
+                    "<div class='b_caption'><p>s</p></div></li>")
+            def raise_for_status(self):
+                pass
+
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def get(self, url, headers=None, params=None):
+                captured.update(params)
+                captured["accept_language"] = headers["Accept-Language"]
+                return FakeResponse()
+
+        monkeypatch.setattr(web_tools.httpx, "Client", FakeClient)
+        results = web_tools._bing_search("中文查询")
+        assert captured["setlang"] == "zh-hans"
+        assert captured["cc"] == "cn"
+        assert captured["accept_language"].startswith("zh-CN")
+        assert results and results[0]["title"] == "T"
+
 
 # ── AskUser 工具 ────────────────────────────────────────────────
 

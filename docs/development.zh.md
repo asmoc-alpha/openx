@@ -53,6 +53,19 @@ ruff check openx tests
 
 1. 在 `openx/CHANGELOG.md` 顶部追加新版本小节。
 2. 升 `pyproject.toml` 的 `version` 和 `openx/__init__.py` 的 `__version__`。
+3. 跑 `python -m pytest tests -q`——CI 在 3.10 与 3.12 上跑的就是它。
+4. 提交，然后打 tag 并推送：
+   ```bash
+   git tag -a v<version> -m "<version> — <title>"
+   git push origin main && git push origin v<version>
+   ```
+5. 用同一份说明建 GitHub release：
+   ```bash
+   gh release create v<version> --title "v<version> — <title>" --notes-file <file>
+   ```
+   GitHub 会自动附上源码 tarball，而 `install.sh` 正是从那里安装
+   （`git+…@v<version>`）——所以 tag 必须先存在，安装脚本的默认
+   `OPENX_REF` 才能解析到。
 
 ## 文档
 

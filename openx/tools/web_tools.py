@@ -5,6 +5,8 @@
 - ``web_fetch``：抓取指定 URL，把 HTML 转成纯文本返回给模型分析。
 - ``web_search``：联网搜索（无 API key），默认先试 DuckDuckGo Lite，
   网络不可达时自动降级 Bing（国内网络 DDG 被墙，降级后粘住 Bing）。
+  搜索区跟随查询语言（中文查询走中文区排序）；限流/验证页被识别为
+  后端失败（继续降级链），与"真无结果"严格区分。
 
 设计取舍
 ========
@@ -32,6 +34,7 @@ if __name__ == "__main__" and not __package__:
 
 import base64
 import time
+from datetime import date
 from html.parser import HTMLParser
 from io import StringIO
 from typing import Any, Optional
@@ -261,16 +264,26 @@ class _DuckDuckGoResultParser(HTMLParser):
             self._cur = None
 
 
+def _is_cjk_query(query: str) -> bool:
+    """查询含 CJK 统一表意文字 → 按中文区请求搜索后端（locale 只影响排序）。"""
+    return any("一" <= ch <= "鿿" for ch in query)  # U+4E00..U+9FFF
+
+
 def _ddg_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
     """通过 DuckDuckGo Lite 执行搜索，返回结果列表。"""
     url = "https://lite.duckduckgo.com/lite/"
     headers = {"User-Agent": _DEFAULT_UA}
-    data = {"q": query, "kl": "us-en"}
+    data = {"q": query, "kl": "cn-zh" if _is_cjk_query(query) else "us-en"}
 
     with httpx.Client(follow_redirects=True, timeout=_SEARCH_TIMEOUT) as client:
         resp = client.post(url, headers=headers, data=data)
         resp.raise_for_status()
         html = resp.text
+
+    # 限流/验证页：DDG 返回 202 + anomaly modal，解析只会得到 0 条——
+    # 必须识别为后端失败（走降级链），而非"查无此词"
+    if getattr(resp, "status_code", 200) == 202 or "anomaly-modal" in html:
+        raise RuntimeError("rate-limited by DuckDuckGo (anomaly challenge)")
 
     parser = _DuckDuckGoResultParser()
     parser.feed(html)
@@ -408,12 +421,15 @@ def _unwrap_bing_url(href: str) -> str:
 def _bing_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
     """通过 Bing 搜索页执行搜索，返回结果列表（DuckDuckGo 的降级后端）。"""
     url = "https://www.bing.com/search"
+    cjk = _is_cjk_query(query)
     headers = {
         "User-Agent": _DEFAULT_UA,
         "Accept": "text/html,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "zh-CN,zh;q=0.9" if cjk else "en-US,en;q=0.9",
     }
-    params = {"q": query, "count": str(max_results), "setlang": "en"}
+    params = {"q": query, "count": str(max_results), "setlang": "zh-hans" if cjk else "en"}
+    if cjk:
+        params["cc"] = "cn"
 
     # follow_redirects：国内网络会被 302 到 cn.bing.com，须跟随
     with httpx.Client(follow_redirects=True, timeout=_SEARCH_TIMEOUT) as client:
@@ -424,6 +440,11 @@ def _bing_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
     parser = _BingResultParser()
     parser.feed(html)
     parser.close()
+
+    # 结构变化/ consent / 验证页：页面有实质内容但既无结果块（b_algo）
+    # 也无"无结果"标记（b_no）→ 识别为后端失败而非"查无此词"
+    if not parser.results and "b_algo" not in html and "b_no" not in html:
+        raise RuntimeError("unexpected Bing page structure (consent/captcha/markup change?)")
 
     cleaned: list[dict[str, str]] = []
     for r in parser.results:
@@ -448,15 +469,38 @@ def _bing_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
 _SEARCH_PROVIDERS = ("ddg", "bing")
 
 
+def _diversify_domains(results: list[dict[str, str]]) -> list[dict[str, str]]:
+    """同域名折叠：每个域名排位最高的一条进主列表，其余按原序附后。
+
+    不丢结果，只重排——top 段保证来源多样性，同一站点刷屏时不再挤掉
+    其他来源。
+    """
+    seen: set[str] = set()
+    primary: list[dict[str, str]] = []
+    extra: list[dict[str, str]] = []
+    for r in results:
+        host = urlparse(r.get("url", "")).netloc.lower().removeprefix("www.")
+        if host and host in seen:
+            extra.append(r)
+        else:
+            seen.add(host)
+            primary.append(r)
+    return primary + extra
+
+
 class WebSearchTool(Tool):
     """联网搜索（DDG 优先，网络不可达自动降级 Bing，均无 key）。"""
 
     name = "web_search"
     description = (
-        "Search the web (DuckDuckGo with automatic Bing fallback; no API key "
-        "needed). Returns titles, URLs, and snippets. Use for up-to-date "
-        "information beyond your knowledge cutoff. After answering, include a "
-        "'Sources:' section with markdown links."
+        "Search the web. Returns titles, URLs, and snippets. Use for "
+        "up-to-date information beyond your knowledge cutoff. Query tips: "
+        "use a few specific keywords, not a full sentence; search in English "
+        "for international topics, in Chinese for China-specific ones; "
+        "include the current year for time-sensitive topics; use "
+        "site:example.com to scope the search. If results look irrelevant, "
+        "rephrase and retry; use web_fetch to read a promising page in full. "
+        "After answering, include a 'Sources:' section with markdown links."
     )
     parameters = {
         "type": "object",
@@ -499,6 +543,7 @@ class WebSearchTool(Tool):
         n = max(1, min(max_results, 20))
         results: list[dict[str, str]] = []
         errors: list[str] = []
+        searched_ok = False  # 任一端正常应答过（哪怕 0 条）→ 确实搜过
 
         for name in self._provider_order():
             fn = _ddg_search if name == "ddg" else _bing_search
@@ -507,6 +552,7 @@ class WebSearchTool(Tool):
             except Exception as e:
                 errors.append(f"{name}: {e}")
                 continue
+            searched_ok = True
             if found:
                 self._sticky = name
                 results = found
@@ -514,14 +560,21 @@ class WebSearchTool(Tool):
             errors.append(f"{name}: no results")
 
         if not results:
-            # 全部后端"无结果"（无网络错误）→ 与旧行为一致的软提示；
-            # 有任一网络错误 → 报错，让模型知道是连通性问题而非查无此词
-            if errors and all(e.endswith(": no results") for e in errors):
-                return ToolResult(output=f"No results found for: {query}")
+            if searched_ok:
+                # 至少一端正常应答但无结果 → 真·查无此词；其余端的故障
+                # 作为附注如实告知（限流 ≠ 无结果，模型可换措辞重试）
+                note = f"No results found for: {query}"
+                failed = [e for e in errors if not e.endswith(": no results")]
+                if failed:
+                    note += "\n(note: " + "; ".join(failed) + ")"
+                note += "\nIf this looks wrong, try rephrasing with fewer, more specific keywords."
+                return ToolResult(output=note)
+            # 全部后端故障（网络/限流/结构变化）→ 报错，让模型知道是
+            # 连通性/可用性问题而非查无此词
             return ToolResult(error="Web search failed: " + "; ".join(errors))
 
-        lines = [f"Search results for: {query}\n"]
-        for i, r in enumerate(results, 1):
+        lines = [f"Search results for: {query}  (current date: {date.today().isoformat()})\n"]
+        for i, r in enumerate(_diversify_domains(results), 1):
             lines.append(f"{i}. {r['title']}")
             lines.append(f"   {r['url']}")
             if r["snippet"]:

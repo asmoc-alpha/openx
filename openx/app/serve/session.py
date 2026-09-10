@@ -549,7 +549,19 @@ class ServeSession:
         return parts
 
     def interrupt(self) -> None:
-        """打断当前回合（Web 的 Esc）：cancel _turn_task。"""
+        """打断当前回合（Web 的 Esc）：cancel _turn_task。
+
+        先经中断控制器登记来源，让取消处理分支能把 checkpoint 的 reason
+        记成 ``esc``。客户端重复打断**不会**升级为强制退出——那是 CLI
+        信号路径才有的语义，服务端绝不该因为几次点击就把进程干掉。
+        """
+        ctl = getattr(self.agent, "interrupt", None)
+        if ctl is not None:
+            try:
+                ctl.request("client")
+                return          # 控制器会取消登记过的回合任务
+            except Exception:
+                pass
         task = self._turn_task
         if task is not None and not task.done():
             task.cancel()
@@ -559,10 +571,23 @@ class ServeSession:
         while True:
             pending = await self._queue.get()
             self._turn_task = asyncio.ensure_future(self._run_turn(pending))
+            # 容灾：把本回合任务登记为中断取消目标（interrupt() 经控制器取消）
+            set_target = getattr(self.agent, "set_interrupt_target", None)
+            if callable(set_target):
+                try:
+                    set_target(self._turn_task)
+                except Exception:
+                    pass
             try:
                 await self._turn_task
             finally:
                 self._turn_task = None
+                clear = getattr(self.agent, "clear_interrupt", None)
+                if callable(clear):
+                    try:
+                        clear()
+                    except Exception:
+                        pass
 
     async def _run_turn(self, pending: "_Pending") -> None:
         """跑一轮：stream_run 事件投影广播 + 终局 result / interrupted。"""
@@ -642,7 +667,12 @@ class ServeSession:
                 self.broadcast(projected)
             self.broadcast(self._result_event(started))
         except asyncio.CancelledError:
-            # 客户端 interrupt：广播并正常返回，不毒死 worker
+            # 客户端 interrupt：先把在途进展落成可续跑的 checkpoint（在途轮
+            # 的结果未知，续跑绝不重跑），再广播并正常返回，不毒死 worker
+            try:
+                self.agent.flush_checkpoint("client")
+            except Exception:
+                _log.debug("checkpoint flush on interrupt failed", exc_info=True)
             self.broadcast({"type": "interrupted"})
             _log.info("turn interrupted by client")
         except Exception as e:

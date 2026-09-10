@@ -124,7 +124,10 @@ class TestNoDoublePrint:
         assert h.svc._committed_count <= len(lines)
 
         h.svc.done()
-        assert h.svc._committed_count == len(lines), "done 应全量固化"
+        # done() 会追加回合结束行（分隔空行 + ✻ 行）→ body 变长，必须重取
+        # 行快照再比对；上面的 lines 是 done 之前的快照。
+        lines_after = h.svc._body_lines()
+        assert h.svc._committed_count == len(lines_after), "done 应全量固化"
         last = ranges[-1]
         assert last[1] - last[0] <= 3, (
             f"done flush 应只补余量（≤尾部易变行），实际 {last[1]-last[0]}"

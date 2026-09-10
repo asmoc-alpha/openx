@@ -208,10 +208,11 @@ async def _run_text(
         console.print_streaming_start()
         started = time.monotonic()
         response = await agent.run(user_content)
+        # 先正文、后结束行（同 interactive.py 的流式/非流式两条分支）
+        console.print_assistant(response)
         console.print_streaming_done(
             time.monotonic() - started, agent.total_output_tokens
         )
-        console.print_assistant(response)
         return 0
     except Exception as e:
         console.print_error(f"Error: {e}")

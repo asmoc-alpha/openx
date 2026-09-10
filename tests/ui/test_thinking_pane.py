@@ -35,6 +35,7 @@ from rich.text import Text
 
 from openx.config import OpenXConfig
 from openx.ui._components.prompt import PromptMixin
+from openx.ui._helpers import done_line
 from openx.ui._style import DIM, MARK_INFO
 from openx.ui.console import Console
 
@@ -42,8 +43,16 @@ THINKING = "the hidden reasoning body"
 TAIL1 = "answer line one"
 TAIL2 = "answer line two"
 PRIOR = "PRIOR_TRANSCRIPT_LINE"
+FOOTER = "✻ Cooked for 2.5s"
+# 结束行的屏幕匹配式：✻ + 动词 + for + 时长（动词随机，不能写死）
+FOOTER_RE = re.compile(r"✻ \w+ for \d+[smh]")
 
 COLS, ROWS = 80, 24
+
+
+def _footer() -> Text:
+    """回合结束行（用真实构造器，保证与生产逐字一致）。"""
+    return done_line(2.5, verb="Cooked")
 
 
 def _collapsed_indicator(elapsed: float = 2.5) -> Text:
@@ -59,7 +68,7 @@ def _collapsed_indicator(elapsed: float = 2.5) -> Text:
 class ReplayHarness:
     """真实 Console + pyte 屏，手搭"done 后留屏 + 折叠指示行"回合形态。"""
 
-    def __init__(self, monkeypatch, tmp_path, gap: int = 2):
+    def __init__(self, monkeypatch, tmp_path, gap: int = 1):
         self.screen = pyte.Screen(COLS, ROWS)
         self.screen.set_mode(pyte.modes.LNM)
         self.pyte = pyte.Stream(self.screen)
@@ -80,12 +89,21 @@ class ReplayHarness:
         self.gap = gap
 
     def setup_turn(self) -> None:
-        """哨兵 → 指示行 → tail → gap 空行 → 框；光标停在输入行。"""
+        """哨兵 → 指示行 → tail（含回合结束行）→ gap 空行 → 框；光标停在输入行。
+
+        tail 的构成与生产逐字对齐（实测 StreamingService.done() 后
+        ``_last_replay``）：``['', TAIL1, TAIL2, '', ✻ 行]``——首元素是正文
+        chunk 头部的块间分隔空行，末两元素是结束行 chunk 的分隔空行 + 结束行
+        本身。**结束行在 tail 内**，故重印标尺（_replay_block_rows）自动
+        包含它，Ctrl+R 不会把它擦掉。
+        """
         c = self.console
         c._console.print(PRIOR)
         c._console.print(_collapsed_indicator())
         c._console.print(TAIL1)
         c._console.print(Text(TAIL2))
+        c._console.print(Text(""))            # 结束行 chunk 的块间分隔空行
+        c._console.print(_footer())
         for _ in range(self.gap):
             c._console.print(Text(""))
         c._console.print(c._frame_renderable(0, 0))
@@ -95,11 +113,13 @@ class ReplayHarness:
         sys.stdout.write("\033[3A\033[2K❯ ")  # 复用分支同款到输入行
         c._last_replay = {
             "thinking": (THINKING, 2.5),
-            "tail": [Text(TAIL1), Text(TAIL2)],
+            # 4 条 = 正文两行 + 结束行 chunk 的分隔空行 + 结束行本身。
+            # （块 = 指示行 1 + tail 4 = 5，与 _replay_block_rows 一致。）
+            "tail": [Text(TAIL1), Text(TAIL2), Text(""), _footer()],
             "gap": self.gap,
         }
         c._replay_expanded = False
-        c._replay_block_rows = 3  # 指示行 + tail 两行（重印标尺含 tail）
+        c._replay_block_rows = 5  # 指示行 1 + tail 4（重印标尺含 tail 全部）
         self.flush()
 
     def flush(self) -> None:
@@ -144,7 +164,8 @@ class TestReplayToggle:
         assert "PRIOR" in h.screen_text()
         assert h.y_of(PRIOR) < h.y_of("Thought for")
         assert c._replay_expanded is True
-        assert c._replay_block_rows == 5   # 指示 + 全文 + 空行 + tail 两行
+        # 展开态：指示 + 全文 + 空行（3）+ tail 4 行（含结束行）
+        assert c._replay_block_rows == 7
         # 指示行提示翻转
         assert "(ctrl+r to collapse)" in h.screen_text()
 
@@ -162,7 +183,7 @@ class TestReplayToggle:
         assert h.y_of("Thought for") == h.y_of(PRIOR) + 1
         assert h.y_of(TAIL1) == h.y_of("Thought for") + 1
         assert c._replay_expanded is False
-        assert c._replay_block_rows == 3
+        assert c._replay_block_rows == 5   # 指示 1 + tail 4（含结束行）
 
     def test_collapse_never_eats_above_transcript(self, monkeypatch, tmp_path):
         """收起擦除从指示行起算——框上方既有对话（哨兵行）永不越界被吞。"""
@@ -216,6 +237,65 @@ class TestReplayToggle:
         assert h.y_of("Thought for") == h.y_of(TAIL1) - 1
 
 
+# ── 结束行与 Ctrl+R 重印共存（body-chunk 方案的核心保障）──────────
+
+
+class TestReplayKeepsCompletionLine:
+    """回合结束行 ``✻ Cooked for 2.5s`` 必须经得起 Ctrl+R 的"擦除指示行
+    以下全部 → 按标尺重排"：**既不丢，也不重**。
+
+    这是结束行实现成 body chunk（落在 replay tail 内、被 _replay_block_rows
+    计入）而不是"done() 里额外 print 一行"的根本原因——后者在标尺之外，
+    会被 \\033[J 擦掉且不重印，用户一按 Ctrl+R 结束行就永久消失。
+    """
+
+    def test_survives_expand_and_collapse(self, monkeypatch, tmp_path):
+        h = ReplayHarness(monkeypatch, tmp_path)
+        h.setup_turn()
+        c = h.console
+        assert len(FOOTER_RE.findall(h.screen_text())) == 1, "初始应恰一条结束行"
+        c._replay_toggle([], None, 0, 0)                     # 展开
+        h.flush()
+        assert THINKING in h.screen_text()
+        assert len(FOOTER_RE.findall(h.screen_text())) == 1, \
+            "展开后结束行丢失或重复"
+        c._replay_toggle([], None, 0, 0)                     # 收起
+        h.flush()
+        assert THINKING not in h.screen_text()
+        assert len(FOOTER_RE.findall(h.screen_text())) == 1, \
+            "收起后结束行丢失或重复"
+
+    def test_stays_between_body_and_frame(self, monkeypatch, tmp_path):
+        """结束行位置：正文之后、输入框之前（对标 Claude Code 收尾）。"""
+        h = ReplayHarness(monkeypatch, tmp_path)
+        h.setup_turn()
+        h.console._replay_toggle([], None, 0, 0)
+        h.flush()
+        assert h.y_of(TAIL2) < h.y_of("✻") < h.y_of("❯")
+
+    def test_not_reprinted_twice(self, monkeypatch, tmp_path):
+        """重印字节里结束行至多出现一次——"二次打印"的字节级判据。"""
+        h = ReplayHarness(monkeypatch, tmp_path)
+        h.setup_turn()
+        c = h.console
+        c._replay_toggle([], None, 0, 0)
+        h.reprint_bytes = h.buf.getvalue()
+        h.flush()
+        assert h.count_reprinted("✻ Cooked for 2.5s") <= 1, \
+            "结束行被重复打印（擦除标尺算漏了它）"
+
+    def test_windowed_path_also_carries_footer(self, monkeypatch, tmp_path):
+        """超屏（窗口重印）路径同样带回结束行——指示行已滚出屏顶时
+        走 _replay_toggle_windowed，它取 tail 尾部窗口。"""
+        h = ReplayLongHarness(monkeypatch, tmp_path)
+        h.setup_turn()
+        h.console._replay_toggle([], None, 0, 0)
+        h.flush()
+        assert h.console._replay_windowed is True, "本用例应走窗口路径"
+        assert len(FOOTER_RE.findall(h.screen_text())) == 1, \
+            "窗口重印后结束行丢失或重复"
+
+
 # ── 编辑器真按键接线（_read_line_interactive 的 Ctrl+R 分支）──────
 
 
@@ -256,7 +336,7 @@ class TestCtrlRKeyWiring:
         assert THINKING not in text            # 收起回到折叠态
         assert PRIOR in text                   # 越界未吞对话
         assert c._replay_expanded is False
-        assert c._replay_block_rows == 3
+        assert c._replay_block_rows == 5   # 指示 1 + tail 4（含结束行）
 
 
 # ── 无数据静默纪律 ────────────────────────────────────────────────
@@ -308,6 +388,8 @@ class ReplayLongHarness(ReplayHarness):
         ]
         for t in self.long_tail:
             c._console.print(t)
+        c._console.print(Text(""))            # 结束行 chunk 的块间分隔空行
+        c._console.print(_footer())
         for _ in range(self.gap):
             c._console.print(Text(""))
         c._console.print(c._frame_renderable(0, 0))
@@ -317,11 +399,12 @@ class ReplayLongHarness(ReplayHarness):
         sys.stdout.write("\033[3A\033[2K❯ ")
         c._last_replay = {
             "thinking": (THINKING, 2.5),
-            "tail": list(self.long_tail),
+            # 结束行是 tail 末条——窗口路径取 tail[-tail_keep:] 时同样带得回来
+            "tail": list(self.long_tail) + [Text(""), _footer()],
             "gap": self.gap,
         }
         c._replay_expanded = False
-        c._replay_block_rows = N_LONG_TAIL + 1
+        c._replay_block_rows = N_LONG_TAIL + 3   # 指示行 + 正文 N + 空行 + 结束行
         self.flush()
 
 

@@ -34,6 +34,17 @@ controls, sessions, subagents, workflows, and MCP support.
 ## Install
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/asmoc-alpha/openx/main/install.sh | bash
+```
+
+The installer picks pipx, then `uv`, then a virtualenv at `~/.openx/venv`, and
+verifies the result. Set `OPENX_EXTRAS=web` to include the web UI
+(`curl … | OPENX_EXTRAS=web bash`), or `OPENX_REF=<git-ref>` to install something
+other than the latest release tag.
+
+From a clone, instead:
+
+```bash
 git clone https://github.com/asmoc-alpha/openx.git
 cd openx
 pip install -e .
@@ -71,7 +82,7 @@ All flags and slash commands: [docs/user/guide/commands.md](docs/user/guide/comm
 | Page | Covers |
 |---|---|
 | [User guides](docs/user/index.md) | commands, modes & permissions, configuration, sessions |
-| [Subsystem reference](docs/subsystems/README.md) | subagents, workflows, background tasks, hooks, MCP |
+| [Subsystem reference](docs/subsystems/README.md) | subagents, workflows, background tasks, hooks, MCP, recovery |
 | [Web 端（openx serve）](docs/openx-serve.md) | browser chat, remote approval, session replay |
 | [Architecture](docs/architecture.md) | module tree and runtime loop |
 | [Development](docs/development.md) | contributor setup, tests, lint |

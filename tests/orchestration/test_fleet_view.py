@@ -182,6 +182,29 @@ class TestSubagentView:
         assert len(snap["lines"]) == MAX_VIEW_LINES
         assert snap["lines"][0] == "l50"
 
+    def test_last_tool_tracks_latest_start_event(self):
+        """当前活动（舰队面板的"正在做什么"）：随 ToolStartEvent 就地上值。"""
+        v = SubagentView(1, "x", "general-purpose")
+        assert v.snapshot(0.0)["last_tool"] == ""      # 初始无活动
+        v.feed(ToolStartEvent(name="read_file",
+                              arguments='{"path":"a.py"}'))
+        assert v.snapshot(0.0)["last_tool"] == "read_file(path=a.py)"
+        v.feed(ToolStartEvent(name="grep", arguments='{"pattern":"tok"}'))
+        assert v.snapshot(0.0)["last_tool"] == "grep(pattern=tok)"  # 取最新
+
+    def test_last_tool_unchanged_by_result_event(self):
+        """结果事件不改变"当前活动"——仍是最近一次发起的工具。"""
+        v = SubagentView(1, "x", "general-purpose")
+        v.feed(ToolStartEvent(name="grep", arguments='{"pattern":"tok"}'))
+        v.feed(ToolResultEvent(name="grep", output="hit", is_error=False))
+        assert v.snapshot(0.0)["last_tool"] == "grep(pattern=tok)"
+
+    def test_last_tool_without_parsable_arguments(self):
+        """参数不可解析 → 回落纯工具名（绝不抛错，同 _tool_call_summary 纪律）。"""
+        v = SubagentView(1, "x", "general-purpose")
+        v.feed(ToolStartEvent(name="shell", arguments="not-json"))
+        assert v.snapshot(0.0)["last_tool"] == "shell"
+
 
 # ── pyte 基建（沿用 test_terminal_interaction 手法）──────────────
 
@@ -392,6 +415,152 @@ class TestDeckRendering:
         fleet_deck, fleet_h = h.svc._fleet_deck_renderable(mon.snapshot())
         fleet_lines = rc.render_lines(fleet_deck, pad=False)
         assert len(fleet_lines) == fleet_h
+
+
+class TestPlanCollapse:
+    """全部完成 → 计划面板折叠成单行汇总（对标 Claude Code）。
+
+    折叠态没有逐条项、也不产生 "+N more" 折叠行——_deck_renderable 返回的
+    行数必须仍是真实行数（它喂视口预算与 _last_deck_h 的擦除算术）。
+    """
+
+    @staticmethod
+    def _todos(*statuses: str) -> list[dict]:
+        return [
+            {"content": f"task{i}", "activeForm": f"doing{i}", "status": s}
+            for i, s in enumerate(statuses)
+        ]
+
+    def test_all_done_collapses_to_summary_row(self, deterministic_live):
+        h = Harness(todos=self._todos(*["completed"] * 4))
+        h.svc.start()
+        h.refresh()
+        text = "\n".join(r for _, r in h.nonempty())
+        assert "Plan 4/4" in text
+        assert "task0" not in text, "折叠态不该再逐条列出已完成项"
+        assert "more" not in text, "折叠态不该有 +N more"
+
+    def test_collapsed_deck_height_is_one(self, deterministic_live):
+        h = Harness(todos=self._todos(*["completed"] * 4))
+        h.svc.start()
+        deck, deck_h = h.svc._deck_renderable([])
+        assert deck_h == 1
+        # 单行不变量：返回行数 ≡ 实际渲染行数
+        assert len(h.svc._rich.render_lines(deck, pad=False)) == deck_h
+
+    def test_partial_completion_stays_expanded(self, deterministic_live):
+        """未全完成 → 维持逐条（含进行中的 activeForm）。"""
+        h = Harness(todos=self._todos("completed", "in_progress", "pending"))
+        h.svc.start()
+        deck, deck_h = h.svc._deck_renderable([])
+        assert deck_h == 4            # 头部 + 三行项
+        text = "\n".join(
+            "".join(s.text for s in ln if not s.is_control)
+            for ln in h.svc._rich.render_lines(deck, pad=False)
+        )
+        assert "Plan 1/3" in text
+        assert "doing1" in text and "task2" in text   # 进行中用 activeForm
+
+    def test_all_done_with_overflow_would_not_fold(self, deterministic_live):
+        """超过 _DECK_PLAN_ROWS 的全完成列表仍然只占 1 行（折叠优先于裁剪）。"""
+        h = Harness(todos=self._todos(*["completed"] * 10))
+        h.svc.start()
+        _deck, deck_h = h.svc._deck_renderable([])
+        assert deck_h == 1
+
+
+class TestFleetActivityLine:
+    """运行中的子代理多一行缩进活动行（对标 Claude Code Agent View）。
+
+    只有运行中才有：已结束的代理没有"当前活动"，硬留一行是噪音。活动行
+    必须计入 deck_h，否则浮层撑爆视口（整组高度 ≤ 视口是不变量）。
+    """
+
+    @staticmethod
+    def _started(mon: FleetMonitor, label: str, tool: str = "read_file",
+                 args: str = '{"path":"a.py"}'):
+        v = mon.register(label)
+        v.feed(ToolStartEvent(name=tool, arguments=args))
+        return v
+
+    def test_running_agent_shows_activity(self, deterministic_live):
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        self._started(mon, "explore auth")
+        h.refresh()
+        text = "\n".join(r for _, r in h.nonempty())
+        assert "read_file(path=a.py)" in text
+        assert "⎿" in text                       # 槽线与主转录同款
+
+    def test_finished_agent_has_no_activity_line(self, deterministic_live):
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        v = self._started(mon, "explore auth")
+        mon.complete(v)                          # 正常结束
+        h.refresh()
+        assert "read_file(path=a.py)" not in "\n".join(
+            r for _, r in h.nonempty())
+
+    def test_errored_agent_has_no_activity_line(self, deterministic_live):
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        v = self._started(mon, "explore auth")
+        mon.complete(v, is_error=True)
+        h.refresh()
+        assert "read_file(path=a.py)" not in "\n".join(
+            r for _, r in h.nonempty())
+
+    def test_activity_rows_counted_in_deck_height(self, deterministic_live):
+        """deck_h 含活动行，且与实渲行数一致（单行不变量）。"""
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        self._started(mon, "a")                  # 唯一带活动的运行中代理
+        mon.register("b")                        # 无活动
+        deck, deck_h = h.svc._fleet_deck_renderable(mon.snapshot())
+        assert deck_h == 5                       # 头部 1 + 主条目 1 + 2 代理 + 1 活动
+        assert len(h.svc._rich.render_lines(deck, pad=False)) == deck_h
+
+    def test_activity_line_single_row_invariant(self, deterministic_live):
+        """超长工具摘要不得折行撑高——deck 硬不变量 1 行 ≡ 1 终端行。"""
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        self._started(mon, "a", args='{"path":"' + "z" * 400 + '"}')
+        deck, deck_h = h.svc._fleet_deck_renderable(mon.snapshot())
+        assert deck_h == 4                       # 头部 + 主条目 + 代理 + 活动
+        assert len(h.svc._rich.render_lines(deck, pad=False)) == deck_h
+
+    def test_activity_rows_shrink_within_viewport_budget(
+        self, deterministic_live
+    ):
+        """多代理各带活动行 → 矮终端下仍不大于预算（裁代理行而非撑爆）。"""
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        for i in range(8):
+            self._started(mon, f"agent{i}")
+        h.svc._rich = SimpleNamespace(height=18)
+        _deck, deck_h = h.svc._fleet_deck_renderable(mon.snapshot())
+        budget = 18 - 8 - 5                      # height − _VIEWPORT_RESERVE − 5
+        assert deck_h <= budget
+
+    def test_no_activity_when_none_running(self, deterministic_live):
+        """全已结束 → 活动行整块消失（含标题行之外的每一行）。"""
+        mon = FleetMonitor()
+        h = Harness(fleet=mon)
+        h.svc.start()
+        a = self._started(mon, "a")
+        b = self._started(mon, "b")
+        mon.complete(a)
+        mon.complete(b)
+        h.refresh()
+        text = "\n".join(r for _, r in h.nonempty())
+        assert "⎿" not in text
+        assert "a.py" not in text
 
 
 # ── Ctrl-O 焦点切换 ──────────────────────────────────────────────

@@ -26,7 +26,8 @@ openx/
 │   │   ├── audit/         #   ③ 安全审计：guard 裁决管线 + hooks 用户钩子链
 │   │   ├── sandbox/       #   ⑤ 沙箱执行器：host/protect
 │   │   ├── ledger.py      #   ④ 轨迹跟踪：事件账本
-│   │   └── protocol.py    #   ④ 协议面：事件信封 schema（账本的外化）
+│   │   ├── protocol.py    #   ④ 协议面：事件信封 schema（账本的外化）
+│   │   └── recovery/      #   ④ 轨迹之上的可续跑性：checkpoint 模型/存储/恢复裁决
 │   ├── builtin/           # base bundle 内置插件包（tools/providers，"一切能力皆插件"）
 │   │   ├── tools.py       #   内置工具工厂
 │   │   └── providers.py   #   内置 provider 实现（openai-compat / anthropic）
@@ -61,6 +62,8 @@ openx/
 │   ├── services/
 │   │   ├── tool_executor.py # 权限 + hook 门控，串行准备 → 并行执行
 │   │   ├── streaming.py   # 流式显示服务
+│   │   ├── checkpoint.py  # 容灾提交策略（何时快照、快照什么）
+│   │   ├── interrupt.py   # 中断控制器（信号 / Esc / 客户端打断）
 │   │   └── exploration.py # 项目概览探测
 │   ├── ui/                # Rich TUI：console、内嵌输入框、对话框、输入捕获
 │   └── utils/             # 路径、文本、错误辅助
@@ -91,11 +94,11 @@ openx/
 | 能力层 | `tools/`、`mcp/` | 面向模型的工具（fs、shell、搜索、git、web、todo、plan、task、workflow）与外部 MCP 工具 |
 | 上下文与记忆 | `instructions.py`、`memory.py`、`orchestration/history.py` | OPENX.md 指令、持久记忆、历史 + 压缩 |
 | 编排层 | `orchestration/subagent.py`、`orchestration/workflow.py`、`orchestration/tasks.py`、`orchestration/fleet.py` | subagents、确定性 workflows、后台任务（硬连线，P2+ 插件化） |
-| 状态层 | `orchestration/sessions.py`、`config.py` | 会话持久化/恢复、分层配置 |
+| 状态层 | `orchestration/sessions.py`、`config.py`、`kernel/recovery/` | 会话持久化/恢复、分层配置、回合级 checkpoint 与中断恢复 |
 | 协作层 | `permissions.py` | 权限分级、已存储规则、危险命令门控 |
 
 ## 参见
 
 - [开发指南](development.zh.md)——贡献者环境与日常工作流
 - [用户指南](user/index.zh.md)——命令、模式与权限、配置、会话
-- [子系统参考](subsystems/README.zh.md)——subagents、workflows、hooks、MCP、后台任务
+- [子系统参考](subsystems/README.zh.md)——subagents、workflows、hooks、MCP、后台任务、容灾

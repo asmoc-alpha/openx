@@ -15,7 +15,7 @@ Product-facing guides for using OpenX.
 
 ## Beyond the guides
 
-- [Subsystem reference](../subsystems/README.md) — subagents, workflows, background tasks, hooks, MCP
+- [Subsystem reference](../subsystems/README.md) — subagents, workflows, background tasks, hooks, MCP, recovery
 - [Cookbook](../cookbook/extending.md) — extending OpenX with custom tools
 - [Architecture](../architecture.md) — module tree and runtime loop
 - [Comparison with Claude Code](../comparison.md)

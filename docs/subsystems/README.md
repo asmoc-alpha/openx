@@ -12,3 +12,4 @@ in [user/](../user/index.md); step-by-step how-tos in [cookbook/](../cookbook/ex
 | Background tasks | [background-tasks.md](background-tasks.md) | Detached shell commands with log tailing and stop control |
 | Hooks | [hooks.md](hooks.md) | Claude-Code-compatible shell hooks on four lifecycle events |
 | MCP | [mcp.md](mcp.md) | Model Context Protocol servers over stdio, zero extra dependencies |
+| Recovery | [recovery.md](recovery.md) | Turn-level checkpoints: resume an interrupted turn without replaying completed tool calls |

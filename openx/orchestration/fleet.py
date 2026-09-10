@@ -151,6 +151,10 @@ class SubagentView:
         self.started_at = time.monotonic()
         self.status = "running"     # running | done | error
         self.tools_count = 0        # ToolStartEvent 计数（活跃度指标）
+        # 当前正在执行的工具（``name(摘要)``，Claude Code Agent View 的
+        # "正在做什么"）。在 feed() 里随 ToolStartEvent 就地更新，渲染期
+        # 无需扫描 200 行环形缓冲——舰队面板每帧都要它，扫描是 O(n) 的。
+        self.last_tool = ""
         self.finished = False       # complete 幂等闩
         self.lines: deque = deque(maxlen=MAX_VIEW_LINES)
         self._pending = ""          # 未遇 \n 的尾片段（详情视图一并展示）
@@ -161,8 +165,13 @@ class SubagentView:
         from ..agent import ToolStartEvent
 
         if isinstance(event, ToolStartEvent):
+            # 摘要复用详情视图同款格式化（shell 显命令、其余显 key=value）
+            summary = _tool_call_summary(event.name, event.arguments)
             with self._lock:
                 self.tools_count += 1
+                self.last_tool = (
+                    f"{event.name}({summary})" if summary else event.name
+                )
         formatted = format_stream_event(event)
         if not formatted:
             return
@@ -182,6 +191,7 @@ class SubagentView:
                 "subagent_type": self.subagent_type,
                 "status": self.status,
                 "tools_count": self.tools_count,
+                "last_tool": self.last_tool,
                 "elapsed": now - self.started_at,
                 "lines": list(self.lines),
                 "pending": self._pending,

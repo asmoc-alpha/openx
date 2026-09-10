@@ -27,6 +27,7 @@ if __name__ == "__main__" and not __package__:
 
 import asyncio
 import json
+import random
 import re
 import shutil
 import sys
@@ -42,13 +43,18 @@ from rich.markup import escape
 from rich.text import Text
 
 from ..ui.input_capture import InputCapture
+from ..ui._helpers import DONE_VERBS, done_line
 from ..ui._style import (
     ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, MARK_BULLET, MARK_FAIL, MARK_INFO,
-    MARK_OK, MARK_PENDING, SUCCESS_STYLE,
+    MARK_OK, MARK_PENDING, SPIN_FRAME_MS, SPIN_FRAMES, SUCCESS_STYLE,
 )
 
-# Braille dots cycle every 80 ms for a smooth spin.
-_SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+# 进行中动画字形 = Claude Code 星形家族（定义在 ui/_style.py，与标记
+# 家族同处一地；取代原盲文点阵 ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏）。同一家族的静态
+# 字形 ✻ 还供回合结束行使用（见 ui/_helpers.done_line），spinner 与
+# 完成行由此视觉同源。保留 _SPIN 这一模块级名字——测试直接 import 它。
+_SPIN = SPIN_FRAMES
+_SPIN_MS = SPIN_FRAME_MS
 
 # 扫光（shimmer）：spinner 标签上的移动高亮窗。参考 OpenClaw
 # src/tui/tui-waiting.ts 的 shimmerText——亮窗逐字扫过状态文本
@@ -78,21 +84,28 @@ _REFRESH_PER_SECOND = 5
 # back to the 5 Hz tick (≤200 ms latency, imperceptible).
 _MIN_FORCE_REFRESH = 0.2
 
-# 渲染响应窗口时为组内"非响应"部分预留的行数：4 行输入框 + 1 行 spinner
-# + 2 行正文/框间距（_BODY_FRAME_GAP）+ 2 行余量。余量让整组始终低于视口
-# 底边两行：Rich Live 的相对光标计算对"顶满视口"的渲染区极其敏感
-# （SDD §8 记录的 Rich 已知抖动局限），留出余量后重渲永不触底、永不滚屏。
-# Rows reserved for frame (4) + spinner (1) + body/frame gap (2) + slack
-# (2): keep the whole group below the viewport bottom so Rich's relative
-# cursor math never has to cope with a region touching the screen edge.
-_VIEWPORT_RESERVE = 9
-
 # 正文（含 detail 视图）与输入框之间的固定空行数——流式期插在 body 与
 # spinner 之间，done() 后随固化余量打进 scrollback，两种形态下正文与
-# 框恒隔 2 行（用户界面需求）。
+# 框恒隔 1 行（对标 Claude Code；原为 2 行，按用户决策收紧）。
 # Blank rows between the response body and the input frame (streaming:
 # between body and spinner; after done(): printed into scrollback).
-_BODY_FRAME_GAP = 2
+_BODY_FRAME_GAP = 1
+
+# 渲染响应窗口时为组内"非响应"部分预留的行数。**由各部分派生而非写死**
+# ——reserve 与 _BODY_FRAME_GAP 必须同步（8/1 与 9/2 都自洽，但 8/2 会让
+# 整组顶到 height−1，重新引入 Rich 贴底光标抖动的老问题；9/1 白扔一行
+# 且与注释矛盾）。派生后错误组合无法被写出来。
+# 余量 2 行让整组始终低于视口底边：Rich Live 的相对光标计算对"顶满视口"
+# 的渲染区极其敏感（SDD §8 记录的 Rich 已知抖动局限）。
+# Rows reserved for frame + spinner + body/frame gap + slack (2): keep the
+# whole group below the viewport bottom so Rich's relative cursor math never
+# has to cope with a region touching the screen edge.
+_FRAME_ROWS = 4          # 输入框恒 4 行（上框线/输入行/下框线/状态行）
+_SPINNER_ROWS = 1
+_VIEWPORT_SLACK = 2
+_VIEWPORT_RESERVE = (
+    _FRAME_ROWS + _SPINNER_ROWS + _BODY_FRAME_GAP + _VIEWPORT_SLACK
+)
 
 # running 工具长输出裁尾时易变区首行的"上文在易变区外"标记
 # （固化行在 scrollback，终端原生上翻可见，无需标记）。
@@ -302,6 +315,9 @@ class StreamingService:
         self._cancel_target = None
         self._interrupt_fired = False   # 单回合闩：连按 Esc 只触发一次
         self.esc_interrupted = False    # 交互层据此吞掉 CancelledError
+        # 容灾：Esc 打断时的附加通知（登记中断来源，供 checkpoint 记 reason）。
+        # 只是通知——取消动作仍由 _interrupt 自己完成，通知失败绝不影响打断。
+        self._interrupt_notice = None
         # Enter 排队反馈（v0.4.1）：捕获线程写、Live 线程读 → 独立锁
         self._queued: list = []
         self._queued_lock = threading.Lock()
@@ -433,6 +449,16 @@ class StreamingService:
         """登记 Esc 打断要取消的流消费任务（交互层在 await 前调用）。"""
         self._cancel_target = task
 
+    def set_interrupt_notice(self, callback) -> None:
+        """登记 Esc 打断的**附加通知**（容灾 checkpoint 用；可为 None）。
+
+        与 ``set_cancel_target`` 并行：取消仍由 ``_interrupt`` 亲自做，
+        本回调只用来告诉中断控制器"这次是 Esc"--好让落盘的 checkpoint
+        把 reason 记成 ``esc`` 而不是含糊的 ``signal``。回调异常绝不外溢：
+        通知是锦上添花，打断本身不能因为它失败。
+        """
+        self._interrupt_notice = callback
+
     def _interrupt(self) -> None:
         """Esc 热键（捕获线程）：取消流消费任务 → 打断当前回合。
 
@@ -447,6 +473,13 @@ class StreamingService:
             return
         self._interrupt_fired = True
         self.esc_interrupted = True
+        # 通知容灾控制器"这是 Esc"（best-effort；不参与取消本身）
+        notice = self._interrupt_notice
+        if notice is not None:
+            try:
+                notice()
+            except Exception:
+                pass
         task = self._cancel_target
         loop = self._loop
         if task is not None and loop is not None and not task.done():
@@ -579,6 +612,14 @@ class StreamingService:
         if self._reasoning_buffer and not self._reasoning_done:
             self._reasoning_done = True
             self._thinking_elapsed = elapsed
+        # 回合结束行（对标 Claude Code ``✻ Cooked for 42s``）：**追加成
+        # body chunk**，随下面的 _flush_commit 一并固化进 scrollback。
+        # 不作"额外 print 一行"——那样它落在重印标尺之外，用户一按
+        # Ctrl+R 就被 \033[J 擦掉且不会重印（详见 _body_chunks 的 done 分支）。
+        # 动词在此**抽一次**并随段存储：_body_chunks 可能因 resize 重渲，
+        # 每次渲染现抽会出现"同一条结束行换个动词"的抖动。
+        if self._rich is not None and (self._has_body() or self._reasoning_buffer):
+            self._segments.append(["done", (elapsed, random.choice(DONE_VERBS))])
         # 未固化余量一次性提交进 scrollback——**只打余量、不全文重
         # 渲染**（旧行为在此整体重打全文 = 用户报告的"二次打印"）。
         # 固化行早已在 scrollback，余量 = 易变尾（≤ 末行 + 未冻结
@@ -701,14 +742,22 @@ class StreamingService:
         弹窗位置越界上移，吞掉框上方的既有对话。
         """
         self._done = True
+        elapsed = time.monotonic() - self._t0
         # 被打断的回合：未冻结的推理阶段先兜底冻结（指示行拿到静态
         # 耗时，重印语义与正常 done 一致）
         if self._reasoning_buffer and not self._reasoning_done:
             self._reasoning_done = True
-            self._thinking_elapsed = time.monotonic() - self._t0
+            self._thinking_elapsed = elapsed
         # stop() 会停掉 Live——须在停之前读 is_started 判别 frame 在屏否
         frame_on_screen = self._live is not None and self._live.is_started
         if self._live:
+            # 结束行（打断变体：固定动词 Interrupted，读作"被打断，耗时 Ns"
+            # ——随机动词属于"好好干完了"的语义，用在这里是错的消息）。
+            # 同 done()：追加成 body chunk 而非额外 print，否则 Ctrl+R 重印
+            # 会把它擦掉且不重印。
+            if self._rich is not None and (
+                    self._has_body() or self._reasoning_buffer):
+                self._segments.append(["done", (elapsed, "Interrupted")])
             # 部分回答保真：未固化余量提交进 scrollback（旧行为经 stop
             # 内全文重渲染保留部分回答——新管线只打余量，等价无重打）
             self._flush_commit()
@@ -1046,6 +1095,16 @@ class StreamingService:
                     continue
                 rend: Any = Markdown(clean, code_theme="monokai")
                 meta: Any = "text"
+            elif kind == "done":
+                # 回合结束行（✻ Cooked for 42s）：单行 Text，**绝不走
+                # Markdown**（✻ 与动词无需解析，Markdown 还会吃掉行首空格）。
+                # 作为 body chunk 而非"done() 里额外 print 一行"，是为了
+                # 进入 _last_replay 的 tail 与 _replay_block_rows —— Ctrl+R
+                # 重印会 \033[J 擦掉指示行以下全部内容再按标尺重排，block
+                # 之外的行会被擦掉且不重印（见 _save_replay 注释）。
+                elapsed_s, word = payload
+                rend = done_line(elapsed_s, verb=word)
+                meta = "done"
             else:
                 rows = self._tool_renderables(payload, hints=hints)
                 if not rows:
@@ -1320,6 +1379,8 @@ class StreamingService:
         for kind, payload in self._segments:
             if kind == "text":
                 fp.append(("t", payload))
+            elif kind == "done":
+                fp.append(("done", payload))
             else:
                 fp.append(("tool", payload.name, payload.arguments,
                            payload.status, payload.output,
@@ -1432,7 +1493,7 @@ class StreamingService:
         传达"进行中"）。标签（Thinking…/Answering…）带移动高亮窗
         （:meth:`_shimmer_spans`，参考 OpenClaw tui-waiting.ts）——
         文字内容恒定、只有样式逐帧移动，缓存/帧 diff 不变量不破。"""
-        glyph = _SPIN[int(elapsed * 1000 / 80) % len(_SPIN)]
+        glyph = _SPIN[int(elapsed * 1000 / _SPIN_MS) % len(_SPIN)]
         label = "Thinking…" if not self._has_body() else "Answering…"
         # "esc to interrupt" 常驻提示（v0.4.1）：思考与输出阶段都可打断，
         # 能力必须可见——用户报告"不知道能打断"即缺此提示。
@@ -1464,7 +1525,7 @@ class StreamingService:
         return t
 
     def _deck_spin(self) -> str:
-        return _SPIN[int(time.monotonic() * 1000 / 80) % len(_SPIN)]
+        return _SPIN[int(time.monotonic() * 1000 / _SPIN_MS) % len(_SPIN)]
 
     def _deck_renderable(self, snap: list, extra_reserve: int = 0) -> tuple:
         """构建**上状态层** → ``(Group | None, 行数)``（渲染在输入框之上）。
@@ -1507,13 +1568,18 @@ class StreamingService:
         if budget == 0:
             return None, 0
 
-        plan_allow = min(len(plan_items), _DECK_PLAN_ROWS)
+        # 全部完成 → 计划面板折叠成单行汇总（对标 Claude Code）：逐条列出
+        # 已完成项只是占地方，收尾时把版面还给正文。折叠态没有逐条项，
+        # plan_allow 归零、也不产生 "+N more" 折叠行。
+        plan_all_done = bool(plan_items) and all(
+            t.get("status") == "completed" for t in plan_items)
+        plan_allow = 0 if plan_all_done else min(len(plan_items), _DECK_PLAN_ROWS)
         queue_allow = min(len(queue_items), _DECK_QUEUE_ROWS)
         headers = (1 if plan_items else 0) + (1 if queue_items else 0)
         # 折叠行（"+N more"）计数：某块被裁过就占一行
         def _overflow() -> int:
             return (
-                (1 if len(plan_items) > plan_allow else 0)
+                (1 if not plan_all_done and len(plan_items) > plan_allow else 0)
                 + (1 if len(queue_items) > queue_allow else 0)
             )
         # 超预算时先裁较大的块，直到放下
@@ -1530,8 +1596,14 @@ class StreamingService:
             done = sum(
                 1 for t in plan_items if t.get("status") == "completed"
             )
-            rows.append(self._deck_markup(
-                f" [bold]Plan[/bold] [dim]{done}/{len(plan_items)}[/dim]"))
+            if plan_all_done:
+                # 折叠态：单行汇总，与逐条态的项行同缩进（2 空格）
+                rows.append(self._deck_line(
+                    f"  {MARK_OK} Plan {done}/{len(plan_items)}",
+                    SUCCESS_STYLE))
+            else:
+                rows.append(self._deck_markup(
+                    f" [bold]Plan[/bold] [dim]{done}/{len(plan_items)}[/dim]"))
             for t in plan_items[:plan_allow]:
                 status = t.get("status")
                 if status == "completed":
@@ -1545,7 +1617,7 @@ class StreamingService:
                 else:
                     rows.append(self._deck_line(
                         f"  {MARK_PENDING} {t.get('content') or ''}", "dim"))
-            if len(plan_items) > plan_allow:
+            if not plan_all_done and len(plan_items) > plan_allow:
                 rows.append(self._deck_line(
                     f"  +{len(plan_items) - plan_allow} more", "dim"))
         if queue_items:
@@ -1569,6 +1641,10 @@ class StreamingService:
         子代理列表，含**主代理条目（编号 0）**：↓ 选中 + Enter 把输入
         框上方的主视图切换到选中条目（0 = 主回答，1..N = 子代理详情）。
         ❯ 标记待确认选择（优先）或当前视图条目。无子代理时不渲染。
+
+        每个**运行中**的子代理在其行下补一条缩进活动行（``⎿ 工具(摘要)``）
+        ——对标 Claude Code Agent View 的"当前在做什么"。只有运行中才有：
+        已结束的代理没有"当前活动"可言，硬留一行是噪音。
         """
         if not snap:
             return None, 0
@@ -1579,9 +1655,21 @@ class StreamingService:
         budget = max(0, height - _VIEWPORT_RESERVE - 5)
         if budget == 0:
             return None, 0
+
+        def _activity(v: dict) -> str:
+            """该子代理的活动行内容（空串 = 不渲染活动行）。"""
+            return (v.get("last_tool") or "") if v["status"] == "running" else ""
+
+        def _rows_for(allow: int) -> int:
+            """裁到 allow 个子代理行时的总行数：头部 1 + 主条目 1 +
+            子代理行 + 各自活动行 + 折叠行。活动行必须计入，否则浮层
+            撑爆视口（整组高度 ≤ 视口是不变量）。"""
+            activity = sum(1 for v in snap[:allow] if _activity(v))
+            fold = 1 if len(snap) > allow else 0
+            return 2 + allow + activity + fold
+
         fleet_allow = min(len(snap), _DECK_FLEET_ROWS)
-        # 头部 1 + 主条目 1 + 子代理行 + 折叠行，超预算裁子代理行
-        while 2 + fleet_allow + (1 if len(snap) > fleet_allow else 0) > budget:
+        while _rows_for(fleet_allow) > budget:
             if fleet_allow <= 0:
                 break
             fleet_allow -= 1
@@ -1620,6 +1708,12 @@ class StreamingService:
             else:
                 body = f"[green] {MARK_OK} {label} · {tools} · {secs}[/]"
             rows.append(self._deck_markup(head + body))
+            activity = _activity(v)
+            if activity:
+                # 活动行缩进与主转录的结果槽线同级（5 空格 + ⎿ + 2 空格）。
+                # 摘要来自子代理的工具参数，可能含方括号 → 必须转义。
+                rows.append(self._deck_line(
+                    f"     {_GUTTER}  {escape(activity)}", DIM))
         if len(snap) > fleet_allow:
             rows.append(self._deck_line(
                 f"  +{len(snap) - fleet_allow} more", "dim"))
@@ -1720,6 +1814,7 @@ if __name__ == "__main__":
 
     # 结构化段：工具事件落成记录；task 起始跳过（deck 展示）、结果回显
     from ..agent import ToolStartEvent, ToolResultEvent
+    from ..llm import StreamReasoning
     svc_e = StreamingService(console, input_tokens=0)
     svc_e.feed(ToolStartEvent(name="read_file"))
     svc_e.feed(ToolResultEvent(name="read_file", output="boom", is_error=True))
@@ -1779,6 +1874,23 @@ if __name__ == "__main__":
     _live.start()
     time.sleep(0.3)  # 期间从不调用 feed()
     _live.stop()
+
+    # 回合结束行：done() 把它追加成 body chunk（✻ <动词> for <时长>），
+    # 因而落在 replay tail 内——Ctrl+R 重印会原样带回来。这是它**不能**
+    # 用"额外 print 一行"实现的原因（那样会被 \033[J 擦掉且不重印）。
+    svc3 = StreamingService(console, input_tokens=0)
+    svc3.start()
+    svc3._live.stop()
+    svc3._live = None
+    svc3.feed(StreamReasoning("weighing options"))  # 有推理才有 replay 数据
+    svc3.feed("hello")
+    svc3._t0 = time.monotonic() - 42
+    svc3.done()
+    done_segs = [p for k, p in svc3._segments if k == "done"]
+    assert len(done_segs) == 1 and done_segs[0][1] in DONE_VERBS, done_segs
+    _replay = console._last_replay
+    assert any("✻" in t.plain for t in _replay["tail"]), "结束行必须落在 tail 内"
+    assert _replay["gap"] == _BODY_FRAME_GAP
     assert _n["c"] >= 3, f"思考阶段也应多次重建视图，实际 {_n['c']} 次"
 
     print(f"rich-tag strip ✓, spinner[0]={_SPIN[0]}, "

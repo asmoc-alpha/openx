@@ -26,7 +26,9 @@ pip entry-points group ``openx.plugins``；settings.json 顶层
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import inspect
 import logging
 from typing import Any, Callable, Optional
 
@@ -60,6 +62,19 @@ __all__ = [
 ]
 
 _log = logging.getLogger("openx.kernel")
+
+
+def _log_hook_task_failure(task: "asyncio.Task[Any]") -> None:
+    """吞掉即发即忘钩子任务的异常（生命周期钩子绝不炸调用方）。
+
+    与同步钩子的异常隔离同构：插件的异步钩子失败 = observation，
+    记日志即可，不向事件循环抛 "Task exception was never retrieved"。
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.warning("async lifecycle hook failed: %r", exc)
 
 
 def _disabled_ids() -> list[str]:
@@ -362,13 +377,28 @@ class PluginKernel:
             origin=f"plugin:{entry.plugin}",
         )
 
-    def trigger_lifecycle(self, event: str, plugin_id: Optional[str] = None) -> None:
+    def trigger_lifecycle(
+        self,
+        event: str,
+        plugin_id: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> None:
         """按注册序触发生命周期钩子（lifecycle/v1 的消费入口）。
 
         ``event``：session_start / checkpoint / resume / unload；``plugin_id``
         限定只触发某插件的钩子（unload 用）。故障隔离：单个钩子异常 ->
         记 warning + ``plugin_error`` 事件后继续--对主流程而言插件异常
         与"没这个钩子"同构（§3 核心原则）。
+
+        ``payload``：可选上下文（checkpoint / resume 用，见
+        ``services/checkpoint.py`` 的 payload 契约）。**零参钩子照常工作**--
+        只有形参容纳时才传（见 ``_call_hook``），故既有插件零改动。
+
+        钩子契约：**观察者 + 自我落盘点，不是修改器**。不得写 checkpoint
+        （那是内核的活）、不得改 ``todos``，且必须快速返回--这条路径在
+        回合的关键路径上，不是插件做 IO 的地方。**SIGINT 路径上的异步钩子
+        可能来不及跑完就被进程退出丢弃**--需要持久化的插件状态请落在自己
+        的位置，别指望这个回调。
         """
         hook_attr = f"on_{event}"
         reg = self.registry("lifecycle")
@@ -381,7 +411,7 @@ class PluginKernel:
             if not callable(hook):
                 continue
             try:
-                hook()
+                self._call_hook(hook, payload)
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 _log.warning(
@@ -401,6 +431,43 @@ class PluginKernel:
                     },
                     origin=f"plugin:{entry.plugin}",
                 )
+
+    @staticmethod
+    def _call_hook(hook: Callable[..., Any], payload: Optional[dict[str, Any]]) -> None:
+        """调用一个生命周期钩子，按**形参容量**决定是否传 payload。
+
+        向后兼容的落点：``on_session_start`` / ``on_unload`` 历史上都是零参，
+        不能因为多了个 payload 就要求既有插件改签名。有 payload 且钩子收得下
+        才传；签名不可内省（C 实现、functools.partial 等）时退回零参。
+
+        异步钩子是**即发即忘**：本方法是同步的（信号路径上不能 await）。
+        过去这类钩子被静默跳过，现在至少会被调度--但没有事件循环时只能
+        丢弃并告警（诚实失败胜过静默吞掉）。
+        """
+        accepts = 0
+        try:
+            params = inspect.signature(hook).parameters.values()
+            accepts = sum(
+                1 for p in params
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            )
+        except (TypeError, ValueError):
+            accepts = 0
+        result = hook(payload) if (payload is not None and accepts >= 1) else hook()
+        if not inspect.isawaitable(result):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None or loop.is_closed():
+            _log.warning("lifecycle hook returned an awaitable but no loop is running")
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            return
+        task = loop.create_task(result)
+        task.add_done_callback(_log_hook_task_failure)
 
     def _note_registered(
         self, kind: str, name: str, plugin_id: str, problems: list[str]
@@ -442,14 +509,20 @@ class PluginKernel:
         sink: Callable[[Event], None],
         session: str = "",
         start_seq: int = 0,
+        start_digest: str = "",
     ) -> None:
         """挂接账本出口：内核只依赖 Callable，不 import 存储（④ 委托 Ledger）。
 
         宿主（agent）把 ``SessionStore.append_event`` 接进来；seq 从
-        ``start_seq`` 续起（恢复会话时由存储侧清点既有条目）。重复挂接
-        = 换 sink/会话，计数器与哈希链重置。
+        ``start_seq`` 续起、哈希链从 ``start_digest`` 续起（恢复会话时由
+        存储侧清点既有条目与末条摘要）。重复挂接 = 换 sink/会话，计数器
+        与哈希链重置到给定起点。
+
+        恢复会话必须传 ``start_digest``（取 ``SessionStore.ledger_tail_digest()``），
+        否则链会从头发起--seq 续上了、摘要链却断了，恰好在我们最需要它
+        证明"这段历史没被改过"的时候失效。
         """
-        self._ledger.attach(sink, session, start_seq)
+        self._ledger.attach(sink, session, start_seq, start_digest)
 
     def emit(
         self,

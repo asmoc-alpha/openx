@@ -24,10 +24,11 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .config import OpenXConfig
 from .agent import OpenXAgent
+from .kernel.recovery import ResumeVerdict
 from .orchestration.sessions import SessionMeta, SessionStore, resolve_by_id, resolve_latest
 from .ui.console import Console
 from .app.cli.setup_wizard import run_setup_wizard
@@ -125,6 +126,25 @@ them interactively with /model and /config. Environment:
         help="Resume a session by id; omit the id for an interactive picker",
     )
     parser.add_argument(
+        "--recover",
+        action="store_true",
+        help=(
+            "Resume a turn interrupted mid-flight (crash / Ctrl-C / Esc) "
+            "from its checkpoint; requires --continue or --resume. "
+            "Completed tool calls are never replayed"
+        ),
+    )
+    parser.add_argument(
+        "--recover-mode",
+        choices=["auto", "strict", "drop"],
+        default="auto",
+        help=(
+            "What to do when the checkpoint is unusable: auto (warn and "
+            "resume the session without the interrupted turn), strict "
+            "(refuse and exit 1), drop (discard it silently)"
+        ),
+    )
+    parser.add_argument(
         "--version", "-V",
         action="store_true",
         help="Show version and exit",
@@ -202,6 +222,30 @@ def _open_session(
     # 新会话
     store = SessionStore.create(workspace, config.model, group=config.active_group)
     return store, None, []
+
+
+def _report_unrecoverable(
+    plan: Any, console: Console, mode: str
+) -> None:
+    """不可恢复的 checkpoint：按 ``--recover-mode`` 决定闹多大动静。
+
+    - ``auto``（默认）：只警告，按普通会话恢复--被打断的那一轮丢失，但
+      会话本身照常可用。恢复是优化，坏文件不该挡住启动。
+    - ``strict``：当作错误退出，供脚本/CI 明确要求"必须能续跑"的场景。
+    - ``drop``：静默丢弃（用户已明确表示不在乎这一轮）。
+    """
+    detail = getattr(plan, "detail", "") or "unusable checkpoint"
+    verdict = getattr(getattr(plan, "verdict", None), "value", "unknown")
+    if mode == "drop":
+        return
+    if mode == "strict":
+        print(f"Error: cannot recover the interrupted turn ({verdict}): {detail}",
+              file=sys.stderr)
+        sys.exit(1)
+    console.print_warning(
+        f"Interrupted turn not recoverable ({verdict}): {detail} — "
+        "continuing with the saved session."
+    )
 
 
 def _cleanup_background_tasks(agent: OpenXAgent) -> None:
@@ -368,6 +412,30 @@ def main(argv: Optional[list[str]] = None) -> None:
     if resumed_meta is not None:
         agent.load_session(resumed_meta, resumed_messages)
 
+    # ── 容灾恢复（--recover）──────────────────────────────────
+    # 裁决磁盘上的 checkpoint 能否续跑。**绝不自动恢复**：续跑会重发模型
+    # 请求并可能重跑未完成的工具，必须是用户的显式选择。没有 --recover 时
+    # 只提示一句（交互式 REPL 才有提示的意义），有则把快照作为本轮起点。
+    if args.continue_session or args.resume is not None:
+        plan = agent.recover_session()
+        if args.recover:
+            if plan.usable:
+                agent.pending_resume = plan
+                console.print_info(f"Recovered interrupted turn — {plan.detail}")
+            else:
+                _report_unrecoverable(plan, console, args.recover_mode)
+        elif plan.verdict is ResumeVerdict.OK:
+            console.print_warning(
+                f"An interrupted turn was found ({plan.detail}). "
+                "Use --recover to resume it."
+            )
+    elif args.recover:
+        console.print_warning("--recover needs --continue or --resume; ignoring.")
+
+    # 中断控制器：只在主线程（CLI 主流程）安装信号；serve 有自己的
+    # add_signal_handler，两边各管一段、互不干扰。
+    agent.enable_interrupts()
+
     # Run（Phase 7：无论正常返回、KeyboardInterrupt 还是异常，finally 里
     # best-effort 清理所有后台任务——绝不因清理失败影响退出）
     exit_code = 0
@@ -399,6 +467,10 @@ def main(argv: Optional[list[str]] = None) -> None:
                 console.print_goodbye(agent.session_token_usage())
     finally:
         _cleanup_background_tasks(agent)
+        # 还原信号处理器（best-effort）：进程退出前把 SIGINT/SIGTERM 还给
+        # 默认行为，别让库式用法（嵌入式调用 main()）继承我们的钩子。
+        if agent.interrupt is not None:
+            agent.interrupt.disarm()
     if exit_code:
         sys.exit(exit_code)
 

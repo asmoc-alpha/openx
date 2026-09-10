@@ -9,7 +9,7 @@
 - **语义色只在表意时用**：成功绿 / 错误红 / 警告黄，且去掉 bold 的
   喧哗（错误行本身已够醒目）；
 - **层次靠字重**（bold / normal / dim）而非色相数量；
-- **标记符号收敛到一个几何家族**：✓ ✕ ▲ ● ○ ▸ ❯——无 emoji（emoji
+- **标记符号收敛到一个几何家族**：✓ ✕ ▲ ● ○ ▸ ❯ ✻——无 emoji（emoji
   字形随平台漂移、与框线字符风格冲突，是旧界面"廉价感"的主因）。
 """
 
@@ -53,6 +53,17 @@ MARK_INFO = "●"     # 信息 / 进行中（配 spinner 帧）
 MARK_PENDING = "○"  # 待办
 MARK_BULLET = "▸"   # 列表项 / 提示条目
 MARK_CURSOR = "❯"   # 输入提示符 / 菜单选中
+# 回合结束静态字形（对标 Claude Code 的 ✻）：与 spinner 家族同源——
+# 动画期逐帧走 SPIN_FRAMES，收束时停在 ✻。
+MARK_WORKING = "✻"
+
+# 进行中动画字形 + 帧长（对标 Claude Code 的星形家族，120ms/帧）。
+# 定义在此处而非 services/streaming.py：流式路径与非流式路径共用同一
+# 份家族定义，且 ui 层不必反向 import services（会成环）。
+# 平台差异：Claude Code 在 Linux/Windows/Ghostty 用缩减集 · ✢ ✶ ✻ ✽；
+# openx 暂不做平台探测，若出现字形兼容反馈再补。
+SPIN_FRAMES = ("·", "✢", "✳", "✶", "✻", "✽")
+SPIN_FRAME_MS = 120
 
 
 if __name__ == "__main__":
@@ -67,7 +78,8 @@ if __name__ == "__main__":
         print(f"{_name} = {_style!r}")
         _c.print(f"{_name} sample", style=_style)  # 渲染进缓冲区，证明样式可被 rich 解析
     for _m in ("MARK_OK", "MARK_FAIL", "MARK_WARN", "MARK_INFO",
-               "MARK_PENDING", "MARK_BULLET", "MARK_CURSOR"):
+               "MARK_PENDING", "MARK_BULLET", "MARK_CURSOR",
+               "MARK_WORKING"):
         assert globals()[_m], _m
     print(f"rendered {len(_buf.getvalue())} chars to buffer")
     print("openx/ui/_style.py OK ✓")

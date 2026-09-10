@@ -28,7 +28,8 @@ openx/
 │   │   ├── audit/         #   ③ Security audit: guard verdict pipeline + hooks (user hook chain)
 │   │   ├── sandbox/       #   ⑤ Sandbox executor: host/protect
 │   │   ├── ledger.py      #   ④ Trace: event ledger
-│   │   └── protocol.py    #   ④ Protocol face: event envelope schema (ledger externalized)
+│   │   ├── protocol.py    #   ④ Protocol face: event envelope schema (ledger externalized)
+│   │   └── recovery/      #   ④ Resumability over the trace: checkpoint model/store/resume verdicts
 │   ├── builtin/           # Base-bundle builtin plugin package (tools/providers; everything-is-a-plugin)
 │   │   ├── tools.py       #   Builtin tool factory
 │   │   └── providers.py   #   Builtin provider implementations (openai-compat / anthropic)
@@ -63,6 +64,8 @@ openx/
 │   ├── services/
 │   │   ├── tool_executor.py # Permission + hook gate, serial prepare → parallel execute
 │   │   ├── streaming.py   # Stream display service
+│   │   ├── checkpoint.py  # Recovery submission policy (what/when to checkpoint)
+│   │   ├── interrupt.py   # Interrupt controller (signals / Esc / client interrupt)
 │   │   └── exploration.py # Project overview detection
 │   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
 │   └── utils/             # Path, text, and error helpers
@@ -95,11 +98,11 @@ Permission checks and hook invocations happen during serial preparation, inside
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |
 | Context & memory | `instructions.py`, `memory.py`, `orchestration/history.py` | OPENX.md instructions, persistent memory, history + compaction |
 | Orchestration | `orchestration/subagent.py`, `orchestration/workflow.py`, `orchestration/tasks.py`, `orchestration/fleet.py` | Subagents, deterministic workflows, background tasks (hard-wired, P2+ plugin-ization) |
-| State | `orchestration/sessions.py`, `config.py` | Session persistence/resume, layered configuration |
+| State | `orchestration/sessions.py`, `config.py`, `kernel/recovery/` | Session persistence/resume, layered configuration, turn-level checkpoints & interrupt recovery |
 | Collaboration | `permissions.py` | Permission tiers, stored rules, dangerous-command gate |
 
 ## See also
 
 - [Development guide](development.md) — contributor setup and daily workflow
 - [User guides](user/index.md) — commands, modes & permissions, configuration, sessions
-- [Subsystem reference](subsystems/README.md) — subagents, workflows, hooks, MCP, background tasks
+- [Subsystem reference](subsystems/README.md) — subagents, workflows, hooks, MCP, background tasks, recovery

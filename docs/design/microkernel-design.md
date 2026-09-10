@@ -54,9 +54,10 @@ boot 组合退化为"出厂默认组合"，运行时装配在其之上增量。
 | ③ 安全审计 | `kernel/audit/`（guard 裁决管线 + hooks 用户钩子链）+ 元工具 ASK 闸 | 装配请求闸门 = load/unload/write/promote 的 ASK 弹窗；hooks 自 `core/` 迁入（2026-09-02） |
 | ④ 轨迹跟踪 | `kernel/ledger.py` + `kernel/protocol.py`（emit / attach_ledger 委托；事件信封 schema = 账本外化） | 成本字段 / eval 导出随 P-E；protocol 自 `core/` 迁入（2026-09-02） |
 | ⑤ 沙箱执行器 | `kernel/sandbox/`（host / protect） | protect = 调用防护；进程隔离随 D9 |
+| ④b 容灾 | `kernel/recovery/`（model / store / resume）+ `services/checkpoint.py`、`services/interrupt.py` | v0.1.2 落地：回合级 checkpoint、恢复裁决、信号/取消接线；机制住内核、策略住 services |
 | 装配层（各协议 Registry） | `registrations.py` 目录：`tools` / `commands` / `contexts` / `lifecycle` / `providers` | P-D 新增 `contexts` / `lifecycle` |
 | 上下文组装管线（context/v1） | `services/assembly.py::collect_context_fragments` + `agent._build_system_prompt` | pre-inference 征集（注册序 + 字符预算 + 崩溃隔离） |
-| 会话生命周期（lifecycle/v1） | `kernel.trigger_lifecycle` + `agent.startup`（session_start） | checkpoint / resume 接线随 P-E |
+| 会话生命周期（lifecycle/v1） | `kernel.trigger_lifecycle` + `agent.startup`（session_start）+ `services/checkpoint.py`（checkpoint / resume） | 四个钩子全部接线（v0.1.2） |
 | UI 面板管线（ui/v1） | `services/assembly.py::UiPanelCollector` + `streaming.py::_plugin_deck_renderable`（CLI）/ `app/serve/session.py` ticker（web） | deck 每帧征集（崩溃跳过/熔断/行数限额/节流）；web 经 `panels` 协议事件广播（变化才发） |
 | 元工具（模型驱动装配） | `tools/plugin_tools.py` + `tools/write_plugin_tools.py` | 结构性工具恒先占位，子代理不继承 |
 
@@ -343,7 +344,8 @@ load_plugin("dataquery")
    隔离回调、agent.startup 接 session_start）+ unload 的 **on_unload 状态
    落盘契约**（§1.2 卸载有状态性的兑现）+ 协议一致性 warning + write_plugin
    按 type 生成三协议插件（PLUGIN_SPEC v2 常驻 + 注册面 AST 契约检查，类型
-   错配即拒）。单例协议（planner/compaction）与 checkpoint/resume 接线列后续。
+   错配即拒）。单例协议（planner/compaction）列后续；checkpoint / resume
+   接线已随 v0.1.2 容灾落地（见 `docs/openx-kernel-design.md` §3.6）。
 5. **P-E 轨迹升级**：事件账本补成本字段，Tracer 订阅 + eval 导出。
 6. ~~**P-F 模型自产插件**~~ **已完成**（2026-08-29）：`kernel/assembly/plugin_spec.py`
    PluginSpec（常驻系统提示）+ `tools/write_plugin_tools.py` 三元工具（write ASK

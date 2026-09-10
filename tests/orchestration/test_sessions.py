@@ -588,3 +588,100 @@ class TestModelGroupMeta:
         )
         old_meta, _ = SessionStore.load(path)
         assert old_meta.group == ""
+
+
+# ── 12. 容灾旁挂文件的生命周期 ────────────────────────────────────
+
+
+class TestCheckpointSidecar:
+    """旁挂文件（<id>.ckpt.json）与会话文件同目录，但互不污染。
+
+    三条纪律：不被当作会话列出 / 删会话时一并清理 / 账本信封行不干扰
+    会话恢复（``checkpoint`` 是新的信封类型，load 必须照旧跳过）。
+    """
+
+    def test_sidecar_is_not_listed_as_session(self, sessions_tmp):
+        from openx.kernel.recovery import CheckpointRecord, CheckpointStore
+
+        store = SessionStore.create("/ws/ck", "m", session_id="ck1")
+        store.append_messages([{"role": "user", "content": "hi"}])
+        # 写一份旁挂文件：list_for_workspace 只 glob *.jsonl，不该看见它
+        CheckpointStore(store.path).write(
+            CheckpointRecord(session_id="ck1", workspace="/ws/ck")
+        )
+
+        metas = SessionStore.list_for_workspace("/ws/ck")
+        assert [m.session_id for m in metas] == ["ck1"]
+
+    def test_delete_removes_sidecar_too(self, sessions_tmp):
+        """删会话必须连旁挂一起删：否则同名 id 复用时会把旧快照认成自己的。"""
+        from openx.kernel.recovery import CheckpointRecord, CheckpointStore
+
+        store = SessionStore.create("/ws/ck", "m", session_id="ckdel")
+        store.append_messages([{"role": "user", "content": "hi"}])
+        sidecar = CheckpointStore(store.path)
+        sidecar.write(CheckpointRecord(session_id="ckdel", workspace="/ws/ck"))
+        assert sidecar.path.exists()
+
+        assert SessionStore.delete("ckdel") is True
+        assert not store.path.exists()
+        assert not sidecar.path.exists()
+
+    def test_delete_without_sidecar_still_works(self, sessions_tmp):
+        store = SessionStore.create("/ws/ck", "m", session_id="nock")
+        store.append_messages([{"role": "user", "content": "hi"}])
+        assert SessionStore.delete("nock") is True
+
+    def test_checkpoint_envelope_is_skipped_by_load(self, sessions_tmp):
+        """新信封类型对会话恢复透明：load 只认 message/meta 行。"""
+        from openx.kernel.protocol import Event
+
+        store = SessionStore.create("/ws/ck", "m", session_id="ck2")
+        store.append_event(Event(
+            seq=1, ts=0.0, session="ck2", type="checkpoint",
+            payload={"type": "checkpoint", "phase": "committed",
+                     "reason": "tool_round", "tool_rounds": 1},
+            digest="dg1",
+        ))
+        store.append_messages([{"role": "user", "content": "hello"}])
+
+        _, messages = SessionStore.load(store.path)
+        assert messages == [{"role": "user", "content": "hello"}]
+
+    def test_flush_forces_file_onto_disk_with_buffered_lines(self, sessions_tmp):
+        """flush 把 meta 首行 + 先期缓冲的账本行一起落盘。
+
+        没有它，崩溃时缓冲在内存里的 seq 在盘上找不到，旁挂文件引用的
+        位置就成了悬空引用（恢复裁决会判撕裂）。
+        """
+        from openx.kernel.protocol import Event
+
+        store = SessionStore.create("/ws/ck", "m", session_id="ck3")
+        store.append_event(Event(
+            seq=1, ts=0.0, session="ck3", type="turn_started",
+            payload={"type": "turn_started"}, digest="dg1",
+        ))
+        assert not store.path.is_file()      # 惰性：还没落盘
+
+        store.flush()
+        assert store.path.is_file()
+        assert store.ledger_start_seq() == 1
+        assert store.ledger_tail_digest() == "dg1"
+
+    def test_ledger_tail_digest_empty_when_no_envelopes(self, sessions_tmp):
+        store = SessionStore.create("/ws/ck", "m", session_id="ck4")
+        assert store.ledger_tail_digest() == ""
+        assert store.ledger_start_seq() == 0
+
+    def test_ledger_tail_digest_tracks_last_envelope(self, sessions_tmp):
+        from openx.kernel.protocol import Event
+
+        store = SessionStore.create("/ws/ck", "m", session_id="ck5")
+        for seq in (1, 2, 3):
+            store.append_event(Event(
+                seq=seq, ts=0.0, session="ck5", type="probe",
+                payload={"type": "probe"}, digest=f"dg{seq}",
+            ))
+        store.append_messages([{"role": "user", "content": "x"}])
+        assert store.ledger_start_seq() == 3
+        assert store.ledger_tail_digest() == "dg3"

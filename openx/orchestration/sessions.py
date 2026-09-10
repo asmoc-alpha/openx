@@ -75,6 +75,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _unlink_sidecar(jsonl_path: Path) -> None:
+    """删除会话的容灾旁挂文件（best-effort，不存在即无操作）。
+
+    路径推导复用内核 ``recovery.store.sidecar_path``（单一真源），惰性
+    import 以免 sessions 模块在 import 期就拖起整个内核包。
+    """
+    try:
+        from ..kernel.recovery.store import sidecar_path
+    except Exception:
+        return
+    try:
+        sidecar_path(jsonl_path).unlink()
+    except OSError:
+        pass
+
+
 # ── meta ────────────────────────────────────────────────────────
 
 
@@ -170,6 +186,11 @@ def _sanitize_message(message: dict[str, Any]) -> dict[str, Any]:
     sanitized = dict(message)
     sanitized["content"] = parts
     return sanitized
+
+
+# 公开别名：容灾快照（services/checkpoint.py）复用同一清洗纪律--
+# base64 图片与上传附件绝不落盘，两条写盘路径共享一个实现。
+sanitize_message = _sanitize_message
 
 
 def _drop_orphan_tool_messages(
@@ -536,13 +557,34 @@ class SessionStore:
         else:
             self._pending.append(line)
 
-    def ledger_start_seq(self) -> int:
-        """既有信封条目数（恢复会话时 kernel.attach_ledger 的续接起点）。"""
+    def flush(self) -> None:
+        """把文件强行拖到盘上（meta 首行 + 先期缓冲行），失败静默。
+
+        惰性落盘的反面：``create()`` 后文件要等首条**消息**才存在，而
+        账本事件在此之前只缓冲在内存里--进程崩溃 = 全部丢失。容灾提交
+        必须让"checkpoint 事件已落盘"成为事实，否则旁挂文件引用的 seq
+        在盘上找不到（恢复裁决会判撕裂）。故由提交方显式调用本方法。
+
+        副作用（有意）：一个只跑过工具、还没写出最终回复的会话，从此也会
+        出现在会话列表里--这正是我们要的：它确实有可恢复的进展。
+        """
+        try:
+            self._ensure_on_disk()
+        except OSError as e:
+            print(f"warning: session flush failed for {self.path.name}: {e}")
+
+    def _scan_ledger(self) -> tuple[int, str]:
+        """扫账本行，返回 ``(信封条目数, 末条 digest)``。
+
+        信封行 = 同时带 ``seq`` 与 ``digest`` 的行（message/meta 行不算）。
+        损坏行跳过（与 ``load`` 同纪律）。读不到文件 → ``(0, "")``。
+        """
         try:
             lines = self.path.read_text(encoding="utf-8").splitlines()
         except OSError:
-            return 0
+            return 0, ""
         count = 0
+        tail = ""
         for raw in lines:
             raw = raw.strip()
             if not raw:
@@ -553,7 +595,23 @@ class SessionStore:
                 continue
             if isinstance(line, dict) and "seq" in line and "digest" in line:
                 count += 1
-        return count
+                digest = line.get("digest")
+                if isinstance(digest, str):
+                    tail = digest
+        return count, tail
+
+    def ledger_start_seq(self) -> int:
+        """既有信封条目数（恢复会话时 kernel.attach_ledger 的续接起点）。"""
+        return self._scan_ledger()[0]
+
+    def ledger_tail_digest(self) -> str:
+        """末条信封的 digest（恢复时续接哈希链的起点）。
+
+        ``Ledger.attach`` 过去把 ``_prev_digest`` 清零，导致恢复会话后
+        **seq 续上了、哈希链却从头再来**--链在我们最需要它证明"这段历史
+        没被改过"的时刻断了。本方法提供续接起点。
+        """
+        return self._scan_ledger()[1]
 
     # ── listing ─────────────────────────────────────────────
 
@@ -638,14 +696,19 @@ class SessionStore:
         时，重绑窗口内任何一次 ``append_*`` 都会用 ``open("a")`` 把文件
         复活成一个**没有 meta 行的空壳**（列表页读不到 workspace，恢复
         也拿不到 model）。
+
+        容灾旁挂文件（``<id>.ckpt.json``）一并删除——否则删了会话却留下
+        孤儿 checkpoint，下次同名 id 被复用时会把旧快照当成自己的。
         """
         meta = cls.resolve_anywhere(session_id)
         if meta is None or meta.path is None:
             return False
+        path = Path(meta.path)
         try:
-            Path(meta.path).unlink()
+            path.unlink()
         except OSError:
             return False
+        _unlink_sidecar(path)
         return True
 
     @classmethod

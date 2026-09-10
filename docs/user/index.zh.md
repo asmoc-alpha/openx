@@ -15,7 +15,7 @@
 
 ## 指南之外
 
-- [子系统参考](../subsystems/README.zh.md)——subagents、workflows、后台任务、hooks、MCP
+- [子系统参考](../subsystems/README.zh.md)——subagents、workflows、后台任务、hooks、MCP、容灾
 - [Cookbook](../cookbook/extending.zh.md)——用自定义 tool 扩展 OpenX
 - [架构](../architecture.zh.md)——模块树与运行时循环
 - [与 Claude Code 的对比](../comparison.zh.md)

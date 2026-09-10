@@ -230,7 +230,7 @@ class TestThinkingDisplay:
         assert elapsed > 0
         tail_plain = " ".join(t.plain for t in replay["tail"])
         assert "answer body" in tail_plain   # tail 可独立重印
-        assert replay["gap"] == 2
+        assert replay["gap"] == 1              # = _BODY_FRAME_GAP（对标 Claude Code）
         assert h.svc._console._replay_expanded is False
         # 折叠态块行数 = 指示行 + 块间空行 + 正文行（tail 计入标尺）
         assert h.svc._console._replay_block_rows == len(replay["tail"]) + 1
@@ -282,7 +282,7 @@ class TestThinkingDisplay:
         assert "(ctrl+r to expand)" in text
 
     def test_stream_gap_between_body_and_spinner(self, deterministic_live):
-        """流式期正文与框（经 spinner）恒隔 2 空行（_BODY_FRAME_GAP）。"""
+        """流式期正文与框（经 spinner）恒隔 1 空行（_BODY_FRAME_GAP）。"""
         h = Harness()
         h.svc.start()
         h.svc.feed("body line here")
@@ -291,11 +291,16 @@ class TestThinkingDisplay:
         body_y = next(y for y, r in enumerate(rows) if "body line here" in r)
         spin_y = next(
             y for y, r in enumerate(rows) if "esc to interrupt" in r)
-        assert spin_y - body_y == 3          # 中间恰 2 空行
-        assert rows[body_y + 1] == "" and rows[body_y + 2] == ""
+        assert spin_y - body_y == 2          # 中间恰 1 空行
+        assert rows[body_y + 1] == ""
 
     def test_done_gap_between_body_and_frame(self, deterministic_live):
-        """done 后留屏形态：正文与 FRAME 之间恰 2 空行。"""
+        """done 后留屏形态（对标 Claude Code）：
+
+        正文 › 1 空行 › ``✻ <动词> for <时长>`` › 1 空行（_BODY_FRAME_GAP）
+        › FRAME。结束行**在 gap 之上**——它已固化进 scrollback，而 gap 是
+        正文与框之间的固定间距。
+        """
         h = Harness()
         h.svc.start()
         h.svc.feed("the answer body")
@@ -304,8 +309,12 @@ class TestThinkingDisplay:
         rows = [r.rstrip() for r in h.rows()]
         body_y = next(y for y, r in enumerate(rows) if "the answer body" in r)
         frame_y = next(y for y, r in enumerate(rows) if "FRAME" in r)
-        assert frame_y - body_y == 3         # 中间恰 2 空行
-        assert rows[body_y + 1] == "" and rows[body_y + 2] == ""
+        # 正文 → 空行 → 结束行（动词 + for + 时长）→ 空行 → FRAME
+        assert rows[body_y + 1] == ""
+        assert rows[body_y + 2].startswith("✻ "), rows[body_y + 2]
+        assert " for " in rows[body_y + 2], rows[body_y + 2]
+        assert rows[body_y + 3] == ""
+        assert frame_y == body_y + 4
 
     def test_start_resets_thinking_state(self, deterministic_live):
         """每轮 start() 归零 thinking 状态（不跨轮延续）。"""

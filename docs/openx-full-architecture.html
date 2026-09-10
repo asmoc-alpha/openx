@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>OpenX 完全态架构（v5 · 会消融的 harness × 自演进闭环）</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #fff; color: #222; margin: 0; padding: 40px 46px; }
+  h1 { font-size: 23px; font-weight: 700; margin: 0 0 6px; }
+  .sub { font-size: 14px; color: #777; margin: 0 0 14px; line-height: 1.7; }
+  .crit { font-size: 14px; color: #333; margin: 0 0 14px; line-height: 1.9; }
+  .crit b { background: #333; color: #fff; font-weight: 600; padding: 2px 8px; border-radius: 2px; margin-right: 5px; }
+  .legend { font-size: 13px; color: #555; margin: 0 0 20px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         margin: 0 5px 0 12px; vertical-align: middle; }
+  .d-have { background: #7fbf7f; } .d-part { background: #e6a23c; } .d-todo { background: #5b8def; }
+  .d-far { background: #999; } .d-decay { background: #b98fd6; } .d-plug { background: #8e6bb5; }
+  .d-self { background: #2a9d8f; }
+  .box { border: 1.5px solid #333; border-radius: 2px; box-sizing: border-box; position: relative; }
+  .t { font-size: 15px; letter-spacing: .3px; font-weight: 600; }
+  .s { font-size: 12.5px; color: #555; margin-top: 4px; line-height: 1.6; }
+  .tag { position: absolute; top: 5px; right: 6px; font-size: 10.5px; padding: 1px 6px;
+         border-radius: 2px; color: #fff; }
+  .tag.have { background: #7fbf7f; } .tag.part { background: #e6a23c; } .tag.todo { background: #5b8def; }
+  .tag.far { background: #999; } .tag.inv { background: #000; } .tag.decay { background: #b98fd6; }
+  .tag.plug { background: #8e6bb5; } .tag.self { background: #2a9d8f; }
+  .layerlabel { font-size: 14px; color: #555; font-weight: 600; margin: 15px 0 6px 2px; }
+  .strip { display: flex; gap: 10px; }
+  .strip .box { flex: 1; padding: 10px 9px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+  .thin .box { background: #f2f2f2; border-width: 1.2px; }
+  .arrowrow { display: flex; justify-content: center; gap: 56px; color: #999; font-size: 13px; margin: 6px 0; }
+
+  /* 组合输入 */
+  .comp { display: flex; gap: 10px; align-items: stretch; }
+  .comp .box { flex: 1; padding: 10px; text-align: center; display: flex; flex-direction: column; justify-content: center; background: #f2f2f2; }
+  .comp .merge { flex: none; border: none; display: flex; align-items: center; font-size: 18px; }
+  .comp .out { background: #fff; }
+  .comp .profile { background: #e8d9f5; }
+  .comp .evoback { background: #dcf0ee; }
+
+  /* 中部双列 */
+  .mid { display: flex; gap: 12px; align-items: stretch; }
+  .col { flex: 1; display: flex; flex-direction: column; }
+
+  /* 协议层 */
+  .proto { border: 3px double #333; background: #eef2fb; padding: 10px; display: flex; gap: 10px; }
+  .proto .box { flex: 1; background: #fff; padding: 9px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+
+  /* TCB */
+  .tcb { border: 4px dashed #000; padding: 16px 12px 12px; position: relative; margin-top: 12px; }
+  .tcb .tcbl { position: absolute; top: -14px; left: 18px; background: #000; color: #fff;
+               font-size: 13px; font-weight: 700; padding: 3px 12px; }
+  .kernel { background: #e3ecfa; border-width: 3px; border-style: double; padding: 12px; }
+  .row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .pad { padding: 9px 11px; }
+  .cap { font-size: 14px; font-weight: 700; margin-bottom: 7px; }
+
+  .pipe { display: flex; gap: 5px; align-items: stretch; }
+  .pipe .st { flex: 1; background: #fff; border: 1.5px solid #333; padding: 7px; text-align: center;
+              display: flex; flex-direction: column; justify-content: center; }
+  .pipe .st .t { font-size: 13px; }
+  .pipe .st .s { font-size: 11px; }
+  .pipe .ar { flex: none; border: none; display: flex; align-items: center; font-size: 15px; }
+
+  .regs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .reg { border: 1.5px solid #333; background: #fff; font-size: 12.5px; padding: 5px 9px; }
+  .reg .c { color: #666; }
+
+  .duty { background: #fff; }
+  .duty-reason { background: #fdf0dc; }
+  .duty-asm { background: #fff; }
+  .duty-guard { background: #f4d9d9; }
+  .duty-ledger { background: #dcead2; }
+  .duty-sandbox { background: #e8e8f6; }
+
+  .kapi { margin-top: 10px; border: 2px solid #000; background: #fff; padding: 8px 11px; }
+  .kapi .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .kapi .chip { border: 1.2px solid #000; background: #f5f5f5; font-size: 12.5px; padding: 4px 9px; font-family: ui-monospace, Menlo, monospace; }
+  .kapi .chip .c { color: #666; font-family: -apple-system, "PingFang SC", sans-serif; }
+
+  /* 元工具 */
+  .meta { border: 2.5px solid #2a9d8f; background: #eaf6f4; padding: 10px 12px; margin-top: 12px; }
+  .meta .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .meta .chip { border: 1.2px solid #2a9d8f; background: #fff; font-size: 12.5px; padding: 4px 9px; font-family: ui-monospace, Menlo, monospace; }
+  .meta .chip .c { color: #666; font-family: -apple-system, "PingFang SC", sans-serif; }
+
+  /* loop 与零件 */
+  .loopbox { border-width: 2.5px; background: #fdf6ec; padding: 11px; margin-top: 12px; }
+  .parts { display: flex; gap: 8px; margin-top: 8px; }
+  .parts .box { flex: 1; background: #fff; padding: 8px 6px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+  .slots { display: flex; gap: 8px; margin-top: 10px; }
+  .slots .box { flex: 1; background: #fff; padding: 8px 7px; text-align: center;
+                display: flex; flex-direction: column; justify-content: center; }
+  .slots .open { background: #d7e3f4; }
+  .slots .shut { border-style: dashed; background: #fafafa; }
+
+  /* 插件脊 */
+  .spine-plug { width: 320px; flex: none; background: #efe6f7; border-width: 2.5px;
+                padding: 12px; display: flex; flex-direction: column; }
+  .spine-plug .title { font-size: 15.5px; font-weight: 700; text-align: center; margin-bottom: 3px; }
+  .spine-plug .subtitle { font-size: 11.5px; color: #666; text-align: center; margin-bottom: 10px; }
+  .spine-plug .stage { background: #fff; border: 1.5px solid #333; padding: 8px 9px; }
+  .spine-plug .stage .t { font-size: 13.5px; }
+  .spine-plug .stage .s { font-size: 11.5px; margin-top: 2px; }
+  .spine-plug .down { text-align: center; color: #666; font-size: 14px; margin: 3px 0; }
+  .spine-plug .ports { margin-top: 10px; background: #fff; border: 1.2px solid #555; padding: 8px 9px; }
+  .spine-plug .ports .cap { font-size: 12.5px; margin-bottom: 5px; }
+  .spine-plug .ports .p { font-size: 11.5px; color: #444; line-height: 1.7; }
+  .spine-plug .ports .p b { color: #5a3d7a; }
+  .spine-plug .ports .ok { color: #2e7d32; font-weight: 600; }
+  .spine-plug .ports .wait { color: #999; }
+
+  /* 脚手架 */
+  .scfld { display: flex; flex-wrap: wrap; gap: 10px; }
+  .scfld .box { flex: 1 1 30%; padding: 10px 9px; background: #faf6fd; }
+  .scfld .box.stay { background: #dcead2; }
+  .scfld .why { font-size: 11.5px; color: #555; margin-top: 5px; line-height: 1.6; text-align: left; }
+  .scfld .why b { color: #7a4fa0; font-weight: 600; }
+
+  /* 自演进闭环 */
+  .evoloop { border: 3px solid #2a9d8f; background: #f2faf9; padding: 14px 12px 12px; }
+  .evoloop .pipe .st { border-color: #2a9d8f; }
+  .evoloop .pipe .st.gate { background: #fdeaea; border-color: #b34a4a; }
+  .evoloop .backflow { text-align: center; color: #2a9d8f; font-size: 12.5px; margin-top: 7px; }
+  .lines { display: flex; gap: 10px; margin-top: 12px; }
+  .lines .box { flex: 1; padding: 10px; }
+  .lines .grow { background: #eaf6f4; }
+  .lines .thin2 { background: #faf6fd; border-style: dashed; }
+  .lines .tune { background: #f0f0f0; }
+
+  /* 演进方向 + 棘轮 */
+  .trend { display: flex; gap: 10px; }
+  .trend .box { flex: 1; padding: 11px; display: flex; flex-direction: column; justify-content: center; }
+  .trend .thin-dir { background: #f4ecfa; border-style: dashed; }
+  .trend .grow-dir { background: #e9e9e9; border-width: 2.5px; }
+  .ratchet { border: 2.5px solid #333; background: #c8ccf1; padding: 10px 12px; }
+  .ratchet .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ratchet .chip { border: 1.2px solid #555; background: #fff; font-size: 12.5px; padding: 4px 8px; }
+  .ratchet .chip .c { color: #666; }
+
+  /* 演进表 */
+  .evo { max-width: 1060px; border-collapse: collapse; margin-top: 4px; }
+  .evo th, .evo td { border: 1.2px solid #555; font-size: 13px; padding: 6px 10px; text-align: left; line-height: 1.6; }
+  .evo th { background: #e9e9e9; }
+  .evo td.n { color: #2e7d32; font-weight: 600; text-align: center; white-space: nowrap; }
+  .evo tr.selfrow td { background: #f2faf9; }
+
+  .invariants { border: 3px solid #000; background: #e9e9e9; padding: 10px 12px; }
+  .invariants .cap { font-size: 14px; font-weight: 700; margin-bottom: 7px; }
+  .invariants .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .invariants .chips .chip { background: #fff; border: 1.2px solid #000; font-size: 12.5px; padding: 4px 8px; }
+
+  /* 落地路线 */
+  .road { display: flex; gap: 10px; }
+  .road .box { flex: 1; padding: 10px 11px; }
+  .road .done { background: #eef6ec; }
+  .road .next { background: #eef2fb; }
+  .road .selfe { background: #f2faf9; border-color: #2a9d8f; }
+  .road .p { font-size: 12.5px; color: #444; line-height: 1.8; margin-top: 5px; }
+  .road .p b { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+
+  .note { margin-top: 18px; font-size: 13.5px; color: #666; line-height: 1.9; max-width: 1080px; }
+  .note b { color: #333; }
+
+  .gloss { margin-top: 30px; border-top: 3px solid #333; padding-top: 18px; max-width: 1080px; }
+  .gloss h2 { font-size: 19px; margin: 0 0 12px; }
+  .gloss h3 { font-size: 15px; margin: 18px 0 8px; border-left: 5px solid #333; padding-left: 9px; }
+  .gloss dl { margin: 0; }
+  .gloss dt { font-size: 14.5px; font-weight: 700; margin-top: 10px; }
+  .gloss dt .st { font-weight: 400; font-size: 11.5px; color: #fff; border-radius: 2px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px; }
+  .st.have { background: #7fbf7f; } .st.part { background: #e6a23c; } .st.todo { background: #5b8def; }
+  .st.far { background: #999; } .st.inv { background: #000; } .st.decay { background: #b98fd6; }
+  .st.plug { background: #8e6bb5; } .st.self { background: #2a9d8f; }
+  .gloss dd { margin: 3px 0 0 0; font-size: 13.5px; color: #444; line-height: 1.75; }
+</style>
+</head>
+<body>
+<h1>OpenX 完全态架构 -- 会消融的 harness × 自演进闭环</h1>
+<p class="sub">骨架：组合输入 -> 端（薄）-> 协议（账本外化）-> 内核五件套（TCB）-> LOOP 与零件（全可换）-> 插件层（纵贯四层）-> 自演进闭环（纵贯全局）<br>
+base bundle = f(模型能力档案) · 双棘轮：安全只紧不松，能力随模型实测双向 · 自演进 = 组合输入的受控突变：有证据、有审批、有痕迹<br>
+配套文档：openx-architecture-design.md（v4.1 总架构）· openx-kernel-design.md（v2.1 内核详设）· design/microkernel-design.md（五件套）· design/openx-self-evolution-design.md（自演进）</p>
+<p class="crit">
+  <b>标准一</b>内核最小：五件套信任基座，其余皆可拆　<b>标准二</b>安全棘轮只紧不松　<b>标准三</b>脚手架必须声明 compensates 与 exit_when　<b>标准四</b>不加载 ≡ 现状　<b>标准五</b>base bundle = f(模型能力档案)，换模型零代码改动　<b>标准六</b>插件：模型只配对、内核才定位；注册项类型由内核枚举
+</p>
+<p class="legend">
+  <span class="dot d-have"></span>已落地<span class="dot d-part"></span>部分落地<span class="dot d-todo"></span>待落地<span class="dot d-far"></span>远期<span class="dot d-decay"></span>脚手架（将消融）<span class="dot d-plug"></span>插件层<span class="dot d-self"></span>自演进　·　虚线 = 按需 / 待定 / 消融方向　·　黑虚线包围圈 = TCB　·　灰底黑框 = 内核不变量
+</p>
+
+<div class="layerlabel">⓪ 组合输入 -- 装配的第一输入不是代码，是档案；演进产物也经此回写</div>
+<div class="comp">
+  <div class="box profile"><span class="tag todo">P6</span><div class="t">模型能力档案</div><div class="s">按模型版本声明：context / native_summarization / native_planning / parallel_tools / self_correction …</div></div>
+  <div class="merge">×</div>
+  <div class="box"><div class="t">用户 overlay</div><div class="s">~/.openx/openx.yml · add/remove/replace/enable/disable</div></div>
+  <div class="merge">×</div>
+  <div class="box"><div class="t">项目 overlay</div><div class="s">.openx/openx.yml · 项目级补丁 · ∩ workspace trust</div></div>
+  <div class="merge">×</div>
+  <div class="box evoback"><span class="tag self">自演进</span><div class="t">演进产物回写</div><div class="s">promote 写回组合（E7）· 装配策略补丁（E5）· 脚手架摘除（E4）</div></div>
+  <div class="merge">=</div>
+  <div class="box out"><div class="t">应载清单（computed bundle）</div><div class="s">loader 只装载清单内插件 · 每次 boot 决议记账 composition_resolved · 换模型 -> 组合自动变化，零代码改动</div></div>
+</div>
+
+<div class="layerlabel">① 端层 -- 薄客户端，只做渲染与上送，零 agent 逻辑（渲染纯函数律）</div>
+<div class="strip thin">
+  <div class="box"><span class="tag have">已落地</span><div class="t">CLI / TUI</div><div class="s">参照实现 · 流式渲染 / 权限弹窗 / 插件 deck 面板（ui/v1 每帧征集）· 语义最全但无特权</div></div>
+  <div class="box"><span class="tag have">已落地</span><div class="t">WEB（openx serve）</div><div class="s">会话长存 · 多端 attach · 远程批准 fail-closed · ask_user / 计划审批真交互 · 复盘回放 · panels 事件广播</div></div>
+  <div class="box" style="border-style:dashed"><span class="tag far">远期</span><div class="t">DESKTOP</div><div class="s">系统级：剪贴板 / 截图 / 全局热键 / 通知 · 能力经意图流上送</div></div>
+  <div class="box" style="border-style:dashed"><span class="tag far">远期</span><div class="t">IDE / 移动伴随</div><div class="s">加端 = 写一个客户端 attach 协议 · 内核零改动</div></div>
+</div>
+
+<div class="arrowrow"><span>▲ 事件流（text / thinking / tool_use / tool_result / permission_request / panels / state / x-*.*）</span><span>▼ 意图流（message / approve / interrupt / ask_user_response / plan_response / queue）</span></div>
+
+<div class="mid">
+
+<div class="col">
+
+  <div class="proto">
+    <div class="box"><span class="tag have">已落地</span><div class="t">双向会话协议</div><div class="s">事件信封（seq/ts/cause/origin/digest 哈希链）· 下行投影 · 扩展走命名空间 x-*.* · 单一真源 kernel/protocol.py</div></div>
+    <div class="box"><span class="tag have">已落地</span><div class="t">openx serve（P4）</div><div class="s">会话长存服务端 · 串行回合队列（REPL 语义）· 关终端 agent 继续跑 · 迟到客户端 init+history 快照</div></div>
+    <div class="box"><span class="tag part">部分</span><div class="t">账本回放</div><div class="s">会话账本 sessions/*.jsonl 已升格 · 复盘 = 消息行+账本行投影 · 转录全量入账后升级为"回放=账本重发"</div></div>
+  </div>
+
+  <div class="tcb">
+  <div class="tcbl">TCB · 可信计算基 = 内核五件套（不含 loop / executor · 对动态插入关闭）</div>
+  <div class="box kernel">
+    <div class="cap" style="font-size:16px">③ 微内核五件套（信任基座，不可卸载）-- 四职责 = 编排 / 沙箱执行 / 插件维护 / 记账</div>
+
+    <div class="row">
+      <div class="box pad duty-reason" style="flex:1">
+        <div class="cap">① 推理核心</div>
+        <div class="s">模型调用抽象（多 Provider）· 重试 / 退避归内核（kernel/reasoning）<br>路由 / fallback / 限流随多 provider 成熟度入核（N2）</div>
+      </div>
+      <div class="box pad duty-sandbox" style="flex:1">
+        <div class="cap">⑤ 沙箱执行器</div>
+        <div class="s">ToolHost 只读数据投影：插件任何阶段拿不到 agent 本体（kernel/sandbox/host）<br>调用防护：timeout / 输出上限 / 熔断 / 结构化错误（protect）· 进程隔离为 D9 远期加固</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="box pad duty-asm">
+        <div class="cap">② 插件装配器（loader 五阶段 + 注册表即 IPC）</div>
+        <div class="pipe">
+          <div class="st"><div class="t">发现</div><div class="s">应载清单 ∩ 目录 + entry-points · ∩ trust</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">解析</div><div class="s">importlib · 失败跳过不炸</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">apply(ctx)</div><div class="s">给予面 / 拒绝面 · 内置失败=致命 / 用户=隔离</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">校验</div><div class="s">形状 / 命名空间 / 越界 · 违例拒载</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">激活</div><div class="s">可见性翻转 · 消费方不吃半成品</div></div>
+        </div>
+        <div class="s" style="margin-top:5px">目录表驱动：新增一类注册项 = 目录加一行 + 一个校验器 · Entry 带 provenance · 突变即事件（回滚 = 卸载且可审计）· 动态插入复用同一五阶段（同源同门，无第二条加载路径）</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="box pad duty-guard">
+        <div class="cap">③ 安全审计（Guard 裁决管线 · 半格只紧不松）</div>
+        <div class="pipe">
+          <div class="st"><div class="t">①硬拒绝</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">②自声明</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">③高危强制</div><div class="s">至少 ASK</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">④策略贡献</div><div class="s">hooks 只紧不松折叠</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">⑤force_prompt</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">⑥存储裁决</div><div class="s">可至 SESSION</div></div>
+          <div class="ar">-></div>
+          <div class="st"><div class="t">⑦用户裁决</div><div class="s">fail-closed</div></div>
+        </div>
+        <div class="regs" style="margin-top:6px">
+          <span class="reg">Verdict 半格 <span class="c">· 上确界折叠 · 只升严不降宽</span></span>
+          <span class="reg">资源闸 <span class="c">· 停止 / 轮次 / 预算底线 · 执行闸在内核手里（K4 析出待落）</span></span>
+          <span class="reg">团队安全 <span class="c">· 权限与能力继承 · 全队弹窗队列</span></span>
+          <span class="reg">晋升门 admit <span class="c">· 非只读贡献用户确认 + session 灰度</span></span>
+          <span class="reg">远程批准 <span class="c">· EOF/超时/未匹配 = 拒绝</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="box pad duty-ledger">
+        <div class="cap">④ 轨迹跟踪（记账 = 证据系统 · append-only 是物理的）</div>
+        <div class="regs">
+          <span class="reg">会话账本 <span class="c">· sessions/*.jsonl · 回放与单会话审计</span></span>
+          <span class="reg">全局账本 <span class="c">· ledger.jsonl · 跨会话决策留痕（K5 待落）</span></span>
+          <span class="reg">cause 链 = 归因链 <span class="c">· 任何结果上溯到发起意图</span></span>
+          <span class="reg">决策事件族 <span class="c">· promoted / rolled_back / retired / ratchet_tightened</span></span>
+          <span class="reg">成本 + eval 导出 <span class="c">· P-E 轨迹升级，自演进数据底座</span></span>
+          <span class="reg">记账先于动作 <span class="c">· 宁可记了没执行，不可执行了没记</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="kapi">
+      <div class="cap" style="font-size:12.5px">内核 API 四件 + 只读视图（其余皆拒绝面）</div>
+      <div class="chips">
+        <span class="chip">boot(composition) <span class="c">① 装配</span></span>
+        <span class="chip">service(name) <span class="c">注册表即 IPC · 唯一取用通道</span></span>
+        <span class="chip">gate(tool_call) <span class="c">② 执行闸 · 每个工具调用必经</span></span>
+        <span class="chip">admit(插件) <span class="c">② 晋升门 · 动态插入必经</span></span>
+        <span class="chip">emit(event) <span class="c">③ 唯一事件出口 · 自动加盖 provenance+cause</span></span>
+        <span class="chip">registry(kind) <span class="c">只读视图</span></span>
+      </div>
+    </div>
+  </div>
+  </div><!-- /tcb -->
+
+  <div class="box meta">
+    <span class="tag self">已落地 P-A/P-F</span>
+    <div class="cap">元工具 -- 模型驱动的运行时装配与自产（结构性工具 · 恒先占位 · 子代理不继承）</div>
+    <div class="chips">
+      <span class="chip">list_plugins <span class="c">只读 · 目录=轻量索引（摘要+成本）</span></span>
+      <span class="chip">plugin_help <span class="c">只读 · 按需展开 manifest</span></span>
+      <span class="chip">load_plugin <span class="c">ASK · 会话热插，schema 注入</span></span>
+      <span class="chip">unload_plugin <span class="c">ASK · on_unload 状态落盘后清注册</span></span>
+      <span class="chip">write_plugin <span class="c">ASK · 结构化输出，PluginSpec 契约</span></span>
+      <span class="chip">test_plugin <span class="c">ALLOW · daemon 线程自测，10s 挂死即拒</span></span>
+      <span class="chip">promote_plugin <span class="c">ASK · 晋升 persistent + 决策记账</span></span>
+    </div>
+  </div>
+
+  <div class="box loopbox">
+    <div class="t" style="font-size:16px">④ LOOP 核心 -- 第一服务槽（接口形状 = 内核，实现 = 可换）</div>
+    <div class="s">while 未完成: 模型调用 -> 工具分发（串行审批 -> 并行执行）-> 结果回喂 · 工具调用必经执行闸 · 每轮必过资源闸<br>
+    今天: harness loop（行为≡现状，已落地）　⟷　未来: model-native loop（模型自持循环，内核退为事件中继 + 闸门 + 记账）</div>
+    <div class="parts">
+      <div class="box"><div class="t">Provider</div><div class="s">openai-compat / anthropic 内置 · 重试归内核 · 可换</div></div>
+      <div class="box"><div class="t">Context</div><div class="s">历史 + 组装 + 超限压缩（脚手架）· context/v1 片段征集并入系统提示</div></div>
+      <div class="box"><div class="t">Executor</div><div class="s">两阶段骨架 · 闸门在内核 · 并行扇出</div></div>
+      <div class="box"><div class="t">Tools</div><div class="s">文件 / shell / 搜索 / git / web / todo / MCP 适配 · 模型的手</div></div>
+    </div>
+    <div class="slots">
+      <div class="box open"><span class="tag part">硬连线</span><div class="t">协调槽</div><div class="s">subagent / workflow / tasks / fleet · P2+ 逐步插件化</div></div>
+      <div class="box open"><span class="tag part">硬连线</span><div class="t">记忆槽</div><div class="s">memory / coding_memory · memory_backends 注册项占位</div></div>
+      <div class="box shut"><span class="tag far">灰区</span><div class="t">压缩策略槽</div><div class="s">暂不开放</div></div>
+      <div class="box shut"><span class="tag far">灰区</span><div class="t">审计闸门槽</div><div class="s">倾向开放 · 只紧不松</div></div>
+    </div>
+  </div>
+
+</div><!-- /col -->
+
+<div class="box spine-plug">
+  <div class="title">⑤ 插件层（纵贯四层）</div>
+  <div class="subtitle">大模型配对 · 微内核定位 · 实时插入 · 一切能力皆插件</div>
+
+  <div class="stage"><div class="t">候选池</div><div class="s">Manifest 自描述（type/trust/permissions/cost/summary）· 第三方 / 用户 / 模型自产（auto-*）同池同门</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">模型配对</div><div class="s">选插件 + 建议注册位置 · 位置合法域 = 内核枚举的注册项目录，不能发明位置</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">内核校验 + 晋升门</div><div class="s">形状 / 越界 / 只紧不松 / AST 扫描 / 沙箱自测 · 写类贡献过用户确认</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">动态激活 -> 分发到层</div><div class="s">注册表登记（scope=session 灰度）· ui_slot 经协议下发到端 · loop 下一轮即消费</div></div>
+  <div class="down">↓</div>
+  <div class="stage"><div class="t">决策记账</div><div class="s">谁批准 · 依据什么 · 回滚 = 卸载 · auto-* 一键批量回滚</div></div>
+
+  <div class="ports">
+    <div class="cap">类别 -> 协议 -> 装配层（路由真源 protocols.py）</div>
+    <div class="p">
+      <span class="ok">✓ tool/v1</span> 能力工具 · 多例 · tools 注册表<br>
+      <span class="ok">✓ context/v1</span> 上下文片段 · pre-inference 征集并入系统提示<br>
+      <span class="ok">✓ lifecycle/v1</span> 会话生命周期 · session_start / unload 回调<br>
+      <span class="ok">✓ ui/v1</span> 状态层面板 · CLI deck + web panels 双端哑渲染<br>
+      <span class="wait">○ planner / orchestrator / ingress / event-listener</span> 占位（单例协议仲裁待落）
+    </div>
+  </div>
+
+  <div class="ports">
+    <div class="cap">各层接入点（同一个注册表）</div>
+    <div class="p"><b>端层</b>：ui_slots（只加面板/行 · 几何白名单）<br>
+    <b>协议层</b>：命名空间事件 x-&lt;vendor&gt;.*（强制前缀，违例拒载）<br>
+    <b>内核层</b>：hooks / 策略 -- 只紧不松过滤<br>
+    <b>零件层</b>：tools / contexts / 命令 / providers / 记忆后端 / 协调实现</div>
+  </div>
+
+  <div class="ports">
+    <div class="cap">热插分级 × 信任分级</div>
+    <div class="p">会话内热插：ui_slots · contexts · tools · x-* 事件（纯加法）<br>
+    会话边界换：providers · 记忆后端 · 协调实现（有状态）<br>
+    仅 boot 装配：loop 槽 · 执行槽 · 权限闸 · 账本格式（永不热插）<br>
+    信任级：builtin（签名，失败=致命）/ third-party / user / <b>auto</b>（独立档，批量回滚）</div>
+  </div>
+</div>
+
+</div><!-- /mid -->
+
+<div class="layerlabel">⑥ 脚手架层 -- 全部可拆 · 每个模块声明「补偿什么短板 / 何时退场」（声明进 manifest 随 E1）</div>
+<div class="scfld">
+  <div class="box"><span class="tag decay">将消融</span><div class="t">harness loop 默认实现</div><div class="why"><b>compensates</b>：模型无自持执行循环<br><b>exit_when</b>：model-native 循环评测通过</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">历史压缩</div><div class="why"><b>compensates</b>：上下文有限<br><b>exit_when</b>：长会话免压缩评测通过 · 预算存在仍由资源闸保障</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">意图路由</div><div class="why"><b>compensates</b>：模型不自知深浅<br><b>exit_when</b>：自规划直连评测通过</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">子代理 / workflow / team</div><div class="why"><b>compensates</b>：单上下文装不下、单线程不够快<br><b>exit_when</b>：原生并行 / 长任务评测通过</div></div>
+  <div class="box"><span class="tag decay">将消融</span><div class="t">记忆检索</div><div class="why"><b>compensates</b>：跨会话遗忘<br><b>exit_when</b>：持续记忆评测通过</div></div>
+  <div class="box stay"><span class="tag part">不消融</span><div class="t">内置工具包 / 适配器</div><div class="why">模型的手，不补偿短板只演进 · MCP / skills / hooks 适配器照旧 · 裁决在把关</div></div>
+</div>
+
+<div class="layerlabel">⑦ 自演进闭环（纵贯全局）-- 模型提出变更，沙箱出证据，晋升门做审批，账本留全痕，评测定去留</div>
+<div class="box evoloop">
+  <span class="tag self">自演进</span>
+  <div class="pipe">
+    <div class="st"><div class="t">① 感知缺口</div><div class="s">任务内自知 · 失败模式聚类（E3）· 用户要求 · 配对反馈</div></div>
+    <div class="ar">-></div>
+    <div class="st"><div class="t">② 生成候选</div><div class="s">PluginSpec 契约 · write_plugin 结构化输出 · 配对建议</div></div>
+    <div class="ar">-></div>
+    <div class="st"><div class="t">③ 沙箱验证</div><div class="s">self_test 跑绿 = 信任锚点 · AST 扫描 · 调用防护</div></div>
+    <div class="ar">-></div>
+    <div class="st gate"><div class="t">④ 晋升门</div><div class="s">只读热插 / 写类用户确认 · 模型只配对，内核才定位</div></div>
+    <div class="ar">-></div>
+    <div class="st"><div class="t">⑤ 灰度激活</div><div class="s">scope=session 先行 · 晋升写回组合（E7）</div></div>
+    <div class="ar">-></div>
+    <div class="st"><div class="t">⑥ 评测与退场</div><div class="s">退场评测门（E4）· 掉点回滚 = 卸载 / 回挂</div></div>
+  </div>
+  <div class="backflow">⟲ 全程上账（plugin_created / tested / promoted / rejected / scaffold_retired）-- 轨迹回流为下一轮演进的输入；TCB、棘轮、评测门本身永不在演进对象之列</div>
+  <div class="lines">
+    <div class="box grow"><div class="t">增生线（长）</div><div class="s">能力缺口 -> 自产插件 auto-* -> 自测 -> 晋升 -> 能力库沉淀 -> 目录索引供未来任务配对复用</div></div>
+    <div class="box thin2"><div class="t">消融线（瘦）</div><div class="s">档案升级 -> exit_when 命中 -> 退场评测门 -> 摘除（非删除）-> 模型降级自动回挂</div></div>
+    <div class="box tune"><div class="t">调优线（准）</div><div class="s">轨迹汇聚 -> 离线分析 -> 装配 / 上下文 / 记忆 / 权限规则建议 -> overlay 过门 -> 灰度生效</div></div>
+  </div>
+</div>
+
+<div class="layerlabel">⑧ 演进方向与双棘轮</div>
+<div class="trend">
+  <div class="box thin-dir"><div class="t">消融方向（变薄）</div><div class="s">一切补偿模型短板的脚手架 · 退场走证据门 · 模型降级自动回挂 · 终局：harness 收敛为中继 + 闸门 + 记账</div></div>
+  <div class="box grow-dir"><div class="t">增长方向（变重）</div><div class="s">账本 -> 证据系统 · 把关 -> verifier 终局 · 能力面随使用积累变厚（自产插件库）· 终局身份是人类信任的锚点</div></div>
+</div>
+<div class="box ratchet" style="margin-top:10px">
+  <div class="cap">安全棘轮 × 能力棘轮（TCB 对两者都关闭 -- 进化引擎能产候选、提建议，但棘轮与评测门不可贡献）</div>
+  <div class="chips">
+    <span class="chip">安全棘轮 <span class="c">· 单向 · 只紧不松</span></span>
+    <span class="chip">能力棘轮 <span class="c">· 双向 · 跟随模型实测 · 证据门</span></span>
+    <span class="chip">退场评测 <span class="c">· 摘除后成功率不掉点才准退场</span></span>
+    <span class="chip">回挂 <span class="c">· 模型降级时脚手架自动重新挂上</span></span>
+    <span class="chip">决策留痕 <span class="c">· 演进系统自己的历史也在账本里</span></span>
+  </div>
+</div>
+
+<div class="layerlabel" style="margin-top:16px">演进即重组 -- 一切演进都只是改组合输入，内核零改动</div>
+<table class="evo">
+  <tr><th>演进场景</th><th>改什么</th><th>内核</th></tr>
+  <tr><td>换模型 / 模型升级</td><td>Provider 实现 + 能力档案</td><td class="n">不改</td></tr>
+  <tr><td>模型能自持循环</td><td>loop 槽实现换 model-native</td><td class="n">不改</td></tr>
+  <tr><td>加 skill / MCP / memory</td><td>注册表多一条注册项</td><td class="n">不改</td></tr>
+  <tr><td>脚手架退场（压缩 / 路由摘除）</td><td>组合输入删一行 + 退场评测（E4）</td><td class="n">不改</td></tr>
+  <tr><td>加一个端（Desktop / IDE / 移动）</td><td>写一个客户端 attach 协议</td><td class="n">不改</td></tr>
+  <tr><td>远程批准 / 复盘回放</td><td>协议已有事件 + 账本重放</td><td class="n">不改</td></tr>
+  <tr><td>会话中途发现缺能力，装插件补上</td><td>模型配对 + 晋升门</td><td class="n">不改</td></tr>
+  <tr><td>界面随任务生长（调试装可视化 / 排障装监控）</td><td>ui_slot 动态下发</td><td class="n">不改</td></tr>
+  <tr class="selfrow"><td>模型自产插件（缺什么自己写）</td><td>write/test/promote 走同一道门 · auto-* 沉淀能力库</td><td class="n">不改</td></tr>
+  <tr class="selfrow"><td>装配 / 上下文 / 记忆策略越用越合手</td><td>轨迹分析 -> overlay 补丁建议 -> 用户终审（E5）</td><td class="n">不改</td></tr>
+  <tr class="selfrow"><td>经验跨会话存活</td><td>会话收尾提炼 -> 记忆 -> context/v1 召回（E6）</td><td class="n">不改</td></tr>
+</table>
+
+<div class="layerlabel" style="margin-top:16px">内核不变量带（七项 · 任何插件不可替换 / 松动）</div>
+<div class="box invariants">
+  <div class="cap"><span class="tag inv" style="position:static;margin-right:8px">不变量</span>机制层 · 演进永远改组合，永不改这些</div>
+  <div class="chips">
+    <span class="chip">loader / ctx / 注册表自身（bootstrap 不能是插件）</span>
+    <span class="chip">安全底线（含团队安全语义）</span>
+    <span class="chip">账本格式 + 协议核心 schema</span>
+    <span class="chip">槽接口形状（loop / 执行 / 协调）</span>
+    <span class="chip">资源闸（停止 / 预算 / 轮次底线）</span>
+    <span class="chip">注册项类型枚举（模型只配对，内核才定位）</span>
+    <span class="chip">TCB 对动态插入关闭</span>
+  </div>
+</div>
+
+<div class="layerlabel" style="margin-top:16px">落地路线 -- 每步行为 ≡ 现状；绿=已完成，蓝=下一步，青=自演进主线</div>
+<div class="road">
+  <div class="box done">
+    <div class="cap">已完成</div>
+    <div class="p"><b>K1</b> 注册目录表驱动 · <b>K2</b> 事件信封+突变记账 · <b>K3a</b> ToolHost+API 收敛 · <b>K3</b> Guard 七站管线<br>
+    <b>P-A</b> 元工具装配 · <b>P-B</b> Manifest · <b>P-C</b> 调用防护 · <b>P-D</b> 协议分类（tool/context/lifecycle/ui）· <b>P-F</b> 自产插件（write/test/promote + 沙箱自测）<br>
+    <b>P4</b> openx serve + Web 端（远程批准 / 多端 attach / 复盘 / panels）</div>
+  </div>
+  <div class="box next">
+    <div class="cap">下一步（内核补全）</div>
+    <div class="p"><b>K4</b> 资源闸析出 · <b>K5</b> 全局账本+决策事件族 · <b>K6</b> 晋升门动态插入（MCP pilot）· <b>K7</b> prompt 片段收口（K8 能力注册表化）<br>
+    <b>P-E</b> 轨迹升级（成本字段 + eval 导出）· <b>P6</b> 能力档案 + overlay + 退场评测</div>
+  </div>
+  <div class="box selfe">
+    <div class="cap">自演进主线（E 系列）</div>
+    <div class="p"><b>E1</b> 脚手架声明进 manifest（compensates/exit_when/eval_set）<br>
+    <b>E2</b> 轨迹底座（=P-E）· <b>E3</b> 缺口感知（失败模式聚类报告）<br>
+    <b>E4</b> 退场评测门 · <b>E5</b> 装配策略学习 · <b>E6</b> 经验沉淀闭环 · <b>E7</b> 晋升写回组合</div>
+  </div>
+</div>
+
+<div class="note">
+  <b>读法</b>：自上而下 -- 组合输入决定出厂形态；端只渲染与上送；协议是账本的外化；内核五件套装配一切、把关一切、记录一切，loop 与零件被装配而非自举；插件层纵贯四层，经候选池 -> 配对 -> 晋升门 -> 激活 -> 记账插入任何一层。自演进闭环纵贯全局 -- 它的每一步都只是"改组合输入 + 过门 + 记账"，因此内核零改动。<br>
+  <b>与 v4.1 总架构图的差异</b>：本图是完全态 -- ①内核按五件套展开（推理/装配/审计/轨迹/沙箱，四职责同构映射）；②补入已落地的元工具面与自产插件（P-A~P-F）；③Web 端由"新增"改标"已落地"；④新增自演进闭环层（六环三主线）与 E 系列切片；⑤落地路线分已完成 / 下一步 / 自演进三档。<br>
+  <b>自演进走一遍</b>：排障时发现缺日志解析能力 -> write_plugin 生成 auto-logparse（manifest + 代码 + self_test）-> AST 扫描 + daemon 线程自测跑绿 -> 会话热插立即可用 -> 用户确认晋升 persistent，plugin_promoted 上全局账本 -> 下次 boot 经 overlay 进应载清单 -> 后续任务经 list_plugins 摘要配对复用 -> 若熔断频发，轨迹显现，整体回滚 auto-* 一键撤出。<br>
+  <b>消融走一遍</b>：模型升级 -> 能力档案更新 -> 历史压缩的 exit_when 命中 -> 在长会话 eval 集上对比"带压缩 vs 摘除"，成功率不掉点 -> 用户确认 -> scaffold_retired 决策记账 -> 从动态 base 摘除（代码仍在仓库）-> 日后模型降级，档案回退，自动回挂并记 scaffold_restored。
+</div>
+
+<div class="gloss">
+<h2>模块详注</h2>
+
+<h3>⓪ 组合输入</h3>
+<dl>
+  <dt>模型能力档案 / 动态 base<span class="st todo">P6</span></dt><dd>档案按模型版本声明能力面，与协议层的版本协商对称：一个面向端，一个面向模型。脚手架以 requires / exit_when 声明依赖，loader 据此计算应载清单。换模型、模型升级 -> 组合自动变化，零代码改动。决议记账 composition_resolved 使任何一次会话的组合都能事后复现。</dd>
+  <dt>演进产物回写<span class="st self">自演进</span></dt><dd>自演进不改内核，只改组合输入：晋升的 auto-* 插件写回组合（E7）、轨迹学出的装配策略落成 overlay 补丁（E5）、退场评测通过的脚手架从组合摘除（E4）。三类回写同走补丁原语，同过决议记账。</dd>
+</dl>
+
+<h3>① 端层</h3>
+<dl>
+  <dt>薄客户端原则<span class="st inv">不变量</span></dt><dd>端只做两件事：渲染事件流、上送意图流。路由、压缩、审批判断出现在任何一端都会导致多端行为分叉。渲染是纯函数：端不得持有会话状态语义。</dd>
+  <dt>CLI / WEB / DESKTOP / IDE·移动<span class="st have">两端已落地</span></dt><dd>CLI 是参照实现，插件 deck 面板每帧征集（崩溃跳过/熔断）；Web 经 openx serve 提供会话长存、多端 attach、远程批准（fail-closed：断流/超时/未匹配 request_id 一律拒绝）、复盘回放与 panels 广播。Desktop / IDE / 移动是预留位。</dd>
+</dl>
+
+<h3>② 会话协议层</h3>
+<dl>
+  <dt>协议 = 账本的外化<span class="st inv">不变量</span></dt><dd>事件信封（seq/ts/cause/origin/digest 哈希链）定义在 kernel/protocol.py，下行事件 = 信封去掉簿记字段的投影。回放 = 重发存储事件；动作永不重放。cause 链即归因链："这行代码是哪次批准的哪个工具改的"是一条链上溯。</dd>
+  <dt>openx serve<span class="st have">P4 已落地</span></dt><dd>会话长存在 serve 进程，客户端 attach/detach，关终端 agent 继续跑（tmux 语义）。串行回合队列保持 REPL 语义；权限桥广播 permission_request / ask_user / plan_request，fail-closed 等待。</dd>
+</dl>
+
+<h3>③ 微内核五件套</h3>
+<dl>
+  <dt>① 推理核心<span class="st part">部分落地</span></dt><dd>provider 形状与重试/退避已入核（kernel/reasoning）。路由 / fallback / 限流随多 provider 成熟度入核（决断 N2）。入核理由：没有它模型不会思考，"由模型决定装配"不成立。</dd>
+  <dt>② 插件装配器<span class="st have">已落地</span></dt><dd>注册目录表驱动（K1）：tools / commands / contexts / lifecycle / ui_slots / providers 逐类元数据，新增一类注册项 = 目录加一行 + 校验器，不改内核主体。五阶段 loader；动态插入复用同一五阶段（同源同门）。消费方装配策略（实例化仲裁 / provider 解析 / 命令分发）已迁出内核（K3a）。</dd>
+  <dt>③ 安全审计<span class="st have">已落地</span></dt><dd>Guard 七站裁决管线（K3）：Verdict 半格上确界折叠，任何站只升严不降宽；hooks 按映射表折入第④站；高危强制与存储裁决固定序，存储永不放宽危险。每次裁决记 permission_decision（含逐站 trace）。资源闸析出为 K4；晋升门 admit 以 MCP 为 pilot（K6）。</dd>
+  <dt>④ 轨迹跟踪<span class="st part">部分落地</span></dt><dd>append-only 是物理的：内核只有 emit()，账本只以追加模式打开。记账先于动作。会话账本已升格（K2），全局账本与决策事件族随 K5，成本字段与 eval 导出随 P-E -- 后者是自演进调优线的数据底座。</dd>
+  <dt>⑤ 沙箱执行器<span class="st part">部分落地</span></dt><dd>ToolHost（K3a）：工具工厂 factory(host)，host 是 agent 的只读数据投影 -- 插件任何阶段拿不到 loop / 闸门 / llm / 完整 config。调用防护（P-C）：timeout / 输出上限 / 熔断（3 次失败自动摘除）/ 结构化错误。执行隔离（进程沙箱）为 D9 远期加固，auto 级不可降级。</dd>
+</dl>
+
+<h3>④ LOOP 核心与零件层</h3>
+<dl>
+  <dt>loop 槽<span class="st part">默认实现已落地</span></dt><dd>接口形状（意图进、事件出、工具调用必经执行闸、每轮必过资源闸）是内核不变量，实现进槽。默认 = harness loop；预留 model-native 位。装配 loop 的机制独立于 loop -- 这是"换 loop 不换产品"的前提，也是内核在 loop 之上的原因。</dd>
+  <dt>零件与槽<span class="st part">全可换</span></dt><dd>Provider / Context / Executor / Tools 全可换。协调与记忆当前硬连线（orchestration/*、memory.py），P2+ 逐步插件化为协调槽与 memory_backends 注册项。压缩策略槽暂不开放；审计闸门槽倾向开放且只紧不松。</dd>
+</dl>
+
+<h3>⑤ 插件层（纵贯）</h3>
+<dl>
+  <dt>候选池与模型配对<span class="st have">已落地</span></dt><dd>Manifest 自描述（P-B）：type / trust / permissions / cost / summary，摘要进目录索引、schema 按需展开。模型决定"用哪个插件、建议注册什么"，但注册项类型由内核枚举（标准六）-- prompt injection 最坏结果是推荐错插件。三个来源同池：第三方 / 用户 / 模型自产（auto-* 独立信任档）。</dd>
+  <dt>协议分类<span class="st have">四类已落地</span></dt><dd>类别 -> 协议 -> 装配层三级映射（P-D）：插件面向协议编程，不面向内核实现。tool/context/lifecycle/ui 四协议已落地（ui/v1 双端哑渲染，渲染路径强制故障隔离）；planner / orchestrator / ingress / event-listener 占位，单例协议"装配即替换"的仲裁待落。新增插件类别 = 新协议 + 新挂点 + 新注册表，内核五件套一行不动。</dd>
+  <dt>自产插件（Self-Extension）<span class="st self">已落地 P-F</span></dt><dd>PluginSpec 是模型可读的协议自描述（常驻系统提示）；write/test/promote 三元工具；admit 管线 = 形状校验 -> AST 静态扫描 -> daemon 线程自测（10s 挂死即拒）-> 会话热插 -> 用户晋升 + plugin_promoted 记账。信任锚点是"沙箱里自测跑绿"，不是"模型说它能用"。</dd>
+</dl>
+
+<h3>⑥⑦ 脚手架与自演进</h3>
+<dl>
+  <dt>脚手架退场<span class="st decay">将消融</span></dt><dd>退场三步：评测门（证据不是声明）-> 决策记账 -> 从动态 base 摘除。摘除不是删除：模型降级时自动回挂。harness loop 默认实现是最大的脚手架，也是消融收益最大的一块。</dd>
+  <dt>自演进闭环<span class="st self">新增</span></dt><dd>六环：感知缺口 -> 生成候选 -> 沙箱验证 -> 晋升门 -> 灰度激活 -> 评测退场，轨迹全程回流。三主线：增生（自产插件沉淀能力库，目录索引供复用）、消融（脚手架有序退场）、调优（装配 / 上下文 / 记忆 / 权限规则从轨迹学出，overlay 过门生效）。每条变更三要素缺一不可：有证据、有审批、有痕迹。</dd>
+  <dt>治理与度量<span class="st self">新增</span></dt><dd>审批矩阵：auto 级写类插件 = self_test + 用户确认 + session 灰度；overlay 建议永远用户终审；棘轮 / 评测门对一切动态插入关闭。健康度 KPI：任务成功率、自产插件存活率、配对命中率、回滚率、脚手架净重、权限摩擦、证据完备率（恒 100%）。</dd>
+</dl>
+</div>
+
+</body>
+</html>

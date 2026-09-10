@@ -149,6 +149,42 @@ async def run_interactive(agent: OpenXAgent, console: Console) -> None:
 # ── helpers ──────────────────────────────────────────────────────
 
 
+def _flush_checkpoint(agent: Any, kind: str) -> None:
+    """容灾兜底落盘（best-effort，绝不外溢）。
+
+    用 ``getattr`` 探测而非直接调用：``_stream_response`` 在本仓库的测试里
+    常配 duck-typed 的假 agent（只实现它真正需要的那几个成员）。把一个
+    "锦上添花"的持久化动作变成硬依赖，会让那些替身全部失效--而落盘失败
+    本来就只该降级为"少一次恢复机会"。
+    """
+    flush = getattr(agent, "flush_checkpoint", None)
+    if callable(flush):
+        try:
+            flush(kind)
+        except Exception:
+            pass
+
+
+def _note_interrupt(agent: Any, kind: str) -> None:
+    """告诉中断控制器"这次是谁打断的"（同样 best-effort）。"""
+    note = getattr(agent, "note_interrupt", None)
+    if callable(note):
+        try:
+            note(kind)
+        except Exception:
+            pass
+
+
+def _clear_interrupt(agent: Any) -> None:
+    """回合收尾清掉中断状态（best-effort）。"""
+    clear = getattr(agent, "clear_interrupt", None)
+    if callable(clear):
+        try:
+            clear()
+        except Exception:
+            pass
+
+
 async def _stream_response(
     agent: OpenXAgent,
     console: Console,
@@ -201,11 +237,13 @@ async def _stream_response(
             console.print_streaming_start()  # “Thinking…” indicator
             started = time.monotonic()
             response = await agent.run(user_content)
+            # 顺序必须"先正文、后结束行"（对标 Claude Code 的 ✻ Cooked
+            # for 42s 收尾）：结束行打在回答之上会读成"还没出答案就结束了"。
+            console.print_assistant(response)
             # total_output_tokens is accumulated inside agent.run() now
             console.print_streaming_done(
                 time.monotonic() - started, agent.total_output_tokens
             )
-            console.print_assistant(response)
             return
 
         display = StreamingService(
@@ -243,23 +281,33 @@ async def _stream_response(
 
             consume_task = asyncio.ensure_future(_consume())
             display.set_cancel_target(consume_task)
+            # 容灾：Esc 时告诉中断控制器来源（reason 会记成 esc 而不是 signal）
+            display.set_interrupt_notice(
+                lambda: _note_interrupt(agent, "esc")
+            )
             try:
                 await consume_task
                 display.done()
             except _StreamInterrupted:
-                # Ctrl-C：清理 Live/捕获（光标 + termios 恢复），然后
-                # 还原成 KeyboardInterrupt 上抛（与旧版语义一致：
-                # 打断即退出 REPL，main() 负责 goodbye）
+                # Ctrl-C：先把当前进展落成可续跑的 checkpoint，再清理
+                # Live/捕获（光标 + termios 恢复），然后还原成
+                # KeyboardInterrupt 上抛（与旧版语义一致：打断即退出
+                # REPL，main() 负责 goodbye）。
+                _flush_checkpoint(agent, "signal")
                 try:
                     display.cancel()
                 except Exception:
                     pass
                 raise KeyboardInterrupt from None
             except asyncio.CancelledError:
-                # Esc 打断：清理 Live/捕获（光标 + termios 恢复），吞掉
-                # 取消回到 REPL——排过队的消息由主循环下一轮立即发送
-                # （"esc to interrupt & send"）。esc_interrupted 为 False
-                # 说明是真实外部取消（如 asyncio.run 关闭），原样上抛。
+                # Esc 打断：先落 checkpoint（在途轮的结果未知，续跑不会重跑），
+                # 再清理 Live/捕获（光标 + termios 恢复），吞掉取消回到
+                # REPL——排过队的消息由主循环下一轮立即发送（"esc to
+                # interrupt & send"）。esc_interrupted 为 False 说明是真实
+                # 外部取消（如 asyncio.run 关闭），原样上抛。
+                _flush_checkpoint(
+                    agent, "esc" if display.esc_interrupted else "signal"
+                )
                 try:
                     display.cancel()
                 except Exception:
@@ -272,6 +320,9 @@ async def _stream_response(
             # 干净停掉再上抛——否则外层兜底退出后，用户的 shell 会继承一个
             # 没有光标、处于 cbreak 模式的终端（"不再展示光标"回归的出口路径）。
             # Restore cursor + terminal before re-raising Ctrl-C.
+            # 容灾：退出前把在途进展落盘（Ctrl-C 落在流消费之外时，上面
+            # 那条分支不会执行，这里兜底）。
+            _flush_checkpoint(agent, "signal")
             try:
                 display.cancel()
             except Exception:
@@ -283,6 +334,8 @@ async def _stream_response(
             agent.tool_executor.on_prompt_end = None
             console.on_dialog_start = None
             console.on_dialog_end = None
+            display.set_interrupt_notice(None)
+            _clear_interrupt(agent)
         # The frame is the last element of the Live render and doubles as
         # the next input — no trailing blank line is needed.
     except Exception as e:
