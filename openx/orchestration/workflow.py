@@ -2,7 +2,7 @@
 
 工作流引擎（Phase 10）
 ======================
-Claude Code Workflow 工具的 Python 原生移植：工作流就是一个普通 Python
+用普通 Python 脚本做**确定性**多 agent 编排：一个工作流就是一段 Python
 脚本，定义::
 
     meta = {"name": "...", "description": "...", "phases": [...]}   # 可选

@@ -45,8 +45,10 @@ hands the script the validated **Python object** directly — no parsing needed.
 
 ## Live status deck
 
-While the agent streams, a status deck renders **under the input frame** and updates in
-real time (5 Hz):
+While the agent streams, a status deck updates in real time (5 Hz), split across the
+input frame — the **Plan** and **Queue** panels, with the turn's `Answering…` spinner
+line just below the plan and separated from it by a blank row, render **above** the
+frame; the **Agents** rows render **under** it:
 
 - **Plan panel** — the agent's todos as a checklist: `✓` done (green), a spinner plus
   the task's `activeForm` while in progress, `○` pending; long lists collapse to six

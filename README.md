@@ -10,11 +10,14 @@
 
 English | [中文](README.zh.md)
 
-**Agentic coding CLI — chat with your codebase using LLMs.**
+**A verifiable, evolvable agent runtime — chat with your codebase using LLMs.**
 
-OpenX is an open-source coding agent for the terminal, built in Python. Give it a task
-in natural language; it reads, writes, edits, and searches your code — with permission
-controls, sessions, subagents, workflows, and MCP support.
+OpenX is an open-source agent runtime for the terminal, built in Python — designed to be
+**verifiable and evolvable**. A minimal trusted core (the microkernel: orchestration,
+sandboxed execution, plugin maintenance, and audit) stays fixed, while the agent loop,
+providers, context, and tools live in replaceable plugins the agent can extend at
+runtime. Give it a task in natural language; it reads, writes, edits, and searches your
+code — with permission controls, sessions, subagents, workflows, and MCP support.
 
 ## Features
 
@@ -87,7 +90,7 @@ All flags and slash commands: [docs/user/guide/commands.md](docs/user/guide/comm
 | [Architecture](docs/architecture.md) | module tree and runtime loop |
 | [Development](docs/development.md) | contributor setup, tests, lint |
 | [Cookbook](docs/cookbook/extending.md) | extending OpenX with custom tools |
-| [Comparison](docs/comparison.md) | feature parity with Claude Code |
+| [Comparison](docs/comparison.md) | how OpenX compares to Claude Code |
 | [Changelog](openx/CHANGELOG.md) | release history (data source of `/release-notes`) |
 
 ## Development

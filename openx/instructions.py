@@ -1,7 +1,7 @@
 """Instruction file management for OpenX.
 
-Inspired by Claude Code's CLAUDE.md mechanism:
-- OPENX.md files are Markdown files that inject custom instructions into the system prompt.
+OPENX.md files are Markdown files that inject custom instructions into the
+system prompt:
 - Hierarchical loading: global (~/.openx/OPENX.md) → project (<workspace>/OPENX.md).
 - Subdirectory-level OPENX.md scoping is reserved for a future iteration.
 

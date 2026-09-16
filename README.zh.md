@@ -10,9 +10,9 @@
 
 [English](README.md) | 中文
 
-**Agentic coding CLI——用 LLM 与你的代码库对话。**
+**可验证、可演进的 agent runtime——用 LLM 与你的代码库对话。**
 
-OpenX 是一个用 Python 构建的开源终端 coding agent。用自然语言交给它任务，它会读取、编写、修改、搜索你的代码——并带有权限控制、会话、subagents、workflows 和 MCP 支持。
+OpenX 是一个用 Python 构建的开源终端 agent runtime，目标是一个**可验证、可演进**的运行时：信任基座（微内核：编排 · 沙箱执行 · 插件维护 · 记账）保持最小且可审计，agent loop、provider、上下文与工具都落在可替换的插件里，agent 能在运行中扩展自身。用自然语言交给它任务，它会读取、编写、修改、搜索你的代码——并带有权限控制、会话、subagents、workflows 和 MCP 支持。
 
 ## 特性
 
@@ -77,7 +77,7 @@ openx "fix the failing test" --output-format json   # headless / CI
 | [架构](docs/architecture.zh.md) | 模块树与运行时循环 |
 | [开发指南](docs/development.zh.md) | 贡献者环境、测试、lint |
 | [Cookbook](docs/cookbook/extending.zh.md) | 用自定义 tool 扩展 OpenX |
-| [对比](docs/comparison.zh.md) | 与 Claude Code 的功能对齐 |
+| [对比](docs/comparison.zh.md) | OpenX 与 Claude Code 的对比 |
 | [Changelog](openx/CHANGELOG.md) | 发布历史（`/release-notes` 的数据源） |
 
 ## 开发

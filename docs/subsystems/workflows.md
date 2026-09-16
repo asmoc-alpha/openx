@@ -4,8 +4,8 @@ English | [中文](workflows.zh.md)
 
 Workflows are Python scripts that orchestrate multiple sub-agents **deterministically** —
 fan-out searches, parallel reviews, staged pipelines — with ordinary Python control flow
-instead of model improvisation (a Python-native adaptation of Claude Code's Workflow
-tool). A workflow defines an optional `meta` dict and an async `main` entry point that
+instead of model improvisation. A workflow defines an optional `meta` dict and an async
+`main` entry point that
 receives five hooks:
 
 | Hook | Signature | Behavior |

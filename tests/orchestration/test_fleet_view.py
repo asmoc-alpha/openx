@@ -304,6 +304,23 @@ class TestDeckRendering:
         assert "正在实现 X" in deck_text           # in_progress 显示 activeForm
         assert "todo task" in deck_text
 
+    def test_spinner_renders_below_plan_with_gap(self, deterministic_live):
+        """Answering… 行渲染在 Plan 面板**下方**、与之隔 1 空行（用户界面需求）。"""
+        h = Harness(todos=TODOS)
+        h.svc.start()
+        h.svc.feed("answer text")
+        h.refresh()
+        rows = h.rows()
+        plan_y = next(y for y, r in enumerate(rows) if "Plan" in r)
+        spin_y = next(
+            y for y, r in enumerate(rows) if "esc to interrupt" in r)
+        frame_y = h.frame_row()
+        assert plan_y < spin_y < frame_y, "Answering 行须在 plan 之下、框之上"
+        # Plan 面板末行与 spinner 行之间恰隔 1 空行（段落间距）。
+        last_plan_y = max(y for y in range(plan_y, spin_y) if rows[y].strip())
+        assert spin_y - last_plan_y == 2
+        assert rows[last_plan_y + 1].strip() == ""
+
     def test_fleet_list_renders_below_frame(self, deterministic_live):
         """子代理列表渲染在输入框之下，含主条目 0（用户需求 1）。"""
         mon = FleetMonitor()

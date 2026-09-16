@@ -1,4 +1,4 @@
-"""Persistent memory system — Claude Code-aligned MEMORY.md files.
+"""Persistent memory system — markdown entries indexed by MEMORY.md.
 
 Stores facts, preferences, and project knowledge in ``~/.openx/memory/``
 as individual markdown files with YAML frontmatter.  An index file

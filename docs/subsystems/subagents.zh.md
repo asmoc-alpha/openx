@@ -33,7 +33,9 @@ Report findings as a numbered list with file:line references.
 
 ## 实时状态面板
 
-agent 流式输出期间，输入框**下方**渲染一个状态面板，实时更新（5 Hz）：
+agent 流式输出期间，状态面板实时更新（5 Hz），分布在输入框两侧——**Plan** 与 **Queue**
+面板渲染在**上方**，本轮的 `Answering…` spinner 行紧随 plan 之下、与之隔一空行；
+**Agents** 行渲染在**下方**：
 
 - **Plan 面板**——agent 的 todos 清单：`✓` 已完成（绿色）、进行中显示 spinner 加任务的 `activeForm`、`○` 待办；长列表折叠为六行加 `+N more`。**全部**完成后整块折叠成一行汇总（`✓ Plan 3/3`），把版面还给正文。
 - **Agents 行**——每个运行中的子 agent（`task` 工具或 workflow）一行：spinner、描述标签、工具计数、耗时；结束时 `✓`/`✗`。超过四个 agent 后折叠。**运行中**的 agent 在其行下多一条缩进活动行（`⎿ read_file(path=src/auth.py)`），显示它此刻在做什么；已结束的不显示。

@@ -1,7 +1,7 @@
 """Skill management for OpenX — installable instruction packs.
 
-Skills 是 Markdown 文件，为 agent 注入领域专属指令（类似 Claude Code 的
-Skill 机制）。每个 ``.md`` 文件包含极简 frontmatter + 正文指令::
+Skills 是 Markdown 文件，为 agent 注入领域专属指令。每个 ``.md`` 文件包含
+极简 frontmatter + 正文指令::
 
     ---
     name: docker-expert

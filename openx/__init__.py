@@ -1,4 +1,4 @@
-"""OpenX - Agentic coding CLI inspired by Claude Code."""
+"""OpenX - A verifiable and evolvable agent runtime for coding."""
 
 __version__ = "0.1.2"
 __all__ = [

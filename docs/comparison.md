@@ -2,8 +2,10 @@
 
 English | [中文](comparison.zh.md)
 
-OpenX is a Python re-implementation of the Claude Code experience against any
-OpenAI-compatible API. Feature parity today:
+OpenX and Claude Code share much of the same feature surface, but OpenX targets a
+different architecture: a **verifiable, evolvable agent runtime** — a minimal auditable
+core with everything else in replaceable plugins — rather than a clone of any single
+product. How the feature surface compares today:
 
 | Feature | Claude Code | OpenX |
 |---------|-------------|-------|

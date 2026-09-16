@@ -2,7 +2,7 @@
 
 [English](comparison.md) | 中文
 
-OpenX 用 Python 重新实现了 Claude Code 的体验，可对接任意 OpenAI 兼容 API。当前的功能对齐情况：
+OpenX 与 Claude Code 在功能面上有大量重合，但 OpenX 追求的是另一种架构：以最小的可审计内核 + 可替换插件构成的**可验证、可演进** agent runtime，而非某一产品的复刻。当前功能面对齐情况：
 
 | 功能 | Claude Code | OpenX |
 |---------|-------------|-------|

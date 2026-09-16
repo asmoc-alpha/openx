@@ -48,7 +48,7 @@ class Console(
     SetupMixin,
     MiscMixin,
 ):
-    """Terminal output manager — Claude Code-inspired UI.
+    """Terminal output manager — the rich, event-driven terminal UI.
 
     Methods are organised by concern across mixin classes:
 

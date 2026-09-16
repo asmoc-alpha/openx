@@ -91,6 +91,12 @@ _MIN_FORCE_REFRESH = 0.2
 # between body and spinner; after done(): printed into scrollback).
 _BODY_FRAME_GAP = 1
 
+# 计划/队列面板（deck）与进行中 spinner（Answering…）行之间的段落间距空行数。
+# spinner 行渲染在 deck **之下**、与之隔此空行——仅 deck 在场时占位，故计入
+# 动态 extra 预算而非静态 _VIEWPORT_RESERVE。
+# Paragraph gap between the plan/queue deck and the spinner line below it.
+_DECK_SPINNER_GAP = 1
+
 # 渲染响应窗口时为组内"非响应"部分预留的行数。**由各部分派生而非写死**
 # ——reserve 与 _BODY_FRAME_GAP 必须同步（8/1 与 9/2 都自洽，但 8/2 会让
 # 整组顶到 height−1，重新引入 Rich 贴底光标抖动的老问题；9/1 白扔一行
@@ -986,7 +992,10 @@ class StreamingService:
             perm_deck, perm_h = None, 0
             fleet_deck, fleet_deck_h = None, 0
             plugin_deck, plugin_h = None, 0
-        extra = deck_h + perm_h + fleet_deck_h + plugin_h  # 额外行 → 视口预算
+        # 额外行 → 视口预算：deck 与 spinner 之间的段落间距空行也计入（deck
+        # 在场才有）——否则易变区预算多算 1 行，整组会顶到视口底边、复活光标抖动。
+        deck_gap_h = _DECK_SPINNER_GAP if deck is not None else 0
+        extra = deck_h + deck_gap_h + perm_h + fleet_deck_h + plugin_h
 
         body_added = False
         if self._focus > 0 and snap:
@@ -1003,10 +1012,14 @@ class StreamingService:
         if body_added and not self._done:
             parts.extend(Text("") for _ in range(_BODY_FRAME_GAP))
 
-        if not self._done:
-            parts.append(self._spinner_text(elapsed))
+        # deck（Plan/Queue）渲染在 spinner **之上**；Answering… 行在其下、
+        # 隔 _DECK_SPINNER_GAP 空行（段落间距，用户界面需求）。deck 恒在
+        # not _done 分支产出（done 时置 None），故间距行必与 deck 成对。
         if deck is not None:
             parts.append(deck)
+            parts.extend(Text("") for _ in range(_DECK_SPINNER_GAP))
+        if not self._done:
+            parts.append(self._spinner_text(elapsed))
         parts.append(self._console._frame_renderable(
             self._input_tokens, self._token_count
         ))

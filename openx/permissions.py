@@ -1,6 +1,6 @@
 """Permission system for OpenX tools.
 
-Inspired by Claude Code's permission model:
+Three permission tiers:
 - ALLOW: always allowed
 - ASK: ask user before executing
 - DENY: always blocked (dangerous operations)

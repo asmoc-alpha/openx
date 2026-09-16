@@ -2,7 +2,7 @@
 
 [English](workflows.md) | 中文
 
-Workflow 是**确定性**编排多个子 agent 的 Python 脚本——扇出搜索、并行评审、分阶段流水线——用普通 Python 控制流代替模型即兴发挥（Claude Code Workflow 工具的 Python 原生适配）。一个 workflow 定义可选的 `meta` 字典和一个 async `main` 入口，入口接收五个 hook：
+Workflow 是**确定性**编排多个子 agent 的 Python 脚本——扇出搜索、并行评审、分阶段流水线——用普通 Python 控制流代替模型即兴发挥。一个 workflow 定义可选的 `meta` 字典和一个 async `main` 入口，入口接收五个 hook：
 
 | Hook | 签名 | 行为 |
 |------|-----------|----------|
