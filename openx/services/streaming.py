@@ -56,6 +56,16 @@ from ..ui._style import (
 _SPIN = SPIN_FRAMES
 _SPIN_MS = SPIN_FRAME_MS
 
+
+def _spin_glyph() -> str:
+    """当前 spinner 帧（**绝对时钟**驱动：同一帧内多次调用取到同一字形）。
+
+    状态行、deck 计划面板、running 工具行共用这一个来源——三处各自
+    算一遍相位，同一屏上就会看到三个不同步的转针（"各转各的"）。
+    """
+    return _SPIN[int(time.monotonic() * 1000 / _SPIN_MS) % len(_SPIN)]
+
+
 # 扫光（shimmer）：spinner 标签上的移动高亮窗。参考 OpenClaw
 # src/tui/tui-waiting.ts 的 shimmerText——亮窗逐字扫过状态文本
 # （窗内 bold+强调色，窗外 dim），静止色相 + 动态字重传达"进行中"，
@@ -187,6 +197,9 @@ class _ToolRecord:
     status: str = "running"      # running / done / error
     output: str = ""
     is_error: bool = False
+    # 起始时刻（monotonic）：running 行的耗时读秒用。0 = 未记时（旧记录/
+    # 测试直接构造的记录）——渲染侧按 0 兜底，绝不显示负耗时。
+    started_at: float = 0.0
 
 
 def _extract_task_desc(arguments: str) -> str:
@@ -615,7 +628,8 @@ class StreamingService:
             else:
                 self._segments.append(
                     ["tool", _ToolRecord(name=chunk.name,
-                                         arguments=chunk.arguments)])
+                                         arguments=chunk.arguments,
+                                         started_at=time.monotonic())])
                 self._token_count += 1
         elif isinstance(chunk, ToolResultEvent):
             if chunk.name == "task":
@@ -1342,8 +1356,9 @@ class StreamingService:
     def _volatile_view(self, extra: int = 0):
         """Live 区 body = 未固化行（易变尾）。已固化行在 scrollback 不
         进组——擦重写区从"整尾窗"缩到"易变尾"，闪烁结构性消失。尾部
-        已完成工具块以 hints=True 重渲染（Ctrl+T 窗口）；无易变内容返
-        None（done 态组 = 仅 frame，复用链前提）。
+        工具块（已完成 + running）以 hints=True 重渲染——已完成的走
+        Ctrl+T 展开窗，running 的走转帧/耗时（见 ``_running_row``）；
+        无易变内容返 None（done 态组 = 仅 frame，复用链前提）。
 
         ``extra``：frame 之上/之下的状态层（plan/queue + perm/fleet/plugin）
         总行数——易变区可视预算相应收紧（整组高度恒 ≤ 视口，同 HEAD 的
@@ -1364,6 +1379,13 @@ class StreamingService:
         i = len(bounds)
         while (i and bounds[i - 1][0] in ("tool", "tool_group")
                and not _chunk_is_running(bounds[i - 1][0], bounds[i - 1][1])):
+            i -= 1
+        # running 块一并纳入重渲集：它的结果槽行是**动画**（转帧 + 读秒），
+        # 从 body 缓存里拷贝静态行 = 屏上永远停在同一个字形上，"看不见在动"
+        # 正是这次要修的东西。两批都是相对固化前缀的"活块"（running 恒在
+        # 水印之后、尾部已完成工具本就是 Ctrl+T 作用窗），语义一致。
+        while (i and bounds[i - 1][0] in ("tool", "tool_group")
+               and _chunk_is_running(bounds[i - 1][0], bounds[i - 1][1])):
             i -= 1
         tail_tools = bounds[i:]
         copy_end = tail_tools[0][2] if tail_tools else len(lines)
@@ -1492,7 +1514,9 @@ class StreamingService:
     def _segments_fingerprint(self) -> tuple:
         """段序列指纹（缓存键用）：文本取文本，工具取 (名/参/态/出)。
 
-        running 记录不含时变分量（Running… 为静态行）→ 缓存逐帧有效。
+        指纹里**不出现时间**：running 行的转帧/读秒只在易变视图的逐帧
+        重渲里生成（``hints=True``），缓存里的那份是静态形态——所以
+        转针每动一下不会把整段 body 的渲染缓存打掉（见 ``_running_row``）。
         """
         fp = []
         for kind, payload in self._segments:
@@ -1548,6 +1572,36 @@ class StreamingService:
             f"[{SUCCESS_STYLE}]{MARK_INFO}[/] [dim]{escape(summary)}"
             f"{hint}[/]")]
 
+    def _running_row(self, record: "_ToolRecord", hints: bool) -> Text:
+        """running 工具的结果槽行：**转帧 + 耗时读秒**（还在跑，不是卡住了）。
+
+        两种形态由 ``hints`` 分派，差异只在"是不是屏上那一份"：
+
+        - ``hints=True``（易变视图逐帧重渲）：转帧 + ``Running… · 12s``。
+          字形与秒数都随 Live 心跳变，命令行因此看得出在动——用户报告
+          "长时间跑的命令看不出是在执行还是已经出问题了"即缺此信号；
+        - ``hints=False``（body 缓存行）：静态 ``Running…``。这批复用行
+          进 ``_segments_fingerprint`` 缓存，**含时变分量会让缓存逐帧失效、
+          每帧重渲整段 Markdown**（见 ``_body_lines``）。running 块在屏上
+          恒走易变视图重渲（见 ``_volatile_view``），所以静态形态只在
+          一个场景真的露面：跑到一半被打断、收尾整块固化进 scrollback——
+          那里转帧冻在某一帧上只会像坏字形，静态字样才是对的。
+        """
+        if not hints:
+            return Text.from_markup(f"[dim]  {_GUTTER}  Running…[/]")
+        started = record.started_at or time.monotonic()
+        elapsed = max(0.0, time.monotonic() - started)
+        row = Text()
+        row.append(f"  {_GUTTER}  ")
+        row.append(_spin_glyph(), style=ACCENT)
+        row.append(" Running…", style="dim")
+        row.append(f" · {fmt_duration(elapsed)}", style="dim")
+        # 读秒会加宽（9s → 10s → 1m 2s）：`no_wrap` 钉死"1 行 ≡ 1 终端行"，
+        # 否则贴边那一行会在进位瞬间多折一行，易变区高度与擦除标尺随之漂移。
+        row.no_wrap = True
+        row.overflow = "ellipsis"
+        return row
+
     def _tool_renderables(self, record: "_ToolRecord",
                           hints: bool = False) -> list:
         """工具段 → Text.from_markup 行列表（Claude Code 风格）。
@@ -1558,6 +1612,7 @@ class StreamingService:
         Ctrl+T 展开（硬上限 200 行）**仅作用于未固化块** → 热键字样
         只在 ``hints=True``（易变显示渲染）出现；固化渲染（进
         scrollback）不带字样——提示随内容生命周期（同 thinking 纪律）。
+        running 记录的结果槽行另见 :meth:`_running_row`（转帧/静态两形态）。
         """
         from ..orchestration.fleet import _tool_call_summary
         from ..ui._style import MARK_INFO, SUCCESS_STYLE, ERROR_STYLE, DIM
@@ -1576,7 +1631,7 @@ class StreamingService:
             head += f"[dim]({summary})[/]"
         rows: list = [Text.from_markup(head)]
         if record.status == "running":
-            rows.append(Text.from_markup(f"[dim]  {_GUTTER}  Running…[/]"))
+            rows.append(self._running_row(record, hints))
             return rows
         output = record.output.rstrip("\n")
         if not output:
@@ -1688,7 +1743,8 @@ class StreamingService:
         return t
 
     def _deck_spin(self) -> str:
-        return _SPIN[int(time.monotonic() * 1000 / _SPIN_MS) % len(_SPIN)]
+        """deck（计划/舰队）转帧：与状态行、running 工具行同源同相。"""
+        return _spin_glyph()
 
     def _deck_renderable(self, snap: list, extra_reserve: int = 0) -> tuple:
         """构建**上状态层** → ``(Group | None, 行数)``（渲染在输入框之上）。

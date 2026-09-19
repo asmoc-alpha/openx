@@ -90,7 +90,12 @@ from .mcp import MCPManager
 from .permissions import PermissionLevel
 from .orchestration.fleet import FleetMonitor
 from .orchestration.history import ConversationHistory, SUMMARY_MARKER
-from .kernel.recovery import REASON_GATE_TRIPPED, REASON_TOOL_ROUND, ResumePlan
+from .kernel.recovery import (
+    INTERRUPTED_TOOL_RESULT,
+    REASON_GATE_TRIPPED,
+    REASON_TOOL_ROUND,
+    ResumePlan,
+)
 from .orchestration.sessions import SessionMeta, SessionStore
 from .orchestration.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
 from .kernel.sandbox.host import ToolHost
@@ -143,6 +148,38 @@ class AgentState:
 # 结构化输出捕获哨兵：区别于"捕获到 None"（schema 允许 null 时合法）。
 _UNSET: Any = object()
 
+
+@dataclass
+class _TurnProgress:
+    """``stream_run`` 与其循环体 ``_turn_stream`` 共享的回合进度。
+
+    存在的理由是**取消边界**：循环体在子生成器里、取消处理在包装层，
+    两者只能靠一个共享的可变对象对话。两个字段各有明确职责：
+
+    - ``parts``：**当前在途轮**已生成、但还没折叠进 ``new_turn`` 的文本。
+      取消落在生成中途时，它就是"部分回答"的唯一来源（``new_turn`` 里
+      一个字都没有--assistant 消息要等 ``StreamDone`` 才成型）；
+    - ``committed``：本轮是否已并入历史。已并入就绝不再并一次，否则
+      历史里会出现两遍同一轮。
+    """
+
+    parts: list[str] = field(default_factory=list)
+    committed: bool = False
+
+    def feed(self, event: Any) -> None:
+        """收一个流事件：只留文本 token（reasoning 是展示层的东西，不落历史）。"""
+        if isinstance(event, str):
+            self.parts.append(event)
+
+    @property
+    def text(self) -> str:
+        return "".join(self.parts)
+
+    def reset_round(self) -> None:
+        """轮收口（``StreamDone`` 到手）：正文已进 response，别再重复计入。"""
+        self.parts.clear()
+
+
 # 触顶收尾指引：工具往返达到 max_tool_rounds 时，agent 不再继续循环，而是
 # 追加一次**不带工具**的最终请求，让模型总结"已做/未做/下一步"而不是硬断。
 # 只注入当次请求、绝不落盘——回放/历史只见模型给出的总结正文。
@@ -151,6 +188,16 @@ _WRAP_UP_PROMPT = (
     "call tools. Do NOT call any tools now. Write a concise wrap-up: what "
     "has been completed, what is still unfinished, and the single most "
     "useful next step for the user to continue."
+)
+
+# 被打断的回合并入历史时的收尾标注（assistant 角色）：模型读到它才知道
+# 自己上一句是被截断的，而不是"话就说完了"。没有正文时用另一句，避免
+# 落一条空 content 的 assistant 消息（部分 provider 会直接拒）。
+_INTERRUPTED_MARK = (
+    "\n\n[Response interrupted by the user; the text above is partial.]"
+)
+_INTERRUPTED_NO_TEXT = (
+    "[Response interrupted by the user before any output was produced.]"
 )
 
 
@@ -1338,6 +1385,81 @@ class OpenXAgent:
         except Exception:
             pass
 
+    def _persist_interrupted_turn(
+        self,
+        new_turn: list[dict[str, Any]],
+        partial_text: str,
+        tool_rounds: int,
+    ) -> None:
+        """被打断的回合：截断到合法点后并入历史 + 会话文件（best-effort）。
+
+        **为什么在 agent 层**：REPL 的 Esc、Ctrl-C、serve 的客户端打断取消的
+        都是同一个回合任务，取消必然从 ``stream_run`` 的生成器帧里抛出来
+        （见 ``_turn_stream``）；落在这里三条路径同时正确，不必各自实现一遍。
+
+        **为什么不动 checkpoint**：端层的 ``flush_checkpoint`` 紧随其后调用，
+        要照常写旁挂文件、记一条 ``interrupt`` 事件。那份快照在下次启动时会
+        因"历史比快照更长"被判为 ``ALREADY_COMPLETE`` 而静默丢弃（见
+        ``kernel/recovery/resume.py``）——正是"这轮已经落进历史"的准确表述。
+
+        持久化是优化、不在关键路径上：任何异常一律吞掉（与 ``_persist_turn``
+        同一条纪律），取消路径绝不能因为落盘失败而变味。
+        """
+        try:
+            harvested = self._harvest_interrupted_turn(new_turn, partial_text)
+            if not harvested:
+                return
+            self.history.add(harvested)
+            self._persist_turn(harvested)
+            # 供紧随其后的 interrupt 事件读（``_rounds()``）：报的是**本回合**
+            # 已收口的工具轮，而不是上一回合的残留值。
+            self.last_tool_rounds = int(tool_rounds or 0)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _harvest_interrupted_turn(
+        new_turn: list[dict[str, Any]], partial_text: str
+    ) -> list[dict[str, Any]]:
+        """把被打断的回合截断成**合法且可复用**的消息序列。
+
+        保留顺序：本轮用户消息 → 已收口的工具轮（在途调用补合成结果）→
+        一条标注了 interrupted 的 assistant 收尾。丢掉的是"没有内容的半截
+        轮"，不是"这轮发生过"这件事——Esc 之后接着问"继续"，模型得有指代。
+
+        两条硬约束（违背会被 provider 直接拒，比丢一轮更糟）：
+        ``assistant.tool_calls`` 恒有配对结果；不落空 content 的 assistant。
+        """
+        if not new_turn:
+            return []
+        harvested: list[dict[str, Any]] = [dict(new_turn[0])]
+        tail = [dict(m) for m in new_turn[1:]]
+        # 在途调用补合成结果：与 ``--recover`` 同一套语义（结果未知、绝不重跑），
+        # 复用同一个常量--两条路径对模型说的是同一句话。
+        answered = {
+            m.get("tool_call_id") for m in tail if m.get("role") == "tool"
+        }
+        for message in list(tail):
+            if message.get("role") != "assistant":
+                continue
+            for call in message.get("tool_calls") or []:
+                call_id = call.get("id") if isinstance(call, dict) else None
+                if not call_id or call_id in answered:
+                    continue
+                tail.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": INTERRUPTED_TOOL_RESULT,
+                })
+                answered.add(call_id)
+        harvested.extend(tail)
+        text = (partial_text or "").strip()
+        harvested.append({
+            "role": "assistant",
+            "content": f"{text}{_INTERRUPTED_MARK}" if text else _INTERRUPTED_NO_TEXT,
+        })
+        return harvested
+
     def _on_gate_tripped(self, state: AgentState) -> None:
         """资源闸触顶：先记账、再落一份可续跑的 checkpoint，然后才走收尾。
 
@@ -1640,13 +1762,46 @@ class OpenXAgent:
         容灾接线（见 ``services/checkpoint.py``）：每个工具轮结束提交一次
         checkpoint；工具执行前留一个在途标记；回合收口删除旁挂文件；
         取消/中断时兜底落盘。
+
+        **本层是取消的边界**（循环体见 ``_turn_stream``）：Esc 打断、Ctrl-C、
+        serve 的客户端打断取消的都是这个生成器所在的回合任务，取消从
+        ``yield``/``await`` 处抛回本帧。此时把该回合截断到最后一个合法点后
+        并入历史与会话文件--否则连用户自己那句话都不在上下文里，下一轮
+        接不上（"刚才问你的呢"）。
         """
         state, new_turn, turn_llm, modal = self._seed_turn(user_message, resume)
         self._begin_checkpoint(
             state, new_turn, engine="stream_run", modal=modal,
             resumed=resume is not None,
         )
+        progress = _TurnProgress()
+        try:
+            async for chunk in self._turn_stream(
+                state, new_turn, turn_llm, progress
+            ):
+                yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            # 已收口的回合不重复并入（``committed`` 由循环体置位）。
+            # 只并入历史、不动 checkpoint：端层的 flush_checkpoint 紧随
+            # 其后，仍要照常写旁挂文件并记一条 interrupt 事件。
+            if not progress.committed:
+                self._persist_interrupted_turn(
+                    new_turn, progress.text, state.tool_rounds
+                )
+            raise
 
+    async def _turn_stream(
+        self,
+        state: AgentState,
+        new_turn: list[dict[str, Any]],
+        turn_llm: LLMClient,
+        progress: _TurnProgress,
+    ) -> AsyncIterator[str]:
+        """``stream_run`` 的实际循环体（单独一层是为了给取消留出边界）。
+
+        ``state`` / ``new_turn`` 与 checkpoint 持有的是**同一批对象**：
+        这里就地追加，旁挂快照、历史、会话文件三处看到的是同一份进展。
+        """
         while state.tool_rounds < self.config.max_tool_rounds:
             done: StreamDone | None = None
 
@@ -1657,10 +1812,14 @@ class OpenXAgent:
                 if isinstance(event, StreamDone):
                     done = event
                 else:
+                    progress.feed(event)
                     yield event  # 文本 token → 打字机
 
             if done is None:  # 理论上不会发生，兜底
                 return
+            # 轮收口：正文已在 response 里（下面要么进 assistant 消息、要么
+            # 由收尾分支落库），留着的增量副本会让取消时重复计入一次。
+            progress.reset_round()
 
             # 累计 token 用量
             self.total_output_tokens += done.token_count
@@ -1727,6 +1886,7 @@ class OpenXAgent:
                     )
                     new_turn.append({"role": "assistant", "content": payload})
                     self.history.add(new_turn)
+                    progress.committed = True
                     self._persist_turn(new_turn)
                     self._finish_checkpoint()
                     self.last_tool_rounds = state.tool_rounds
@@ -1740,6 +1900,7 @@ class OpenXAgent:
             final_msg = {"role": "assistant", "content": response.get("content") or ""}
             new_turn.append(final_msg)
             self.history.add(new_turn)
+            progress.committed = True
             # 会话持久化（Phase 6）：只写本轮新增消息 + 元数据增量；失败静默
             self._persist_turn(new_turn)
             # 回合已完整落进历史，旁挂文件就此作废（先持久化、后删，
@@ -1769,6 +1930,7 @@ class OpenXAgent:
                 if isinstance(event, StreamDone):
                     done = event
                 else:
+                    progress.feed(event)
                     yield event
         except Exception:
             done = None
@@ -1781,6 +1943,7 @@ class OpenXAgent:
             if wrap:
                 new_turn.append({"role": "assistant", "content": wrap})
                 self.history.add(new_turn)
+                progress.committed = True
                 self._persist_turn(new_turn)
                 self._finish_checkpoint()
                 if await self._maybe_auto_compact():

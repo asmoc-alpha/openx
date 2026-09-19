@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import pty
 import termios
@@ -39,8 +40,19 @@ import pytest
 from rich.console import Console as RichConsole
 from rich.text import Text
 
+import openx.orchestration.sessions as sessions_mod
 from openx.config import OpenXConfig
+from openx.kernel import reset_kernel
+from openx.kernel.recovery import (
+    INTERRUPTED_TOOL_RESULT,
+    CheckpointStore,
+    ResumeVerdict,
+)
+from openx.llm import StreamDone
+from openx.orchestration.sessions import SessionStore
+from openx.permissions import PermissionRules
 from openx.services.streaming import StreamingService
+from openx.tools.base import Tool, ToolResult
 from openx.ui.console import Console
 from openx.ui.input_capture import InputCapture, read_unicode_char
 
@@ -512,3 +524,255 @@ class TestQueuedFeedback:
         h.svc.start()
         h.refresh()
         assert "esc to interrupt" in h.text()
+
+
+# ── (3) 打断后的上下文保真：被打断的那一轮并入历史 ──────────────
+#
+# 用户报告：Esc 打断之后接着对话，模型像换了个人--连"你刚才问过我什么"
+# 都答不上来。根因：``history.add`` 只在回合末尾，取消把整轮 ``new_turn``
+# （含用户自己那条消息）一起带走了。修复见 ``agent.stream_run`` 的取消
+# 边界 + ``OpenXAgent._harvest_interrupted_turn``。
+
+class _ScriptedLLM:
+    """脚本化流式假 LLM，取消点是**确定**的（不靠 sleep 抢时序）。
+
+    每个剧本项是 ``(text, tool_calls, gate)``：``gate=True`` 表示吐完文本
+    后卡在永不置位的 Event 上--测试据此拿到"正在生成"的稳定瞬间再取消。
+    """
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.call_count = 0
+        self.seen: list[list[dict]] = []
+        self.waiting = False
+        self.gate = asyncio.Event()
+
+    async def stream_chat(self, messages, tools=None):
+        self.seen.append([dict(m) for m in messages])
+        text, tool_calls, gate = self.script[self.call_count]
+        self.call_count += 1
+        if text:
+            yield text
+        if tool_calls:
+            yield StreamDone(
+                response={"role": "assistant", "content": None,
+                          "tool_calls": tool_calls},
+                token_count=1, input_tokens=1,
+            )
+            return
+        if gate:
+            self.waiting = True
+            await self.gate.wait()   # 永不置位：等测试取消
+            return
+        yield StreamDone(
+            response={"role": "assistant", "content": text},
+            token_count=1, input_tokens=1,
+        )
+
+
+class _BlockingTool(Tool):
+    """永不返回的工具：模拟"正在执行时被打断"。"""
+
+    name = "blocking"
+
+    def __init__(self):
+        self.started = False
+
+    async def execute(self, **kw):
+        self.started = True
+        await asyncio.Event().wait()
+        return ToolResult(output="never")
+
+
+def _tool_call(call_id: str, name: str = "blocking") -> dict:
+    return {"id": call_id, "type": "function",
+            "function": {"name": name, "arguments": "{}"}}
+
+
+@pytest.fixture
+def esc_env(tmp_path, monkeypatch):
+    """隔离会话目录 + 新鲜内核：返回 (workspace, session_store)。"""
+    monkeypatch.setattr(sessions_mod, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(
+        "openx.kernel.audit.hooks.SETTINGS_PATH", tmp_path / "no-settings.json"
+    )
+    reset_kernel()
+    store = SessionStore.create(str(tmp_path), "test-model")
+    yield str(tmp_path), store
+    reset_kernel()
+
+
+def _esc_agent(env):
+    from openx.agent import OpenXAgent
+    from ..test_bugfixes import FakeConsole
+
+    workspace, store = env
+    config = OpenXConfig()
+    config.workspace = workspace
+    config.model = "test-model"
+    agent = OpenXAgent(
+        config, session_store=store, session_id=store.meta.session_id,
+        console=FakeConsole(),
+    )
+    agent.tool_executor._rules = PermissionRules()
+    return agent
+
+
+async def _drain(gen) -> None:
+    async for _ in gen:
+        pass
+
+
+async def _interrupt(agent, message: str, *, ready) -> None:
+    """跑一轮，等 ``ready()`` 成立后取消回合任务（等价 REPL 的 Esc）。"""
+    task = asyncio.ensure_future(_drain(agent.stream_run(message)))
+    for _ in range(1000):
+        if ready():
+            break
+        await asyncio.sleep(0)
+    else:
+        pytest.fail("turn never reached the interruption point")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+class TestInterruptedTurnMemory:
+    """被打断的那一轮留在历史里：用户消息 + 部分回答 + 在途工具的合成结果。"""
+
+    async def test_question_and_partial_answer_survive(self, esc_env):
+        agent = _esc_agent(esc_env)
+        agent.llm = _ScriptedLLM([("partial ", None, True)])
+
+        await _interrupt(agent, "帮我看看 X", ready=lambda: agent.llm.waiting)
+
+        roles = [m["role"] for m in agent.history.messages]
+        assert roles == ["user", "assistant"], roles
+        assert agent.history.messages[0]["content"] == "帮我看看 X"
+        assert "partial" in agent.history.messages[1]["content"]
+        assert "interrupted" in agent.history.messages[1]["content"].lower()
+
+    async def test_next_turn_still_sees_the_question(self, esc_env):
+        """核心回归：Esc 之后接着问，模型仍看得到上一句问的是什么。"""
+        agent = _esc_agent(esc_env)
+        agent.llm = _ScriptedLLM([("half ", None, True)])
+        await _interrupt(agent, "第一个问题", ready=lambda: agent.llm.waiting)
+
+        agent.llm = _ScriptedLLM([("answer", None, False)])
+        await _drain(agent.stream_run("继续"))
+
+        sent = agent.llm.seen[0]
+        assert any("第一个问题" in str(m.get("content")) for m in sent)
+        assert any("half" in str(m.get("content")) for m in sent)
+
+    async def test_inflight_tool_call_gets_synthetic_result(self, esc_env):
+        """工具执行中被打断：序列仍合法，且绝不重放（与 --recover 同一句话）。"""
+        agent = _esc_agent(esc_env)
+        tool = _BlockingTool()
+        agent.tools["blocking"] = tool
+        agent.llm = _ScriptedLLM([(None, [_tool_call("c1")], False)])
+
+        await _interrupt(agent, "跑个工具", ready=lambda: tool.started)
+
+        msgs = agent.history.messages
+        assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "assistant"]
+        assert msgs[2]["tool_call_id"] == "c1"
+        assert msgs[2]["content"] == INTERRUPTED_TOOL_RESULT
+        assert agent.history.validate()
+
+    async def test_interrupted_turn_reaches_the_session_file(self, esc_env):
+        """不只是内存：会话文件里也有，--continue 之后仍在。"""
+        agent = _esc_agent(esc_env)
+        agent.llm = _ScriptedLLM([("partial ", None, True)])
+        await _interrupt(agent, "帮我看看 X", ready=lambda: agent.llm.waiting)
+
+        _, messages = SessionStore.load(agent.session_store.path)
+        assert [m["role"] for m in messages] == ["user", "assistant"]
+        assert messages[0]["content"] == "帮我看看 X"
+
+    async def test_recover_after_interrupt_does_not_replay(self, esc_env):
+        """重启 --recover：这轮已落进历史 → 判陈旧（ALREADY_COMPLETE），不重放。
+
+        落盘两处必须对得上：历史里有这一轮，旁挂快照里也有它--裁决据此
+        判定"没东西可续"，模型不会把同一轮看两遍。
+        """
+        agent = _esc_agent(esc_env)
+        agent.llm = _ScriptedLLM([("partial ", None, True)])
+        await _interrupt(agent, "帮我看看 X", ready=lambda: agent.llm.waiting)
+        agent.flush_checkpoint("esc")     # 端层（REPL / serve）紧随其后的兜底落盘
+
+        plan = agent.recover_session()
+        assert plan.verdict is ResumeVerdict.ALREADY_COMPLETE, plan.detail
+        # 合并进历史不影响容灾侧：旁挂文件照旧写出、reason 记成 esc
+        record = CheckpointStore(agent.session_store.path).read()
+        assert record is not None and record.reason == "esc"
+
+        events = [
+            obj for obj in (
+                json.loads(line) for line in
+                agent.session_store.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ) if obj.get("type") == "interrupt"
+        ]
+        assert events and events[-1]["payload"]["kind"] == "esc"
+
+    async def test_completed_turn_is_not_duplicated(
+        self, esc_env, monkeypatch
+    ):
+        """已并入历史的回合再被取消：绝不重复并入（历史里出现两遍同一轮）。"""
+        agent = _esc_agent(esc_env)
+        agent.llm = _ScriptedLLM([("done", None, False)])
+        entered = asyncio.Event()
+
+        async def _slow_compact() -> bool:
+            entered.set()
+            await asyncio.Event().wait()   # 卡在"已经并入历史之后"
+            return False
+
+        monkeypatch.setattr(agent, "_maybe_auto_compact", _slow_compact)
+        await _interrupt(agent, "一次正常回合", ready=entered.is_set)
+
+        roles = [m["role"] for m in agent.history.messages]
+        assert roles == ["user", "assistant"], roles
+        assert agent.history.messages[1]["content"] == "done"
+        assert "interrupted" not in agent.history.messages[1]["content"].lower()
+
+
+class TestHarvestShapes:
+    """``_harvest_interrupted_turn`` 的纯函数契约（不发模型、不落盘）。"""
+
+    @staticmethod
+    def _harvest(new_turn, text=""):
+        from openx.agent import OpenXAgent
+
+        return OpenXAgent._harvest_interrupted_turn(new_turn, text)
+
+    def test_synthesizes_only_the_missing_results(self):
+        harvested = self._harvest([
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [_tool_call("c1"), _tool_call("c2")]},
+            {"role": "tool", "tool_call_id": "c1", "content": "real output"},
+        ])
+        assert [m["role"] for m in harvested] == [
+            "user", "assistant", "tool", "tool", "assistant",
+        ]
+        assert harvested[2]["content"] == "real output"        # 已有结果原样保留
+        assert harvested[3]["tool_call_id"] == "c2"            # 缺的那条才补
+        assert harvested[3]["content"] == INTERRUPTED_TOOL_RESULT
+
+    def test_marker_used_when_no_text_was_produced(self):
+        harvested = self._harvest([{"role": "user", "content": "q"}])
+        assert [m["role"] for m in harvested] == ["user", "assistant"]
+        assert harvested[1]["content"].strip()           # 绝不落空 content
+        assert "interrupted" in harvested[1]["content"].lower()
+
+    def test_empty_turn_harvests_to_nothing(self):
+        assert self._harvest([]) == []
+
+    def test_partial_text_is_appended_once(self):
+        harvested = self._harvest(
+            [{"role": "user", "content": "q"}], "半句"
+        )
+        assert harvested[1]["content"].startswith("半句")
+        assert harvested[1]["content"].count("半句") == 1

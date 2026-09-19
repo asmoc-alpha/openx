@@ -15,6 +15,8 @@ Harness 手法沿用 test_funnel_commit.py（pyte LNM + deterministic_live）。
 from __future__ import annotations
 
 import io
+import re
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +26,7 @@ from rich.console import Console as RichConsole
 from rich.text import Text
 
 from openx.agent import ToolResultEvent, ToolStartEvent
-from openx.services.streaming import StreamingService
+from openx.services.streaming import _GUTTER, _SPIN, StreamingService
 
 
 @pytest.fixture
@@ -301,3 +303,117 @@ class TestExpandWindow:
         assert screen.count("Read 2 files") == 1, (
             "摘要行应恰出现一次\n" + screen
         )
+
+
+# ── ⑤ running 行的转帧动画 ───────────────────────────────────────
+#
+# 用户报告：命令跑久了看不出是在执行还是已经卡死/出错。修复 = running 的
+# 结果槽行走逐帧重渲（转帧 + 耗时读秒），静态形态只留给固化进 scrollback
+# 的那份。见 streaming._running_row / _volatile_view。
+
+
+def _glyph_on(line: str) -> str:
+    """屏上该行 ``Running…`` 正前方的转帧字形（无帧返回 ""）。
+
+    取"正前方那个字符"而非"行内是否含帧集里的字"：帧集里的 ``·`` 与
+    耗时分隔符 ``·`` 是同一个字符，按包含判定会把静态行判成带动画。
+    """
+    m = re.search(r"(\S)\s+Running…", line)
+    return m.group(1) if m and m.group(1) in _SPIN else ""
+
+
+def _plain(line) -> str:
+    """render_lines 行（Segment 列表）→ 可见文本。"""
+    return "".join(seg.text for seg in line if not seg.is_control)
+
+
+def _running_line(h: Harness) -> str:
+    return next(r for r in h.rows() if "Running…" in r)
+
+
+class TestRunningAnimation:
+    def test_running_row_shows_spinner_and_elapsed(self, deterministic_live):
+        h = Harness()
+        h.svc.start()
+        _tool(h, "shell", arg="npm test", start_only=True)
+
+        line = _running_line(h)
+        assert _glyph_on(line), f"running 行应带转帧：{line!r}"
+        assert re.search(r"Running… · \d+s", line), line
+
+    def test_spinner_advances_across_frames(self, deterministic_live, monkeypatch):
+        """逐帧重渲：转针真的在动（不是每帧同一个字形）。"""
+        import openx.services.streaming as sm
+
+        monkeypatch.setattr(sm, "_SPIN_MS", 1)   # 1ms/帧 → 无需等 120ms
+        h = Harness()
+        h.svc.start()
+        _tool(h, "shell", arg="npm test", start_only=True)
+
+        seen = set()
+        for _ in range(5):
+            h.refresh()
+            seen.add(_glyph_on(_running_line(h)))
+            time.sleep(0.005)
+        assert len(seen) >= 2, f"转帧应随时间推进，实际只见到 {seen}"
+
+    def test_elapsed_ticks_with_the_clock(self, deterministic_live):
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(ToolStartEvent(name="shell", arguments="sleep 42"))
+        record = h.svc._segments[-1][1]
+        record.started_at = time.monotonic() - 42   # 假装已经跑了 42 秒
+        h.refresh()
+        assert "Running… · 42s" in _running_line(h)
+
+    def test_running_row_never_wraps(self, deterministic_live):
+        """读秒进位（9s→10s→1h 0m）不许把贴边那行折成两行。
+
+        高度漂移会带偏易变区的擦除标尺（\033[{n}A\033[J 的 n 是行数）。
+        窄终端下逼出贴边：头行 + running 行应恒为 2 行。
+        """
+        h = Harness(cols=20)
+        h.svc.start()
+        h.svc.feed(ToolStartEvent(name="sh", arguments=""))
+        record = h.svc._segments[-1][1]
+        record.started_at = time.monotonic() - 3600   # 最长的耗时形态 1h 0m
+
+        view = h.svc._volatile_view()
+        rendered = h.svc._rich.render_lines(view, pad=False)
+        assert len(rendered) == 2, list(map(_plain, rendered))
+
+    def test_cached_lines_stay_static_and_do_not_churn(
+        self, deterministic_live, monkeypatch
+    ):
+        """缓存形态不含时变分量：转帧不许逐帧打掉 body 渲染缓存。
+
+        打掉的代价是每帧重渲整段 Markdown（``_body_lines`` 的键），
+        滚动长回答时这就是卡顿与闪烁的来源。
+        """
+        import openx.services.streaming as sm
+
+        h = Harness()
+        h.svc.start()
+        _tool(h, "shell", arg="npm test", start_only=True)
+        key_before = h.svc._body_cache_key
+
+        monkeypatch.setattr(sm, "_SPIN_MS", 1)
+        h.refresh()
+        time.sleep(0.005)
+        h.refresh()
+
+        assert h.svc._body_cache_key == key_before, "转帧不应使 body 缓存失效"
+        cached = [l for l in map(_plain, h.svc._body_lines()) if "Running…" in l]
+        assert cached and cached[0].strip() == f"{_GUTTER}  Running…", cached
+        # 而屏上那份是动的
+        assert _glyph_on(_running_line(h))
+
+    def test_interrupted_tool_lands_static_in_scrollback(self, deterministic_live):
+        """跑到一半被打断：固化进 scrollback 的是静态形态（转帧冻住像坏字形）。"""
+        h = Harness()
+        h.svc.start()
+        _tool(h, "shell", arg="npm test", start_only=True)
+        h.svc.cancel()
+        h.flush()
+        line = _running_line(h)
+        assert not _glyph_on(line), f"残留行不该带转帧：{line!r}"

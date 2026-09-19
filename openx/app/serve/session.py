@@ -19,7 +19,9 @@ openx serve（P4）核心：一个 ServeSession 宿主一个 agent（长存会�
   agent 等工具时不 yield 事件，事件驱动看不到回合中段的子代理活动）。
 - **interrupt**：cancel ``_turn_task``；``_run_turn`` 捕获 CancelledError 后
   广播 ``{"type":"interrupted"}`` 并**正常返回**（不毒死 worker）。回合中
-  cancel 安全：``history.add`` 只在回合末尾，部分回合丢弃（同 REPL Esc 语义）。
+  cancel 安全：取消在 ``stream_run`` 的取消边界上收口——被打断的那一轮
+  截断到合法点后并入历史（含用户那条消息，同 REPL Esc 语义），而不是
+  整轮消失；``history.add`` 的时机仍只在回合收口处。
 
 事件投影（``_project``）与服务端剥 ``[dim]...[/dim]``：``stream_run`` 会
 yield 压缩提示等 rich 标签串，绝不能原样落到浏览器。
