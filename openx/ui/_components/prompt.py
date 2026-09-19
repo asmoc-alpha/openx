@@ -41,6 +41,7 @@ from shutil import get_terminal_size
 from rich.console import Group
 from rich.text import Text as RichText
 
+from .._helpers import fmt_duration
 from .._style import (
     ACCENT,
     ACCENT_BOLD,
@@ -400,7 +401,7 @@ class PromptMixin:
     def _replay_indicator(self, elapsed: float, expanded: bool) -> RichText:
         """重印指示行（与 streaming._thinking_block 冻结态逐字一致）。"""
         t = RichText(
-            f"  {MARK_INFO} Thought for {elapsed:.1f}s"
+            f"  {MARK_INFO} Thought for {fmt_duration(elapsed)}"
             + (" (ctrl+r to collapse)" if expanded
                else " (ctrl+r to expand)"),
             style=DIM,

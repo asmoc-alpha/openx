@@ -43,7 +43,7 @@ from rich.markup import escape
 from rich.text import Text
 
 from ..ui.input_capture import InputCapture
-from ..ui._helpers import DONE_VERBS, done_line
+from ..ui._helpers import DONE_VERBS, done_line, fmt_duration
 from ..ui._style import (
     ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, MARK_BULLET, MARK_FAIL, MARK_INFO,
     MARK_OK, MARK_PENDING, SPIN_FRAME_MS, SPIN_FRAMES, SUCCESS_STYLE,
@@ -143,6 +143,35 @@ _ERROR_MAX_LINES = 10
 _EXPAND_HARD_CAP = 200
 _GUTTER = "⎿"    # Claude Code 结果槽线符号（U+23BF）
 
+# ── 工具调用聚合展示（对标 Claude Code 的折叠摘要）────────────────
+# 连续的只读探查调用折叠成一行摘要（"Read 2 files, ran 1 command"）：
+# 一次探查刷十几屏是转录里最大的噪声源，聚合后信息密度回到正文。
+# 白名单＝子代理 explore 规格的工具清单（orchestration/subagent.py 的
+# 只读探查集，仓库自己认定的"无副作用"边界）+ shell——用户显式要求
+# 连续 shell 也聚合。写操作（write_file/edit_file）、task、todo、
+# workflow、MCP 工具一律不入组：改了什么必须逐条可见。
+# 单条不聚合（_GROUP_MIN）：一次 read_file 保留现在的头行 + ⎿ 结果
+# 预览，"只有一条却折起来"是净损失。组内明细在固化前可经 Ctrl+T 展开
+# （复用全局展开开关），固化后定格为摘要行——已打印行不可重写（同
+# thinking 的提示生命周期纪律）。
+_GROUP_MIN = 2
+# 工具名 → (族 bucket, 单数短语, 复数短语)。同族共用一个 bucket：计数
+# 归并、短语只出现一次（grep/glob 都是 "Searched N patterns"，四个 git
+# 查询都是 "Ran N git commands"）。
+_GROUP_PHRASES: dict = {
+    "read_file":      ("read",   "Read {n} file",            "Read {n} files"),
+    "grep":           ("search", "Searched {n} pattern",     "Searched {n} patterns"),
+    "glob":           ("search", "Searched {n} pattern",     "Searched {n} patterns"),
+    "list_directory": ("list",   "Listed {n} directory",     "Listed {n} directories"),
+    "git_status":     ("git",    "Ran {n} git command",      "Ran {n} git commands"),
+    "git_diff":       ("git",    "Ran {n} git command",      "Ran {n} git commands"),
+    "git_log":        ("git",    "Ran {n} git command",      "Ran {n} git commands"),
+    "git_branch":     ("git",    "Ran {n} git command",      "Ran {n} git commands"),
+    "shell":          ("shell",  "Ran {n} command",          "Ran {n} commands"),
+    "web_fetch":      ("web",    "Fetched {n} page",         "Fetched {n} pages"),
+    "web_search":     ("web",    "Searched the web {n} time", "Searched the web {n} times"),
+}
+
 
 @dataclass
 class _ToolRecord:
@@ -169,6 +198,46 @@ def _extract_task_desc(arguments: str) -> str:
     if isinstance(args, dict):
         return str(args.get("description") or "")
     return ""
+
+
+def _chunk_is_running(kind: str, meta: Any) -> bool:
+    """chunk 是否含 running 工具（水印①与易变尾的唯一判据）。
+
+    聚合组只收**已完成**记录（running 必打断组，见 _grouped_segments）
+    → 组恒非 running；此处仍显式判 kind，不依赖"组 meta 是 list、
+    getattr 取不到 status"这种隐式巧合。
+    """
+    return kind == "tool" and getattr(meta, "status", "") == "running"
+
+
+def _group_summary(records: list) -> str:
+    """聚合组 → 摘要短语串（按族**首次出现序**，计数归并，单复数正确）。
+
+    顺序按实际发生序而非固定表序：先读后搜与先搜后读读法不同，摘要
+    要如实反映。未知工具名跳过（不认识的调用不进组，本不该出现）。
+    """
+    order: list = []
+    counts: dict = {}
+    tmpl: dict = {}
+    for rec in records:
+        entry = _GROUP_PHRASES.get(rec.name)
+        if entry is None:
+            continue
+        bucket, sing, plur = entry
+        if bucket not in counts:
+            counts[bucket] = 0
+            order.append(bucket)
+            tmpl[bucket] = (sing, plur)
+        counts[bucket] += 1
+    phrases = [
+        (tmpl[b][0] if counts[b] == 1 else tmpl[b][1]).format(n=counts[b])
+        for b in order
+    ]
+    # 只有首个短语首字母大写：逗号连读是**一个句子**（"Read 2 files,
+    # ran 1 command"），每段都大写会读成三个标题。
+    return ", ".join(
+        [phrases[0]] + [p[0].lower() + p[1:] for p in phrases[1:]]
+    )
 
 
 class _LiveView:
@@ -1066,7 +1135,8 @@ class StreamingService:
             # 之间的几秒流式窗口是善意谎言（该窗口热键仍 no-op）。
             suffix = (" (ctrl+r to collapse)" if self._reasoning_expanded
                       else " (ctrl+r to expand)")
-            label = (f"{MARK_INFO} Thought for {self._thinking_elapsed:.1f}s"
+            label = (f"{MARK_INFO} Thought for "
+                     f"{fmt_duration(self._thinking_elapsed)}"
                      + suffix)  # ●
             hint = ""
         indicator = self._deck_line(f"  {label}{hint}", style=DIM)
@@ -1088,20 +1158,53 @@ class StreamingService:
 
     # ── 逐行固化管线（取代尾窗 _windowed）────────────────────────
 
+    def _grouped_segments(self) -> list:
+        """段序列 → 展示项投影：连续可聚合调用折成一个 ``("tool_group",
+        [record, …])`` 项，其余段原样透传。
+
+        只有**已完成且无错**的记录入组：running 记录的状态点会变（dim→
+        绿）且结果未到，errors 必须逐条可见（红色块）——二者都打断组，
+        与固化水印①的"首个 running 起往后皆易变"同界。不足 _GROUP_MIN
+        条的组退回逐条展示（单条聚合是净损失）。
+
+        投影是**纯派生**（feed() 照旧写 _segments，分组每次渲染重算）
+        ——记录就绪即自动折入组，无需在 feed 里维护分组状态机。
+        """
+        out: list = []
+        pending: list = []
+
+        def flush() -> None:
+            nonlocal pending
+            if len(pending) >= _GROUP_MIN:
+                out.append(("tool_group", pending))
+            else:
+                out.extend(("tool", rec) for rec in pending)
+            pending = []
+
+        for kind, payload in self._segments:
+            if (kind == "tool" and payload.name in _GROUP_PHRASES
+                    and payload.status == "done" and not payload.is_error):
+                pending.append(payload)
+                continue
+            flush()
+            out.append((kind, payload))
+        flush()
+        return out
+
     def _body_chunks(self, hints: bool) -> list:
         """body 有序 chunk 列表 → ``[(kind, meta, renderable)]``。
 
-        kind："thinking" / "text" / "tool"；meta：tool 段携带记录对象
-        （水印/易变视图需要 running 位置与记录本身），其余为状态串。
-        段间空行分隔（防粘连）并入后续 chunk 头部。``hints`` 控制交互
-        提示（ctrl+r / ctrl+t 字样）：**固化渲染恒 False**（提示在固化
-        后是谎言），易变显示渲染传 True。
+        kind："thinking" / "text" / "tool" / "tool_group"；meta：工具段
+        携带记录对象、聚合组携带记录列表（水印/易变视图需要 running
+        位置与记录本身），其余为状态串。段间空行分隔（防粘连）并入后续
+        chunk 头部。``hints`` 控制交互提示（ctrl+r / ctrl+t 字样）：
+        **固化渲染恒 False**（提示在固化后是谎言），易变显示渲染传 True。
         """
         chunks: list = []
         if self._reasoning_buffer:
             chunks.append(("thinking", "thinking",
                            Group(*self._thinking_block(hints))))
-        for kind, payload in self._segments:
+        for kind, payload in self._grouped_segments():
             if kind == "text":
                 clean = _RICH_TAG.sub("", payload)
                 if not clean.strip():
@@ -1119,7 +1222,7 @@ class StreamingService:
                 rend = done_line(elapsed_s, verb=word)
                 meta = "done"
             else:
-                rows = self._tool_renderables(payload, hints=hints)
+                rows = self._chunk_renderables(kind, payload, hints)
                 if not rows:
                     continue
                 rend = Group(*rows) if len(rows) > 1 else rows[0]
@@ -1180,13 +1283,16 @@ class StreamingService:
         wm = len(lines)
         bounds = self._body_bounds
         for kind, meta, s, _e in bounds:
-            if kind == "tool" and getattr(meta, "status", "") == "running":
+            if _chunk_is_running(kind, meta):
                 wm = min(wm, s)
                 break  # running 起往后皆 volatile
-        # ② 尾部已完成工具连跑
+        # ② 尾部已完成工具/聚合组连跑保持 volatile（Ctrl+T 作用窗，直到
+        # 后续段到达并入稳定前缀）。聚合组必须整组留在线上的另一个理由：
+        # 组的渲染形态随 _tools_expanded 变（摘要行 ⇄ 明细块），固化后
+        # 展开就改不动了——组在线 = 还能展开，是"固化前可展开"的实现。
         i = len(bounds)
-        while (i and bounds[i - 1][0] == "tool"
-               and getattr(bounds[i - 1][1], "status", "") != "running"):
+        while (i and bounds[i - 1][0] in ("tool", "tool_group")
+               and not _chunk_is_running(bounds[i - 1][0], bounds[i - 1][1])):
             i -= 1
         if i < len(bounds):
             wm = min(wm, bounds[i][2])
@@ -1256,8 +1362,8 @@ class StreamingService:
         if self._done and not pre_think and C >= len(lines):
             return None
         i = len(bounds)
-        while (i and bounds[i - 1][0] == "tool"
-               and getattr(bounds[i - 1][1], "status", "") != "running"):
+        while (i and bounds[i - 1][0] in ("tool", "tool_group")
+               and not _chunk_is_running(bounds[i - 1][0], bounds[i - 1][1])):
             i -= 1
         tail_tools = bounds[i:]
         copy_end = tail_tools[0][2] if tail_tools else len(lines)
@@ -1291,7 +1397,7 @@ class StreamingService:
             # 期尾部工具块粘连、固化后才冒出间距（两种形态不一致）。
             if i + j > 0:
                 parts.append(Text(""))
-            parts.extend(self._tool_renderables(rec, hints=True))
+            parts.extend(self._chunk_renderables(_kind, rec, hints=True))
         if not parts:
             return None
         # 易变区超视口预算 → 裁尾 + ↑ … 标记。**按渲染行数测量**，不能按
@@ -1399,6 +1505,48 @@ class StreamingService:
                            payload.status, payload.output,
                            payload.is_error))
         return tuple(fp)
+
+    def _chunk_renderables(self, kind: str, meta: Any,
+                           hints: bool = False) -> list:
+        """工具 chunk（单条 / 聚合组）→ 行部件。
+
+        ``_body_chunks``（固化渲染）与 ``_volatile_view``（易变尾重渲）
+        **共用此入口**：同一 chunk 的两条渲染路径绝不允许分叉——分叉即
+        "流式形态与固化形态不一致"的老坑（工具块间距就栽过一次）。
+        """
+        if kind == "tool_group":
+            return self._group_renderables(meta, hints=hints)
+        return self._tool_renderables(meta, hints=hints)
+
+    def _group_renderables(self, records: list, hints: bool = False) -> list:
+        """聚合组 → 单行摘要（Ctrl+T 展开态回退逐条明细块）。
+
+        **展开只在易变区**（``hints`` = 易变尾渲染）：固化进 scrollback 的
+        行不可重写，这是逐行固化管线的核心不变量——用户决策即"固化前
+        ctrl+t 可展开当前组，固化后定格为摘要行"。故此处判 hints 而非
+        全局 _tools_expanded：已固化的组恒渲染摘要行（组在线上 = 还能
+        展开，组离线 = 已定格，热键对它是 no-op 而非谎言）。
+
+        展开直接复用 _tool_renderables（hints 透传）：明细与逐条展示
+        逐字一致——展开只是"把折起来的重新摊开"，不引入第二套渲染，
+        也就不存在"展开态和原本逐条展示长得不一样"的问题。
+        """
+        if hints and self._tools_expanded:
+            rows: list = []
+            for rec in records:
+                if rows:
+                    rows.append(Text(""))  # 块间空行，与逐条展示同距
+                rows.extend(self._tool_renderables(rec, hints=hints))
+            return rows
+        summary = _group_summary(records)
+        if not summary:
+            return []
+        # 展开提示同 thinking / "… +N lines" 纪律：只在易变期（hints）
+        # 出现，固化进 scrollback 的摘要行不带字样（热键已不再作用于它）。
+        hint = " (ctrl+t to expand)" if hints else ""
+        return [Text.from_markup(
+            f"[{SUCCESS_STYLE}]{MARK_INFO}[/] [dim]{escape(summary)}"
+            f"{hint}[/]")]
 
     def _tool_renderables(self, record: "_ToolRecord",
                           hints: bool = False) -> list:
@@ -1515,8 +1663,10 @@ class StreamingService:
         text.append(f"  {glyph} ", style=ACCENT)
         for seg_text, seg_style in self._shimmer_spans(label, elapsed):
             text.append(seg_text, style=seg_style)
+        # 耗时随量级升级单位（42s → 1m 2s → 1h 2m，fmt_duration 与回合
+        # 结束行同格式）——长回合不再滚出 "3599.9s" 这种读不动的秒数。
         text.append(
-            f"  ({elapsed:.1f}s)  ·  esc to interrupt",
+            f"  ({fmt_duration(elapsed)})  ·  esc to interrupt",
             style="dim",
         )
         return text
@@ -1702,7 +1852,7 @@ class StreamingService:
         rows.append(self._deck_markup(
             f"{main_head} [{main_style}]main[/][dim] · main answer[/dim]"))
         for v in snap[:fleet_allow]:
-            secs = f"{v['elapsed']:.0f}s"
+            secs = fmt_duration(v["elapsed"])
             tools = f"{v['tools_count']} tools"
             # 编号 + 标记：恒 2 格宽前缀（"❯N" / " N"）。
             # 标签经 markup 转义：子代理描述可含方括号。
@@ -1795,7 +1945,7 @@ class StreamingService:
             f" [bold]Agent {view['id']}: {escape(view['label'])}[/bold]"
             f" [dim]·[/dim] {status_label}"
             f" [dim]· {view['tools_count']} tools"
-            f" · {view['elapsed']:.0f}s"
+            f" · {fmt_duration(view['elapsed'])}"
             f" · ↑/↓ switch · alt+0 back[/dim]",
         )
         lines = list(view["lines"])

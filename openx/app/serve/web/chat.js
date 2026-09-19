@@ -796,9 +796,9 @@ const Chat = {
    */
   finalizeTurn() {
     if (this.thinkingWrap && this.thinkingBody && this.thinkingBody.textContent.trim()) {
-      const secs = ((performance.now() - this.thinkingStart) / 1000).toFixed(1);
+      const spent = fmtDuration(performance.now() - this.thinkingStart);
       const label = this.thinkingWrap.querySelector(".t-label");
-      if (label) label.textContent = `思考了 ${secs}s`;
+      if (label) label.textContent = `思考了 ${spent}`;
       this.thinkingWrap.classList.remove("open");
     }
     const a = this.lastAssistant;

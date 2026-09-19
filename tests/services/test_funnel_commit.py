@@ -230,14 +230,16 @@ class TestHintLifecycle:
 
 
 class TestToolBlockSpacing:
+    # 用不可聚合工具（写操作）成对：只读探查对会被聚合展示收成一行摘要
+    # （见 test_tool_grouping.py），本用例要测的是**逐条块**的间距。
     def _feed_two_tools(self, h):
         h.svc.start()
-        h.svc.feed(ToolStartEvent(name="grep", arguments="foo"))
+        h.svc.feed(ToolStartEvent(name="edit_file", arguments="foo"))
         h.svc.feed(ToolResultEvent(
-            name="grep", output="g1\ng2", is_error=False))
-        h.svc.feed(ToolStartEvent(name="read_file", arguments="a.txt"))
+            name="edit_file", output="g1\ng2", is_error=False))
+        h.svc.feed(ToolStartEvent(name="write_file", arguments="a.txt"))
         h.svc.feed(ToolResultEvent(
-            name="read_file", output="r1\nr2", is_error=False))
+            name="write_file", output="r1\nr2", is_error=False))
         h.svc._live.refresh()
         h.flush()
 
@@ -249,12 +251,12 @@ class TestToolBlockSpacing:
     def _assert_gap(self, h, expect_blank: int = 1):
         rows = [r.rstrip() for r in h.rows()]
         grep_y = next(
-            y for y, r in enumerate(rows) if "●" in r and "grep" in r)
+            y for y, r in enumerate(rows) if "●" in r and "edit_file" in r)
         read_y = next(
-            y for y, r in enumerate(rows) if "●" in r and "read_file" in r)
+            y for y, r in enumerate(rows) if "●" in r and "write_file" in r)
         assert read_y == grep_y + self._block_rows() + expect_blank, (
-            f"块间距应为 {expect_blank} 空行：grep@{grep_y} "
-            f"read@{read_y}\n" + "\n".join(rows))
+            f"块间距应为 {expect_blank} 空行：edit@{grep_y} "
+            f"write@{read_y}\n" + "\n".join(rows))
         for k in range(1, self._block_rows()):
             assert rows[grep_y + k] != "", "块内不应有空行"
 
@@ -276,9 +278,9 @@ class TestToolBlockSpacing:
         # 逐行比较：固化形态的块区与流式期逐字一致（间距不跳变）
         rows = [r.rstrip() for r in h.rows()]
         grep_y = next(
-            y for y, r in enumerate(rows) if "●" in r and "grep" in r)
+            y for y, r in enumerate(rows) if "●" in r and "edit_file" in r)
         grep_y_b = next(
-            y for y, r in enumerate(before) if "●" in r and "grep" in r)
+            y for y, r in enumerate(before) if "●" in r and "edit_file" in r)
         assert rows[grep_y:grep_y + 8] == before[grep_y_b:grep_y_b + 8]
 
     def test_first_tool_block_has_no_leading_gap(self, deterministic_live):
@@ -286,10 +288,10 @@ class TestToolBlockSpacing:
         不多出前导空行。"""
         h = Harness()
         h.svc.start()
-        h.svc.feed(ToolStartEvent(name="grep", arguments="foo"))
+        h.svc.feed(ToolStartEvent(name="edit_file", arguments="foo"))
         h.svc.feed(ToolResultEvent(
-            name="grep", output="g1", is_error=False))
+            name="edit_file", output="g1", is_error=False))
         h.svc._live.refresh()
         h.flush()
         ne = h.nonempty()
-        assert ne and "grep" in ne[0][1], f"首块应顶格：{ne[:3]}"
+        assert ne and "edit_file" in ne[0][1], f"首块应顶格：{ne[:3]}"

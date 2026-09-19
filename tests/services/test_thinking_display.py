@@ -348,7 +348,9 @@ class TestThinkingFlicker:
         h.refresh()
         before = h.rows()
 
-        time.sleep(0.1)  # 跨过 spinner 的 80ms 字形帧 + 0.1s 计时刻度
+        # 耗时用 fmt_duration 后是整秒刻度（至多 1s 一跳），帧间必变项
+        # 只剩 120ms 字形帧——sleep 0.25 必跨 ≥1 帧（帧字形互异 → 行必变）。
+        time.sleep(0.25)
         h.refresh()  # 5Hz 下一拍，无新内容
         after = h.rows()
 

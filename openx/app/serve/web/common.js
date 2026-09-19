@@ -18,6 +18,19 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+/** 耗时（毫秒）→ 短串，随量级升级单位：Nms → N.Ns → Nm Ns → Nh Nm。
+    放在 common.js（最先加载）：chat.js「思考了」与 task-panel.js 共用。 */
+function fmtDuration(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  if (n < 1000) return `${Math.round(n)}ms`;
+  const s = n / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const total = Math.floor(s);
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m}m${total % 60}s`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
 // ── 迷你 markdown（先转义后变换）────────────────────────────────
 const PH_PREFIX = "@@OPENX_BLOCK_";
 const PH_RE = /@@OPENX_BLOCK_(\d+)@@/g;

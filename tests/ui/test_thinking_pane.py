@@ -35,7 +35,7 @@ from rich.text import Text
 
 from openx.config import OpenXConfig
 from openx.ui._components.prompt import PromptMixin
-from openx.ui._helpers import done_line
+from openx.ui._helpers import done_line, fmt_duration
 from openx.ui._style import DIM, MARK_INFO
 from openx.ui.console import Console
 
@@ -43,7 +43,7 @@ THINKING = "the hidden reasoning body"
 TAIL1 = "answer line one"
 TAIL2 = "answer line two"
 PRIOR = "PRIOR_TRANSCRIPT_LINE"
-FOOTER = "✻ Cooked for 2.5s"
+FOOTER = "✻ Cooked for 2s"  # done_line(2.5) → fmt_duration 取整秒
 # 结束行的屏幕匹配式：✻ + 动词 + for + 时长（动词随机，不能写死）
 FOOTER_RE = re.compile(r"✻ \w+ for \d+[smh]")
 
@@ -57,7 +57,8 @@ def _footer() -> Text:
 
 def _collapsed_indicator(elapsed: float = 2.5) -> Text:
     t = Text(
-        f"  {MARK_INFO} Thought for {elapsed:.1f}s (ctrl+r to expand)",
+        f"  {MARK_INFO} Thought for {fmt_duration(elapsed)}"
+        " (ctrl+r to expand)",
         style=DIM,
     )
     t.no_wrap = True
@@ -281,7 +282,7 @@ class TestReplayKeepsCompletionLine:
         c._replay_toggle([], None, 0, 0)
         h.reprint_bytes = h.buf.getvalue()
         h.flush()
-        assert h.count_reprinted("✻ Cooked for 2.5s") <= 1, \
+        assert h.count_reprinted(FOOTER) <= 1, \
             "结束行被重复打印（擦除标尺算漏了它）"
 
     def test_windowed_path_also_carries_footer(self, monkeypatch, tmp_path):

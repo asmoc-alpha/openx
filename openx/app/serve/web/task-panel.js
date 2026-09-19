@@ -502,15 +502,11 @@ function firstLine(text) {
   return line.length > 80 ? line.slice(0, 79) + "…" : line;
 }
 
-function fmtDuration(ms) {
-  const n = Math.max(0, Number(ms) || 0);
-  if (n < 1000) return `${n}ms`;
-  const s = n / 1000;
-  return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;
-}
-
+// fmtDuration 移驻 common.js（chat.js「思考了」也要用，common 最先加载）。
 function fmtClock(sec) {
-  const s = Math.max(0, Number(sec) || 0);
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
   if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m${s % 60}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
 }
