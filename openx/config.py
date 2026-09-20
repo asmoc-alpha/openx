@@ -94,6 +94,14 @@ class OpenXConfig:
         ]
     )
 
+    # ── Search settings ──────────────────────────────────────────
+    # 代码搜索（grep / glob）后端：'auto' 优先 ripgrep（并行、尊重
+    # .gitignore、跳过二进制），探测不到则回落优化过的纯 Python（git 感知
+    # 枚举 + 扩展剪枝 + 线程池）；'ripgrep' / 'python' 强制单一引擎。
+    search_backend: str = "auto"
+    # grep / glob 是否尊重 .gitignore（经 `git ls-files` 取权威 ignore 语义）。
+    respect_gitignore: bool = True
+
     # ── Output settings ──────────────────────────────────────────
     stream: bool = True  # streaming output; CLI --no-stream sets this False
 
@@ -295,6 +303,8 @@ class OpenXConfig:
             config.auto_approve = os.environ["OPENX_AUTO_APPROVE"].lower() == "true"
         if os.environ.get("OPENX_WEB_SEARCH"):
             config.web_search_provider = os.environ["OPENX_WEB_SEARCH"].lower()
+        if os.environ.get("OPENX_SEARCH_BACKEND"):
+            config.search_backend = os.environ["OPENX_SEARCH_BACKEND"].lower()
         _rounds = os.environ.get("OPENX_MAX_TOOL_ROUNDS")
         if _rounds:
             try:

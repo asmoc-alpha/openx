@@ -50,6 +50,7 @@ openx/
 │   ├── tools/
 │   │   ├── base.py        # Tool base class + result types
 │   │   ├── file_tools.py  # read_file, write_file, edit_file, glob, list_directory
+│   │   ├── fs_search.py   # code-search backend (ripgrep + pure-Python fallback)
 │   │   ├── shell_tools.py # shell (supports run_in_background)
 │   │   ├── search_tools.py# grep
 │   │   ├── git_tools.py   # git_status, git_diff, git_log, git_branch
@@ -100,6 +101,22 @@ Permission checks and hook invocations happen during serial preparation, inside
 | Orchestration | `orchestration/subagent.py`, `orchestration/workflow.py`, `orchestration/tasks.py`, `orchestration/fleet.py` | Subagents, deterministic workflows, background tasks (hard-wired, P2+ plugin-ization) |
 | State | `orchestration/sessions.py`, `config.py`, `kernel/recovery/` | Session persistence/resume, layered configuration, turn-level checkpoints & interrupt recovery |
 | Collaboration | `permissions.py` | Permission tiers, stored rules, dangerous-command gate |
+
+## Code search
+
+`grep` and `glob` share one backend, `tools/fs_search.py`, which has two engines:
+
+- **ripgrep** (`rg`) when it is on `PATH` (or `OPENX_RIPGREP` points at it) —
+  parallel, respects `.gitignore`/`.ignore`, skips binaries. Auto-detected,
+  never a hard dependency.
+- **pure Python** otherwise — `git ls-files` for authoritative ignore semantics
+  (inside a git repo), an expanded build/cache prune set, and a thread pool so
+  the search never blocks the event loop.
+
+The engine is picked by `search_backend` (`auto` | `ripgrep` | `python`, via
+config or `OPENX_SEARCH_BACKEND`); `respect_gitignore` (default on) toggles the
+git-aware filtering. Both engines emit the same `path:line: text` output, capped
+at 500 matches.
 
 ## See also
 

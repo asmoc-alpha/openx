@@ -295,3 +295,61 @@ class TestToolBlockSpacing:
         h.flush()
         ne = h.nonempty()
         assert ne and "edit_file" in ne[0][1], f"首块应顶格：{ne[:3]}"
+
+
+# ── ⑦ 内容 fail-open：模型文本/参数不得终结会话 ──────────────────
+
+
+class TestRenderFailOpen:
+    """用户报告的进程退出（两条栈同时穿出）的回归。
+
+    模型文本里的畸形链接 ``[a](//)`` 让 rich 的解析栈抛 IndexError
+    （空 host 越界，mdurl 0.1.0 缺陷，非 ValueError）：异常先经
+    ``feed`` → ``_body_lines`` 穿出，异常处理里的 ``cancel()`` →
+    ``_flush_commit`` → 同一处再抛一次，asyncio.run 随之收栈退出。
+    两条路径都必须降级显示而不是崩。
+    """
+
+    _BROKEN = "这句里有个坏链接 [a](//) 和完整链接 [ok](https://x.com/y)。\n\n"
+
+    def test_broken_link_does_not_crash_streaming_turn(
+        self, deterministic_live
+    ):
+        """流式期（feed 刷新 → _maybe_commit）与收尾（done →
+        _flush_commit）都不炸，且文本照旧可见（退回纯文本）。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(self._BROKEN)
+        h.svc._live.refresh()
+        h.svc.feed("后续内容照常到达。\n\n")
+        h.svc._live.refresh()
+        h.svc.done()
+        h.flush()
+        screen = "\n".join(h.rows())
+        assert "坏链接" in screen
+        assert "后续内容照常到达" in screen
+
+    def test_broken_link_does_not_crash_cancel(self, deterministic_live):
+        """打断路径（Ctrl-C → cancel → _flush_commit）同样不得二次抛出
+        ——用户看到的正是这一抛：异常处理里再抛异常。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(self._BROKEN)
+        h.svc._live.refresh()
+        h.svc.cancel()
+        h.flush()
+        assert "坏链接" in "\n".join(h.rows())
+
+    def test_markup_in_tool_arguments_is_escaped(self, deterministic_live):
+        """工具参数是**模型给的**：含 ``[/]`` 的命令（grep -o '[/]'）裸插
+        markup 会在构造期抛 MarkupError——那不在 render fail-open 之内。"""
+        h = Harness()
+        h.svc.start()
+        h.svc.feed(ToolStartEvent(
+            name="shell", arguments='{"command": "grep -o \'[/]\' -- x"}'))
+        h.svc.feed(ToolResultEvent(name="shell", output="hit", is_error=False))
+        h.svc._live.refresh()
+        h.svc.done()
+        h.flush()
+        screen = "\n".join(h.rows())
+        assert "grep -o" in screen, f"参数摘要应照常显示：{screen!r}"

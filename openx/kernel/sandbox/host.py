@@ -39,3 +39,8 @@ class ToolHost:
     allowed_commands: list = field(default_factory=list)
     dangerous_commands: list = field(default_factory=list)
     web_search_provider: Optional[Any] = None
+    # 代码搜索旋钮（首个真实消费方 = grep / glob 工具，按最小面纪律加入）：
+    # search_backend ∈ {"auto","ripgrep","python"}；respect_gitignore 决定
+    # grep/glob 是否走 `git ls-files` 的权威 ignore 语义。
+    search_backend: str = "auto"
+    respect_gitignore: bool = True

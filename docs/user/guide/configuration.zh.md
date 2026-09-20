@@ -82,10 +82,25 @@ Anthropic 官方。旧 kind `anthropic` 仍作别名接受。
 ```bash
 export OPENX_AUTO_APPROVE=true   # 跳过权限询问
 export OPENX_WEB_SEARCH=ddg      # 或 'bing' / 'auto'
+export OPENX_SEARCH_BACKEND=auto # 代码搜索：'auto' / 'ripgrep' / 'python'
 ```
 
 provider 的模型/key/base 必须在模型组里配置（可经 `env:VAR`），绝不从 `OPENAI_*`
 自动读取。
+
+## 代码搜索
+
+`grep` 与 `glob` 跑在同一个后端上，含两个引擎：可用 **ripgrep**（`rg`，并行且尊重
+`.gitignore`）时优先使用，否则回落优化过的 **纯 Python** 兜底（git 感知枚举、扩展构建/缓存
+剪枝、线程池）。两者输出完全一致。
+
+| 配置 | 默认 | 含义 |
+|---|---|---|
+| `search_backend` | `"auto"` | `auto`（优先 ripgrep）· `ripgrep` · `python`。环境覆盖：`OPENX_SEARCH_BACKEND`。 |
+| `respect_gitignore` | `true` | `grep`/`glob` 是否跳过被 `.gitignore` 忽略的文件（经 `git ls-files`）。 |
+
+可用环境变量 `OPENX_RIPGREP` 显式指定 `rg` 路径（设为 `none` 强制纯 Python 引擎）。两个键在
+项目级 `<workspace>/.openx/settings.json` 中同样生效。
 
 ## 项目配置（`<workspace>/.openx/settings.json`）
 

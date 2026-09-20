@@ -48,6 +48,7 @@ openx/
 │   ├── tools/
 │   │   ├── base.py        # Tool 基类 + 结果类型
 │   │   ├── file_tools.py  # read_file、write_file、edit_file、glob、list_directory
+│   │   ├── fs_search.py   # 代码搜索后端（ripgrep + 纯 Python 兜底）
 │   │   ├── shell_tools.py # shell（支持 run_in_background）
 │   │   ├── search_tools.py# grep
 │   │   ├── git_tools.py   # git_status、git_diff、git_log、git_branch
@@ -96,6 +97,19 @@ openx/
 | 编排层 | `orchestration/subagent.py`、`orchestration/workflow.py`、`orchestration/tasks.py`、`orchestration/fleet.py` | subagents、确定性 workflows、后台任务（硬连线，P2+ 插件化） |
 | 状态层 | `orchestration/sessions.py`、`config.py`、`kernel/recovery/` | 会话持久化/恢复、分层配置、回合级 checkpoint 与中断恢复 |
 | 协作层 | `permissions.py` | 权限分级、已存储规则、危险命令门控 |
+
+## 代码搜索
+
+`grep` 与 `glob` 共用一个后端 `tools/fs_search.py`，内含两个引擎：
+
+- **ripgrep**（`rg`）——在 `PATH` 上（或 `OPENX_RIPGREP` 指向）时启用：并行、
+  尊重 `.gitignore`/`.ignore`、跳过二进制。自动探测，绝非硬依赖。
+- **纯 Python** 兜底——git 仓库内用 `git ls-files` 取权威 ignore 语义，配以
+  扩展的构建/缓存剪枝集与线程池，搜索绝不阻塞事件循环。
+
+引擎由 `search_backend`（`auto` | `ripgrep` | `python`，经配置或
+`OPENX_SEARCH_BACKEND`）选择；`respect_gitignore`（默认开）开关 git 感知过滤。
+两引擎输出同构（`path:line: text`），命中上限 500。
 
 ## 参见
 

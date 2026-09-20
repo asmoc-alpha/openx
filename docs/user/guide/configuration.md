@@ -87,10 +87,27 @@ Only non-provider knobs are read directly from the environment:
 ```bash
 export OPENX_AUTO_APPROVE=true   # skip permission prompts
 export OPENX_WEB_SEARCH=ddg      # or 'bing' / 'auto'
+export OPENX_SEARCH_BACKEND=auto # code search: 'auto' / 'ripgrep' / 'python'
 ```
 
 Provider model / key / base must be configured in a model group (optionally via
 `env:VAR`); they are never auto-read from `OPENAI_*`.
+
+## Code search
+
+`grep` and `glob` run on a shared backend with two engines: **ripgrep** (`rg`,
+parallel and `.gitignore`-aware) when it is available, otherwise an optimized
+**pure-Python** fallback (git-aware listing, expanded build/cache pruning, thread
+pool). Both produce identical output.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `search_backend` | `"auto"` | `auto` (prefer ripgrep) · `ripgrep` · `python`. Env override: `OPENX_SEARCH_BACKEND`. |
+| `respect_gitignore` | `true` | Skip files ignored by `.gitignore` (via `git ls-files`) in `grep`/`glob`. |
+
+An optional `rg` binary can be pointed at explicitly with the `OPENX_RIPGREP`
+environment variable (set it to `none` to force the pure-Python engine). Both
+keys also work in the project-level `<workspace>/.openx/settings.json`.
 
 ## Project settings (`<workspace>/.openx/settings.json`)
 

@@ -20,8 +20,9 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from .base import Tool, ToolResult, WorkspaceTool, truncate_output, unified_diff_text
 from ..permissions import Permission, PermissionLevel
+from . import fs_search
+from .base import Tool, ToolResult, WorkspaceTool, truncate_output, unified_diff_text
 
 
 class ReadFileTool(WorkspaceTool):
@@ -333,7 +334,9 @@ class GlobTool(WorkspaceTool):
     name = "glob"
     description = (
         "Find files matching a glob pattern (e.g., '**/*.py', '*.json'). "
-        "Returns relative file paths."
+        "Returns relative file paths. "
+        "Respects .gitignore when run inside a git repository, and always "
+        "skips build/cache directories (node_modules, dist, target, …)."
     )
     parameters = {
         "type": "object",
@@ -346,20 +349,20 @@ class GlobTool(WorkspaceTool):
         "required": ["pattern"],
     }
 
+    def __init__(self, workspace: str, respect_gitignore: bool = True):
+        super().__init__(workspace)
+        self.respect_gitignore = respect_gitignore
+
     @property
     def permission(self) -> Permission:
         return Permission.allow()
 
     async def execute(self, pattern: str) -> ToolResult:
         try:
-            matches = sorted(self.workspace.glob(pattern))
-            # Ignore common non-project directories
-            ignore_dirs = {"node_modules", ".git", "__pycache__", ".venv", "venv", ".tox"}
-            filtered = [
-                str(m.relative_to(self.workspace))
-                for m in matches
-                if not any(ig in m.parts for ig in ignore_dirs)
-            ]
+            # pathlib glob 语义保留；匹配放到线程池，避免阻塞事件循环。
+            filtered = await fs_search.list_matching_files(
+                self.workspace, pattern, respect_gitignore=self.respect_gitignore
+            )
 
             if not filtered:
                 return ToolResult(output=f"No files matched pattern: {pattern}")

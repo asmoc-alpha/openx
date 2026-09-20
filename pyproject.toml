@@ -32,6 +32,13 @@ dependencies = [
     # 刷新 early-return 语义与 done/cancel 的光标算术假设不符；14 与 15
     # 行为一致（已字节码级比对）。升级 16 前须复检上述私有面。
     "rich>=14,<16",
+    # rich 的 Markdown 解析链（markdown-it-py → mdurl）：mdurl 0.1.0 的
+    # _parse 在空 host URL（模型吐出的 `[a](//)`）上越界 IndexError，
+    # IndexError 不是 rich 兜的 ValueError——异常从流式渲染里穿出会直接
+    # 终结会话（用户报告的崩溃）。0.1.1 修复空 host。代码侧另有
+    # _markdown_safe 兜底（覆盖今后任何解析器异常），此处是让畸形链接
+    # 仍能正常渲染成链接的根修。
+    "mdurl>=0.1.1",
     "httpx>=0.25.0",
     "pyperclip>=1.8.0",
 ]

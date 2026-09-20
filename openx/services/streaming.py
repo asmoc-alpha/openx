@@ -145,6 +145,29 @@ _RICH_TAG = re.compile(
     r"(?:\s+[^\]]*)?\]"
 )
 
+
+def _markdown_safe(src: str) -> Any:
+    """``Markdown(src)`` 的 fail-open 包装：解析抛异常则退回纯文本。
+
+    模型文本**逐 token 到达**，任意一帧都可能是残缺/异常 Markdown，而
+    rich 的解析栈对畸形链接不设防：``[a](//)`` 这类空 host 的 URL 会让
+    mdurl 0.1.0 ``_parse`` 里 ``rest[host_end - 1]`` 越界（IndexError，
+    上游 0.1.1 才修，非 ValueError，rich 不兜）。异常一旦穿出就同时打断
+    两条栈——``feed`` 刷新 与 ``cancel``→``_flush_commit``——最终终结
+    进程（用户报告的崩溃）。**内容永远不该让会话崩**：与 ``_body_lines``
+    渲染处的 fail-open 同一条纪律，退回 ``Text``（不解析 markup，逐字
+    可见）比整场会话丢掉划算得多；链接补全后下一帧自然恢复 Markdown。
+
+    根修在依赖侧（pyproject 钉 ``mdurl>=0.1.1``，畸形链接照常渲染成
+    链接）；这个包装是**结构性兜底**——凡是解析器在任意畸形输入上抛
+    出的异常都不该有能力终结会话。
+    """
+    try:
+        return Markdown(src, code_theme="monokai")
+    except Exception:
+        return Text(src)
+
+
 # ── 工具块结构化渲染（Claude Code 风格）──────────────────────────
 # 结果截断：折叠态 3 行 + "… +N lines (ctrl+t to expand)"；错误 10 行。
 # 展开态（Ctrl+T 全局开关）硬上限 200 行防巨块撑爆。
@@ -1223,7 +1246,7 @@ class StreamingService:
                 clean = _RICH_TAG.sub("", payload)
                 if not clean.strip():
                     continue
-                rend: Any = Markdown(clean, code_theme="monokai")
+                rend: Any = _markdown_safe(clean)
                 meta: Any = "text"
             elif kind == "done":
                 # 回合结束行（✻ Cooked for 42s）：单行 Text，**绝不走
@@ -1628,7 +1651,11 @@ class StreamingService:
             summary = _tool_call_summary(record.name, record.arguments)
         head = f"[{dot_style}]{MARK_INFO}[/] [bold]{record.name}[/]"
         if summary:
-            head += f"[dim]({summary})[/]"
+            # summary 是**模型给的参数**：裸插 markup 会被参数里的 `[/]`
+            # 打成 MarkupError（`grep -o '[/]'` 这类参数现实中就会来），
+            # 而这里是构造期、不在 _body_lines 的 render fail-open 之内
+            # → 与 _result_line_markup 同一条纪律，参数一律转义。
+            head += f"[dim]({escape(summary)})[/]"
         rows: list = [Text.from_markup(head)]
         if record.status == "running":
             rows.append(self._running_row(record, hints))

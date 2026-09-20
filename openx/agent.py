@@ -666,6 +666,8 @@ class OpenXAgent:
             allowed_commands=self.config.allowed_commands,
             dangerous_commands=self.config.dangerous_commands,
             web_search_provider=self.config.web_search_provider,
+            search_backend=self.config.search_backend,
+            respect_gitignore=self.config.respect_gitignore,
         )
         registry.update(
             assembly.instantiate_tools(
