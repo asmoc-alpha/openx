@@ -472,6 +472,7 @@ async def _cmd_image(agent, console, args):
         console, agent.total_input_tokens,
         todos_provider=lambda: agent.todos, fleet=agent.fleet,
         panels=getattr(agent, "ui_panels", None),
+        tool_lookup=lambda name: agent.tools.get(name),
     )
     display.start()
     async for chunk in agent.stream_run(user_content):
@@ -514,6 +515,7 @@ async def _cmd_clipboard(agent, console, args):
         console, agent.total_input_tokens,
         todos_provider=lambda: agent.todos, fleet=agent.fleet,
         panels=getattr(agent, "ui_panels", None),
+        tool_lookup=lambda name: agent.tools.get(name),
     )
     display.start()
     async for chunk in agent.stream_run(user_content):

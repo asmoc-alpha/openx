@@ -250,6 +250,9 @@ async def _stream_response(
             console, agent.total_input_tokens,
             todos_provider=lambda: agent.todos, fleet=agent.fleet,
             panels=getattr(agent, "ui_panels", None),
+            # 展示层：文本操作块经此对工具调只读 preview_diff（执行前）取
+            # 变更前后内容 → 转录内联多语言高亮 diff + create/update/delete 分类
+            tool_lookup=lambda name: agent.tools.get(name),
         )
         display.start()
         # Bug 10: during streaming the InputCapture thread owns stdin

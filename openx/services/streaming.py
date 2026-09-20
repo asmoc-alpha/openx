@@ -44,6 +44,9 @@ from rich.text import Text
 
 from ..ui.input_capture import InputCapture
 from ..ui._helpers import DONE_VERBS, done_line, fmt_duration
+# 文本操作（create/update/delete）的变更前后对比渲染：分类 + 多语言高亮 diff
+# （纯展示层，见 ui/_diff.py）。
+from ..ui._diff import classify_text_op, diff_stat, op_style, render_diff_lines
 from ..ui._style import (
     ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, MARK_BULLET, MARK_FAIL, MARK_INFO,
     MARK_OK, MARK_PENDING, SPIN_FRAME_MS, SPIN_FRAMES, SUCCESS_STYLE,
@@ -174,6 +177,10 @@ def _markdown_safe(src: str) -> Any:
 _RESULT_MAX_LINES = 3
 _ERROR_MAX_LINES = 10
 _EXPAND_HARD_CAP = 200
+# 文本操作（write_file/edit_file）的变更前后对比折叠态行数上限。比普通结果
+# 的 3 行宽——diff 是用户在转录里回看的核心信息，12 行覆盖绝大多数小改动，
+# 更大的改动仍可 Ctrl+T 展开（走 _EXPAND_HARD_CAP）。
+_DIFF_MAX_LINES = 12
 _GUTTER = "⎿"    # Claude Code 结果槽线符号（U+23BF）
 
 # ── 工具调用聚合展示（对标 Claude Code 的折叠摘要）────────────────
@@ -223,6 +230,12 @@ class _ToolRecord:
     # 起始时刻（monotonic）：running 行的耗时读秒用。0 = 未记时（旧记录/
     # 测试直接构造的记录）——渲染侧按 0 兜底，绝不显示负耗时。
     started_at: float = 0.0
+    # 文本操作的变更前后对比（展示层）：``(path, old, new)``——ToolStart 时经
+    # 工具自身的 ``preview_diff`` 只读探测（执行前，故 old 为真实变更前内容）。
+    # None = 非文本操作 / 探测失败 / 无 tool_lookup → 回退既有结果渲染。
+    diff: Optional[tuple[str, str, str]] = None
+    # 操作分类：create / update / delete（由 diff + 参数推导，见 ui/_diff）。
+    op: str = ""
 
 
 def _extract_task_desc(arguments: str) -> str:
@@ -386,10 +399,16 @@ class StreamingService:
         todos_provider: Optional[Any] = None,
         fleet: Optional[Any] = None,
         panels: Optional[Any] = None,
+        tool_lookup: Optional[Any] = None,
     ) -> None:
         self._console = console
         self._rich = console._console
         self._input_tokens = input_tokens
+        # 工具查询（展示层）：``name -> Tool`` 或 None。仅用于文本操作块——
+        # ToolStart 时（执行前）对 write_file/edit_file 调其只读
+        # ``preview_diff`` 取变更前后内容，供转录内联 diff + 操作分类。
+        # None（旧调用方 / 测试 Harness）→ 不探测，回退既有结果渲染。
+        self._tool_lookup = tool_lookup
         # 状态层（deck，v0.4.0）：todos_provider() → agent.todos 快照
         # （TodoWriteTool 以 store[:]= 整体替换全新 dict，切片即原子，
         # 无需加锁）；fleet → FleetMonitor，子代理运行态与 Ctrl-O 详情。
@@ -649,10 +668,18 @@ class StreamingService:
                 desc = _extract_task_desc(chunk.arguments)
                 self._pending_task_desc.append(desc)
             else:
-                self._segments.append(
-                    ["tool", _ToolRecord(name=chunk.name,
-                                         arguments=chunk.arguments,
-                                         started_at=time.monotonic())])
+                record = _ToolRecord(name=chunk.name,
+                                     arguments=chunk.arguments,
+                                     started_at=time.monotonic())
+                # 文本操作：此刻工具尚未执行，文件仍是"变更前"内容——经工具
+                # 自身只读 preview_diff 取 (path, old, new)，供转录内联变更前
+                # 后对比 + create/update/delete 分类。失败一律落回 None。
+                record.diff = self._preview_text_op(chunk.name, chunk.arguments)
+                if record.diff is not None:
+                    _path, _old, _new = record.diff
+                    record.op = classify_text_op(
+                        chunk.name, chunk.arguments, _old, _new) or ""
+                self._segments.append(["tool", record])
                 self._token_count += 1
         elif isinstance(chunk, ToolResultEvent):
             if chunk.name == "task":
@@ -705,6 +732,34 @@ class StreamingService:
                     and payload.status == "running":
                 return payload
         return None
+
+    def _preview_text_op(self, name: str, arguments: str) -> Optional[tuple]:
+        """文本操作的变更前后对比探测（展示层，只读、fail-open）。
+
+        ToolStart 发生在工具执行**之前**——此刻预览得到的是真实"变更前"
+        内容。经 ``tool_lookup`` 取工具实例，调其 ``preview_diff(args)``
+        （base 默认返回 None，仅 write_file/edit_file 覆写，且与 execute
+        语义严格镜像）。无 tool_lookup / 参数非法 / 探测失败 → None（调用
+        方回退既有结果渲染）。
+        """
+        if self._tool_lookup is None:
+            return None
+        try:
+            tool = self._tool_lookup(name)
+            if tool is None:
+                return None
+            preview = getattr(tool, "preview_diff", None)
+            if preview is None:
+                return None
+            try:
+                args = json.loads(arguments) if arguments else {}
+            except (ValueError, TypeError):
+                return None
+            if not isinstance(args, dict):
+                return None
+            return preview(args)
+        except Exception:
+            return None
 
     def _has_body(self) -> bool:
         """转录是否有可渲染内容（body 门）。"""
@@ -1627,13 +1682,15 @@ class StreamingService:
 
     def _tool_renderables(self, record: "_ToolRecord",
                           hints: bool = False) -> list:
-        """工具段 → Text.from_markup 行列表（Claude Code 风格）。
+        """工具段 → Text 行列表（Claude Code 风格）。
 
-        头行 ``[{态色}●] name(args)``：running dim、done green、error
-        red。结果 ⎿ 槽线块：折叠 3 行（错误 10 行）+ "… +N lines"；空
-        输出 ``(No output)``。edit_file 结果行级着色（-红 +绿 @@dim）。
-        Ctrl+T 展开（硬上限 200 行）**仅作用于未固化块** → 热键字样
-        只在 ``hints=True``（易变显示渲染）出现；固化渲染（进
+        头行 ``[{态色}●] [op] name(summary)``：running dim、done green、
+        error red。**文本操作**（write_file/edit_file，带变更预览）另加
+        ``create``/``update``/``delete`` 操作标记（绿/黄/红）与转录内联、
+        按文件扩展名多语言高亮的**变更前后对比**（见 :meth:`_text_op_body`）。
+        其余工具结果 ⎿ 槽线块：折叠 3 行（错误 10 行）+ "… +N lines"；空输出
+        ``(No output)``。Ctrl+T 展开（硬上限 200 行）**仅作用于未固化块** →
+        热键字样只在 ``hints=True``（易变显示渲染）出现；固化渲染（进
         scrollback）不带字样——提示随内容生命周期（同 thinking 纪律）。
         running 记录的结果槽行另见 :meth:`_running_row`（转帧/静态两形态）。
         """
@@ -1644,12 +1701,23 @@ class StreamingService:
             "done": SUCCESS_STYLE,
             "error": ERROR_STYLE,
         }.get(record.status, DIM)
-        # task 记录的 arguments 存的是暂存描述串（非 JSON）→ 直接展示
-        if record.name == "task" and record.arguments:
+        # 文本操作：以变更路径作摘要（预览三元组含路径）——比 key=/value= 清晰。
+        # 仅在**未出错**时按文本操作块渲染：预览是 ToolStart（执行前）探测的，
+        # 若编辑被拒/失败/匹配不唯一，实际并未发生——绝不能把"未发生的变更"
+        # 当作已发生的 diff 展示，此时回退既有结果/错误渲染。
+        is_text_op = record.diff is not None and not record.is_error
+        if is_text_op:
+            summary = record.diff[0]
+        elif record.name == "task" and record.arguments:
+            # task 记录的 arguments 存的是暂存描述串（非 JSON）→ 直接展示
             summary = record.arguments[:60]
         else:
             summary = _tool_call_summary(record.name, record.arguments)
-        head = f"[{dot_style}]{MARK_INFO}[/] [bold]{record.name}[/]"
+        head = f"[{dot_style}]{MARK_INFO}[/]"
+        if is_text_op and record.op:
+            # 操作标记：create 绿 / update 黄 / delete 红（语义色，见 ui/_diff）
+            head += f" [{op_style(record.op)}]{record.op}[/]"
+        head += f" [bold]{record.name}[/]"
         if summary:
             # summary 是**模型给的参数**：裸插 markup 会被参数里的 `[/]`
             # 打成 MarkupError（`grep -o '[/]'` 这类参数现实中就会来），
@@ -1659,6 +1727,10 @@ class StreamingService:
         rows: list = [Text.from_markup(head)]
         if record.status == "running":
             rows.append(self._running_row(record, hints))
+            return rows
+        # 文本操作：变更前后对比块（多语言高亮 diff），取代原始输出回显
+        if is_text_op:
+            rows.extend(self._text_op_body(record, hints))
             return rows
         output = record.output.rstrip("\n")
         if not output:
@@ -1689,6 +1761,38 @@ class StreamingService:
             tail = " · ctrl+t to collapse" if hints else ""
             rows.append(Text.from_markup(
                 f"[dim]     ({len(lines)} lines{tail})[/]"))
+        return rows
+
+    def _text_op_body(self, record: "_ToolRecord", hints: bool) -> list:
+        """文本操作的变更前后对比块：``⎿ +A −D`` 统计行 + 多语言高亮 diff。
+
+        折叠 _DIFF_MAX_LINES 行、Ctrl+T 展开（_EXPAND_HARD_CAP）；热键字样
+        只在易变期（``hints``）出现（同既有工具结果块纪律）。diff 行按文件
+        扩展名做语言高亮（``render_diff_lines``），绝不改动模型可见输出。
+        """
+        path, old, new = record.diff
+        added, removed = diff_stat(old, new)
+        rows: list = [Text.from_markup(
+            f"[dim]  {_GUTTER}  [/][green]+{added}[/] [red]−{removed}[/]")]
+        expanded = self._tools_expanded
+        cap = _EXPAND_HARD_CAP if expanded else _DIFF_MAX_LINES
+        more_hint = " (ctrl+t to expand)" if (hints and not expanded) else ""
+        theme = getattr(
+            getattr(self._console, "config", None), "syntax_theme", "monokai"
+        )
+        diff_lines = render_diff_lines(
+            old, new, path, theme=theme, max_lines=cap, more_hint=more_hint
+        )
+        if not diff_lines:
+            rows.append(Text.from_markup("[dim]     (no content change)[/]"))
+            return rows
+        for ln in diff_lines:
+            row = Text("     ", style="dim")
+            row.append_text(ln)
+            rows.append(row)
+        if expanded:
+            tail = " · ctrl+t to collapse" if hints else ""
+            rows.append(Text.from_markup(f"[dim]     (diff{tail})[/]"))
         return rows
 
     @staticmethod
