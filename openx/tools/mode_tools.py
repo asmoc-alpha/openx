@@ -48,7 +48,11 @@ class ChooseModeTool(Tool):
         "when the task requires writing files or running commands. The user "
         "chooses Auto (normal permission flow), Plan (read-only exploration "
         "then plan approval via exit_plan_mode), or staying Manual (confirm "
-        "every change). Pass a one-line `summary` of the changes you need."
+        "every change). Pass a one-line `summary` of the changes you need. "
+        "For a COMPLEX task (coordinated changes across several files, a new "
+        "feature, a refactor, a migration) do NOT ask here — call "
+        "enter_plan_mode instead and let the plan be the thing the user "
+        "approves."
     )
     parameters = {
         "type": "object",

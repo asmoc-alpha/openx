@@ -5,8 +5,8 @@
 ``factory(host) -> list[Tool]``（K3a ToolHost，见 kernel/host.py），
 内核注册表按 host 实例化，插件在任何阶段拿不到 agent 本体。
 
-结构性工具（task / workflow / exit_plan_mode / choose_mode / ask_user /
-structured_output）**不在本插件**：它们属内核驻留编排核心（混合内核
+结构性工具（task / workflow / enter_plan_mode / exit_plan_mode / choose_mode /
+ask_user / structured_output）**不在本插件**：它们属内核驻留编排核心（混合内核
 纪律），由消费方（agent）直接装配——StructuredOutputTool 既有先例。
 
 失败语义：内置插件 apply 抛异常 = 致命（产品带病不该运行），与用户

@@ -26,7 +26,7 @@ agent 的工作循环
 - **共享**父的 console、PermissionRules（"don't ask again" 双向传播）、
   HookRunner 与 TaskRegistry（后台任务退出清理由顶层统一负责）；
 - 工具集先按 :data:`~openx.orchestration.subagent.CHILD_EXCLUDED_TOOLS` 结构性
-  裁剪（task/ask_user/exit_plan_mode/choose_mode——禁套娃、不打断用户、
+  裁剪（task/ask_user/enter_plan_mode/exit_plan_mode/choose_mode——禁套娃、不打断用户、
   不触审批流与模式询问），再按规格的 ``tools`` 白名单取交集；
 - 子代理**无** ``task`` / ``workflow`` 工具 → 天然无法派生孙代理
   （只许一层委派，工作流亦禁嵌套）；
@@ -80,6 +80,7 @@ from .instructions import (
     ProjectInfo,
     PLAN_MODE_INSTRUCTIONS,
     MANUAL_MODE_INSTRUCTIONS,
+    AUTO_MODE_INSTRUCTIONS,
     SUBAGENT_INSTRUCTIONS,
     STRUCTURED_OUTPUT_INSTRUCTIONS,
     detect_project_type,
@@ -105,7 +106,7 @@ from .services.checkpoint import CheckpointManager
 from .services.interrupt import InterruptController
 from .tools.ask_user_tool import AskUserTool
 from .tools.mode_tools import ChooseModeTool
-from .tools.plan_tools import ExitPlanModeTool
+from .tools.plan_tools import EnterPlanModeTool, ExitPlanModeTool
 from .tools.plugin_tools import (
     ListPluginsTool,
     LoadPluginTool,
@@ -367,6 +368,14 @@ class OpenXAgent:
         # choose_mode 本会话是否已弹过（防重复打扰；主动 /mode manual
         # 回切时复位，允许再次询问）
         self.mode_choice_offered: bool = False
+        # 能否进入 plan 模式（复杂任务的自动入口，见 EnterPlanModeTool）。
+        # 计划模式的出口是**审批弹窗**，非交互运行（single-shot / headless）
+        # 拿不到人：要么卡住、要么按数字菜单默认值静默批准。故 single-shot
+        # 入口显式置 False——工具从 schema 消失、提示里不再提计划，工具体
+        # 还有第二道检查。
+        # 注意：这是**启动期**开关，改动本身不触发重建；入口在起第一个回合
+        # 之前设置（先于 set_mode / 任何 schema 计算），故无需重建。
+        self.plan_entry_enabled: bool = True
 
         self.tool_executor = ToolExecutor(
             self.console, auto_approve=config.auto_approve,
@@ -517,6 +526,9 @@ class OpenXAgent:
                 prompt += PLAN_MODE_INSTRUCTIONS
             elif self._mode == "manual":
                 prompt += MANUAL_MODE_INSTRUCTIONS
+            elif self._mode == "auto" and self.plan_entry_enabled:
+                # 计划入口不可用（headless）时连提都不提：工具本来就看不见
+                prompt += AUTO_MODE_INSTRUCTIONS
             # P-F 模型自产插件：write_plugin 的编写契约常驻（体积极小，
             # 只读这一份就能生成合规插件）。
             prompt += "\n\n" + PLUGIN_SPEC
@@ -621,6 +633,7 @@ class OpenXAgent:
             self._subagent_specs = load_subagent_specs(str(self.workspace))
             for tool in (
                 AskUserTool(self.console),
+                EnterPlanModeTool(self, self.console),
                 ExitPlanModeTool(self, self.console),
                 ChooseModeTool(self, self.console),
                 TaskTool(self, self._subagent_specs),
@@ -704,6 +717,8 @@ class OpenXAgent:
           shell），只余只读工具与 exit_plan_mode 审批出口——第一道防线；
         - choose_mode 仅 manual 模式可见（非 manual 下模型看不见它，
           ToolExecutor 还有第二道防线）；
+        - enter_plan_mode 仅 manual/auto 且 `plan_entry_enabled` 时可见
+          （plan 下无意义；headless 无法审批计划，见该属性注释）；
         - manual/auto：其余工具全部可见（manual 只改变弹窗行为）。
         """
         return [
@@ -715,6 +730,13 @@ class OpenXAgent:
                     in (PermissionLevel.ASK, PermissionLevel.DENY)
                 )
                 or (t.name == "choose_mode" and self._mode != "manual")
+                or (
+                    t.name == "enter_plan_mode"
+                    and (
+                        self._mode not in ("manual", "auto")
+                        or not self.plan_entry_enabled
+                    )
+                )
             )
         ]
 
@@ -1559,6 +1581,7 @@ class OpenXAgent:
         )
 
         while state.tool_rounds < self.config.max_tool_rounds:
+            self._sync_system_message(state)
             response = await turn_llm.chat(
                 messages=state.messages,
                 tools=self.tool_schemas,
@@ -1744,6 +1767,25 @@ class OpenXAgent:
             modal,
         )
 
+    def _sync_system_message(self, state: AgentState) -> None:
+        """把**最新**的系统提示同步进本轮消息序列（每轮请求前调用）。
+
+        系统提示只在 ``_seed_turn`` 写一次，而模式、插件装配、指令文件都能在
+        回合中途改变（``set_mode`` / ``_rebuild_tools`` / ``reload_instructions``
+        都只重建 ``self._system_prompt`` 这个字段）。工具 schema 每轮重读，
+        提示若不跟着走就会出现"写工具已经消失、模型却还拿着旧提示"的错配：
+        回合中切进 plan 模式的模型看不到 ``PLAN_MODE_INSTRUCTIONS``，于是既
+        没有写工具、也不知道该去探索并提交计划。
+
+        "下一轮生效"正是这些重建点早已声明的语义（见 ``_rebuild_tools``），
+        这里只是把它落到消息序列上。
+        """
+        messages = state.messages
+        if not messages or messages[0].get("role") != "system":
+            return
+        if messages[0].get("content") != self._system_prompt:
+            messages[0] = {"role": "system", "content": self._system_prompt}
+
     async def stream_run(
         self,
         user_message: str | list[dict[str, Any]],
@@ -1804,6 +1846,7 @@ class OpenXAgent:
         """
         while state.tool_rounds < self.config.max_tool_rounds:
             done: StreamDone | None = None
+            self._sync_system_message(state)
 
             async for event in turn_llm.stream_chat(
                 messages=state.messages,

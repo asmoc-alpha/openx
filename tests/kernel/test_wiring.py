@@ -80,10 +80,12 @@ class TestAgentWiring:
         from openx.agent import OpenXAgent
 
         parent = _make_agent(ws)
-        for name in ("ask_user", "exit_plan_mode", "choose_mode", "task", "workflow"):
+        structural = ("ask_user", "enter_plan_mode", "exit_plan_mode",
+                      "choose_mode", "task", "workflow")
+        for name in structural:
             assert name in parent.tools
         child = OpenXAgent(parent.config, parent=parent)
-        for name in ("ask_user", "exit_plan_mode", "choose_mode", "task", "workflow"):
+        for name in structural:
             assert name not in child.tools
 
 

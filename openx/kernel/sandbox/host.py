@@ -9,8 +9,8 @@ agent。形状进内核（``provider.py`` 先例），实现只是数据。
 面上字段按"首个真实消费方出现才加入"最小化：当前能力工具恰好只需
 这些；受限 console、emit 等窄方法待有消费方再补，不提前造无用面。
 
-结构性工具（task / workflow / exit_plan_mode / choose_mode / ask_user /
-structured_output）属内核驻留编排核心（混合内核纪律），由消费方
+结构性工具（task / workflow / enter_plan_mode / exit_plan_mode / choose_mode /
+ask_user / structured_output）属内核驻留编排核心（混合内核纪律），由消费方
 （agent）直接装配，不经本面也不经插件注册--StructuredOutputTool 既有
 先例。它们与编排状态同生存期，收窄只会把 host 变成 agent 的替身。
 """

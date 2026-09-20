@@ -100,6 +100,16 @@ class TestHardDeny:
         adj2 = await g2.gate(call(FakeTool(), name="choose_mode"))
         assert adj2.approved
 
+    async def test_enter_plan_mode_only_outside_plan(self):
+        """进入计划模式的工具在 plan 下是重复动作，硬拒绝（该走 exit_plan_mode）。"""
+        for mode in ("manual", "auto"):
+            g, _, _, _ = make_guard(mode=mode)
+            adj = await g.gate(call(FakeTool(), name="enter_plan_mode"))
+            assert adj.approved, mode
+        g_plan, _, _, _ = make_guard(mode="plan")
+        adj_plan = await g_plan.gate(call(FakeTool(), name="enter_plan_mode"))
+        assert not adj_plan.approved and "exit_plan_mode" in adj_plan.reason
+
     async def test_stored_deny_blocks(self):
         rules = PermissionRules(deny=["fake(*)"])
         g, _, _, _ = make_guard(rules=rules)

@@ -9,7 +9,7 @@
 | 页面 | 内容 |
 |---|---|
 | [命令](guide/commands.zh.md) | 斜杠命令参考；headless / 机器可读输出 |
-| [模式与权限](guide/modes-permissions.zh.md) | manual / auto / plan 模式、权限分级、choose_mode 流程 |
+| [模式与权限](guide/modes-permissions.zh.md) | manual / auto / plan 模式、复杂任务自动计划、权限分级 |
 | [配置](guide/configuration.zh.md) | 环境变量、settings、config 文件、项目配置、重试语义 |
 | [会话](guide/sessions.zh.md) | 持久化格式、恢复（`--continue` / `--resume`） |
 

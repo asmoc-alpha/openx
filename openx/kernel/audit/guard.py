@@ -115,6 +115,16 @@ class Guard:
                 reason=f"choose_mode is only available in manual mode "
                        f"(current mode: {mode}). Proceed in the current mode.",
             )
+        # enter_plan_mode 只在 manual/auto 有意义：plan 下调用是重复动作
+        # （已在计划模式里），该做的是 exit_plan_mode。headless 的能力位由
+        # 工具自身兜底——本闸门只认 mode 一个信号，不新增探针。
+        if name == "enter_plan_mode" and mode not in ("manual", "auto"):
+            return self._final(
+                call, Verdict.DENY, trace, mode, station="hard_deny",
+                reason=f"enter_plan_mode is only available in manual/auto mode "
+                       f"(current mode: {mode}). In plan mode, submit the plan "
+                       f"with exit_plan_mode.",
+            )
         stored = self._rules().check(name, call.args_summary)
         if stored == PermissionLevel.DENY:
             return self._final(

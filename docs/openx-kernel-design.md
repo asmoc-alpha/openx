@@ -171,7 +171,7 @@ model_profile（按模型版本的能力面）
   本体**--loop、权限闸门、llm、hooks、完整 config 皆不可达。面上
   字段按"首个真实消费方出现才加入"最小化（受限 console、emit 等
   窄方法待有消费方再补）。**结构性工具**（task/workflow/
-  exit_plan_mode/choose_mode/ask_user/structured_output）属内核驻留
+  enter_plan_mode/exit_plan_mode/choose_mode/ask_user/structured_output）属内核驻留
   编排核心，由消费方直接装配、恒先占位（插件同名被拒记警告），不
   经 host 也不经插件注册--StructuredOutputTool 既有先例。K1 的
   `factory(agent)` 形态由 K3a 迁移。

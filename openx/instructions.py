@@ -120,15 +120,39 @@ MANUAL_MODE_INSTRUCTIONS = """
   tools) ALWAYS prompt the user per call — stored allow rules, the shell
   whitelist and auto-approve/-y do NOT apply in manual mode.
   写入类工具每次都弹窗确认，已存规则、白名单与 -y 一律不生效。
-- If the user's task requires file changes or running commands, call the
+- COMPLEX task (coordinated changes across several files, a new feature, a
+  refactor, a migration, or an approach that needs the user's sign-off)? Call
+  enter_plan_mode as your FIRST action: it switches straight to plan mode, you
+  explore read-only, then submit the plan via exit_plan_mode for approval.
+  复杂任务（多文件协同改动 / 新功能 / 重构 / 迁移 / 方案本身需要用户拍板）
+  第一个动作调用 enter_plan_mode 直接进入计划模式，探索后经 exit_plan_mode
+  提交计划审批——不要再弹模式选择。
+- Otherwise, if the task requires file changes or running commands, call the
   choose_mode tool ONCE — before any write tool — so the user can pick
-  Auto / Plan / stay Manual. 需要修改文件或执行命令的任务，先调用一次
+  Auto / Plan / stay Manual. 其余需要修改文件或执行命令的任务，先调用一次
   choose_mode 让用户选择模式，再开始动手。
 - Pure questions or analysis need no mode change — answer directly.
   纯问答/分析任务无需切换模式，直接作答。
 - If the user stays in manual mode, proceed anyway: each write will be
   confirmed individually. NEVER call choose_mode again this session.
   用户选择保持手动则继续工作（逐项确认），切勿再次调用 choose_mode。
+"""
+
+
+AUTO_MODE_INSTRUCTIONS = """
+
+## Auto mode is active (自动模式已激活)
+
+- Write tools go through the normal permission flow (stored rules / the shell
+  whitelist / -y); dangerous commands always confirm.
+  写入类工具走常规权限流程，危险命令永远弹窗确认。
+- COMPLEX task (coordinated changes across several files, a new feature, a
+  refactor, a migration, or an approach that needs the user's sign-off)? Call
+  enter_plan_mode as your FIRST action — the user reviews and approves a plan
+  before anything is written.
+  复杂任务第一个动作调用 enter_plan_mode：先给用户看计划，批准后才动手。
+- Small, obvious, already-specified single-file changes: just do them. Do NOT
+  plan them. 小而明确、已说清的单文件改动直接做，不要规划。
 """
 
 

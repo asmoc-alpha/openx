@@ -154,6 +154,11 @@ async def run_single_shot(
     # Headless：权限弹窗在非 TTY stdin 上会阻塞（数字菜单回退读 stdin），
     # 默认强制 auto 模式（仍受 -y/存储规则/危险命令闸门约束）；
     # ndjson 权限模式下改 manual——批准权交给协议对端。
+    #
+    # 计划入口一并关掉：计划的出口是审批弹窗，而这里的弹窗只有非 TTY 数字
+    # 菜单（default_index=0 = "批准并执行"），stdin EOF 时要么卡住、要么无人
+    # 审批就放行。协议通道也没有 plan 请求（只有 permission_request）。
+    agent.plan_entry_enabled = False
     bridge: Optional[_NdjsonPermissionBridge] = None
     if ndjson_permissions and output_format == "stream-json":
         agent.set_mode("manual")

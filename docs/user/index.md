@@ -9,7 +9,7 @@ Product-facing guides for using OpenX.
 | Page | Covers |
 |---|---|
 | [Commands](guide/commands.md) | Slash-command reference; headless / machine-readable output |
-| [Modes & permissions](guide/modes-permissions.md) | manual / auto / plan modes, the permission tiers, choose_mode flow |
+| [Modes & permissions](guide/modes-permissions.md) | manual / auto / plan modes, auto-plan for complex tasks, the permission tiers |
 | [Configuration](guide/configuration.md) | Environment variables, settings, config files, project config, retry semantics |
 | [Sessions](guide/sessions.md) | Persistence format, resume (`--continue` / `--resume`) |
 

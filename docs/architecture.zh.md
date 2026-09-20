@@ -54,7 +54,7 @@ openx/
 │   │   ├── todo_tools.py  # todo_write
 │   │   ├── web_tools.py   # web_fetch、web_search
 │   │   ├── ask_user_tool.py # ask_user
-│   │   ├── plan_tools.py  # exit_plan_mode
+│   │   ├── plan_tools.py  # enter_plan_mode、exit_plan_mode
 │   │   ├── mode_tools.py  # choose_mode（manual → auto/plan 选择）
 │   │   ├── task_tools.py  # task_output、task_stop
 │   │   ├── subagent_tool.py # task（委托给 subagent）

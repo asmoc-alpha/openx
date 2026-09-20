@@ -78,8 +78,10 @@ BUILTIN_SUBAGENTS: list[SubagentSpec] = [
 ]
 
 # 结构性排除：无论规格如何声明，所有子代理都没有这些工具
-# （choose_mode/exit_plan_mode 的模式交互只属于顶层，子代理不打断用户）
-CHILD_EXCLUDED_TOOLS = {"task", "ask_user", "exit_plan_mode", "choose_mode"}
+# （模式交互与提问只属于顶层，子代理不打断用户，也不提计划）
+CHILD_EXCLUDED_TOOLS = {
+    "task", "ask_user", "enter_plan_mode", "exit_plan_mode", "choose_mode",
+}
 
 
 def load_subagent_specs(workspace: str) -> dict[str, SubagentSpec]:
@@ -143,7 +145,9 @@ if __name__ == "__main__":
     _specs = {s.name: s for s in BUILTIN_SUBAGENTS}
     assert _specs["general-purpose"].tools is None
     assert "read_file" in _specs["explore"].tools and len(_specs["explore"].tools) == 8
-    assert CHILD_EXCLUDED_TOOLS == {"task", "ask_user", "exit_plan_mode", "choose_mode"}
+    assert CHILD_EXCLUDED_TOOLS == {
+        "task", "ask_user", "enter_plan_mode", "exit_plan_mode", "choose_mode",
+    }
     print(f"builtins: {sorted(_specs)} ✓")
 
     with tempfile.TemporaryDirectory() as _td:

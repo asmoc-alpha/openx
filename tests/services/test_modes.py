@@ -185,7 +185,7 @@ class TestDefaultMode:
         agent = _make_agent(tmp_path)
         names = _schema_names(agent)
         # manual 不过滤 schema——写入工具可见（仅弹窗行为不同）
-        assert {"write_file", "shell", "choose_mode"} <= names
+        assert {"write_file", "shell", "choose_mode", "enter_plan_mode"} <= names
         assert names == set(agent.tools)
 
     def test_child_inherits_parent_mode_snapshot(self, tmp_path):
@@ -198,8 +198,9 @@ class TestDefaultMode:
         child = OpenXAgent(config, parent=parent)
         assert child.mode == "auto"
         assert child.tool_executor.mode == "auto"
-        # choose_mode 是顶层专属工具，子代理结构性排除
+        # 模式交互类工具是顶层专属，子代理结构性排除
         assert "choose_mode" not in child.tools
+        assert "enter_plan_mode" not in child.tools
 
 
 # ── 2. set_mode 迁移与同步 ───────────────────────────────────────
@@ -214,9 +215,11 @@ class TestSetMode:
             assert agent.tool_executor.mode == target
             assert agent.console.mode == target
             assert agent.plan_mode == (target == "plan")
-            # choose_mode 仅 manual 可见；write_file 仅 plan 隐藏
+            # choose_mode 仅 manual 可见；enter_plan_mode 在 manual/auto
+            # 可见（plan 下是重复动作）；write_file 仅 plan 隐藏
             names = _schema_names(agent)
             assert ("choose_mode" in names) == (target == "manual")
+            assert ("enter_plan_mode" in names) == (target != "plan")
             assert ("write_file" in names) == (target != "plan")
 
     def test_invalid_mode_raises(self, tmp_path):

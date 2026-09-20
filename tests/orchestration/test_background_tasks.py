@@ -302,11 +302,12 @@ class TestAgentWiring:
         config.model = "test-model"
         agent = OpenXAgent(config)
 
-        assert len(agent.tools) == 29  # +memory +4 元工具（P-A）+3 自产工具（P-F）
+        assert len(agent.tools) == 30  # +memory +4 元工具（P-A）+3 自产工具（P-F）
         assert "task_output" in agent.tools
         assert "task_stop" in agent.tools
         assert "task" in agent.tools
         assert "choose_mode" in agent.tools
+        assert "enter_plan_mode" in agent.tools
         assert "memory" in agent.tools
         # 模型驱动装配/自产元工具：结构性常驻，列表里可见
         for meta in ("list_plugins", "plugin_help", "load_plugin", "unload_plugin",
