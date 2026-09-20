@@ -4,7 +4,7 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
-## 0.1.2 — Recovery checkpoints & interrupt handling
+## 0.1.2 — Recovery checkpoints, interrupt memory & auto plan mode
 
 ### Recovery: turn-level checkpoints
 
@@ -33,18 +33,62 @@ and `/release-notes`.
   continued but `digest` started over from empty, which broke the chain exactly
   when it was needed to prove the history was unmodified
 
+### Interrupts keep their context
+
+- Esc, Ctrl-C and the web client interrupt no longer erase the turn they cut short.
+  The interrupted turn — **including the message you typed** — is truncated at the
+  last legal point and folded into the conversation and the session file, so the next
+  message still has something to refer to. Previously the whole turn was dropped, and
+  a follow-up like "继续" had nothing to continue from
+- Tool calls that were still in flight are recorded as `[status: interrupted]` — the
+  same wording the `--recover` path uses — so the model knows the outcome is unknown
+  and does not replay them
+- A still-running tool now shows a spinner and a ticking elapsed time
+  (`⎿ ✢ Running… · 12s`) instead of a frozen `Running…`, so a long command reads as
+  "still working" rather than "stuck". The scrollback form stays static — a frozen
+  frame there would read as a broken glyph
+
+### Plan mode
+
+- Added the `enter_plan_mode` tool: for a **complex** task — coordinated changes across
+  several files, a new feature, a refactor, a migration, or an approach that needs your
+  sign-off — the model now switches straight into plan mode as its first action instead
+  of asking which mode you want. It announces the switch in one line, explores
+  read-only, and submits the plan through `exit_plan_mode`, so the approval point is the
+  plan itself. Small, obvious single-file changes never take this path
+- Available in manual and auto mode; disabled in single-shot / headless runs, where
+  nobody can approve a plan — the tool is not even offered to the model there
+- Fixed the system prompt going stale mid-turn: mode switches, plugin load/unload and
+  instruction reloads now reach the message sequence on the next round. Until now a
+  turn that switched into plan mode lost the write tools but kept the old prompt, so
+  the model never learned it was supposed to explore and submit a plan
+
 ### Web UI
 
 - Added file uploads and image attachments to the web chat
 - Added graph rendering and artifact/path panels
 - Added the three-pane layout, with collapsible sidebars
 - Added hook activity to the web surface
+- Unified elapsed-time formatting with the CLI (`12ms` → `1.5s` → `1m 2s` → `1h 2m`) —
+  the web previously had no sub-second or hour tier
 
 ### CLI
 
 - Fixed thinking output not being shown for resumed sessions
 - Added the current tool (`name(summary)`) to the fleet view so the deck shows
   what each agent is doing right now
+- Tool calls are now grouped: a run of consecutive read-only exploration calls collapses
+  into one summary line (`Read 2 files, ran 1 command`) instead of scrolling the whole
+  transcript away, while writes, `task`, `todo` and `workflow` calls stay individually
+  visible — anything that changes something must be readable line by line. A single call
+  is never collapsed, and `Ctrl+T` expands a group until it is committed to scrollback
+- Fixed the plan/queue deck crowding the line below it — the spinner now sits one blank
+  line further down, and that gap is charged to the viewport budget
+
+### Docs
+
+- Repositioned the README and pyproject summary around the microkernel story: a minimal
+  trusted core with the agent loop, providers, context and tools as replaceable plugins
 
 ### Search
 
