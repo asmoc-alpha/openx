@@ -334,9 +334,11 @@ class GlobTool(WorkspaceTool):
     name = "glob"
     description = (
         "Find files matching a glob pattern (e.g., '**/*.py', '*.json'). "
-        "Returns relative file paths. "
+        "Returns relative file paths. Uses pathlib semantics: '*.py' matches "
+        "only the top level, '**/*.py' recurses. "
         "Respects .gitignore when run inside a git repository, and always "
-        "skips build/cache directories (node_modules, dist, target, …)."
+        "skips build/cache directories (node_modules, dist, target, …). "
+        "Backed by ripgrep when available."
     )
     parameters = {
         "type": "object",
@@ -349,9 +351,10 @@ class GlobTool(WorkspaceTool):
         "required": ["pattern"],
     }
 
-    def __init__(self, workspace: str, respect_gitignore: bool = True):
+    def __init__(self, workspace: str, respect_gitignore: bool = True, backend: str = "auto"):
         super().__init__(workspace)
         self.respect_gitignore = respect_gitignore
+        self.backend = backend
 
     @property
     def permission(self) -> Permission:
@@ -359,9 +362,13 @@ class GlobTool(WorkspaceTool):
 
     async def execute(self, pattern: str) -> ToolResult:
         try:
-            # pathlib glob 语义保留；匹配放到线程池，避免阻塞事件循环。
+            # pathlib glob 语义保留；文件枚举优先走 rg（--files），匹配放到
+            # 线程池，避免阻塞事件循环。
             filtered = await fs_search.list_matching_files(
-                self.workspace, pattern, respect_gitignore=self.respect_gitignore
+                self.workspace,
+                pattern,
+                respect_gitignore=self.respect_gitignore,
+                backend=self.backend,
             )
 
             if not filtered:

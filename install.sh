@@ -187,6 +187,25 @@ fi
 
 info "Verified via $OPENX_BIN: $VERSION_OUTPUT"
 
+# --- Code-search acceleration (best effort) ---------------------------------
+#
+# OpenX's grep/glob are dramatically faster when ripgrep (rg) is on PATH: the
+# tools auto-detect it and use it for both content search and file enumeration.
+# Without it they fall back to a slower (still ignore-aware) pure-Python engine.
+# We never fail the install over this — just point the user at it.
+
+if command -v rg >/dev/null 2>&1; then
+    info "ripgrep detected: code search (grep/glob) will use it."
+else
+    info ""
+    info "tip: install ripgrep to speed up code search (OpenX auto-detects it):"
+    info "    macOS:  brew install ripgrep"
+    info "    Debian: sudo apt install ripgrep"
+    info "    Fedora: sudo dnf install ripgrep"
+    info "    Other:  https://github.com/BurntSushi/ripgrep#installation"
+    info "    (or set OPENX_RIPGREP=/path/to/rg; OPENX_RIPGREP=none forces pure Python)"
+fi
+
 # --- Post-install guidance --------------------------------------------------
 
 if [ "$INSTALLED_VIA" = "venv" ]; then

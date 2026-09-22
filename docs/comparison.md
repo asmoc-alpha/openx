@@ -12,7 +12,7 @@ product. How the feature surface compares today:
 | Agentic loop | ✅ | ✅ |
 | File read/write/edit | ✅ | ✅ |
 | Shell commands | ✅ | ✅ |
-| Code search (grep/glob) | ✅ | ✅ |
+| Code search (grep/glob) | ✅ (ripgrep) | ✅ (ripgrep, pure-Python fallback) |
 | Git integration | ✅ | ✅ |
 | Permission system | ✅ | ✅ |
 | Streaming output | ✅ | ✅ |

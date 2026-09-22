@@ -92,15 +92,18 @@ provider 的模型/key/base 必须在模型组里配置（可经 `env:VAR`），
 
 `grep` 与 `glob` 跑在同一个后端上，含两个引擎：可用 **ripgrep**（`rg`，并行且尊重
 `.gitignore`）时优先使用，否则回落优化过的 **纯 Python** 兜底（git 感知枚举、扩展构建/缓存
-剪枝、线程池）。两者输出完全一致。
+剪枝、二进制嗅探、单线程脱离事件循环扫描）。`grep`（搜内容）与 `glob`（经 `rg --files`
+枚举文件）在有 ripgrep 时都走它，且无论哪个引擎跑，输出完全一致。`glob` 保留 `pathlib`
+语义：`*.py` 只匹配顶层，`**/*.py` 才递归。
 
 | 配置 | 默认 | 含义 |
 |---|---|---|
 | `search_backend` | `"auto"` | `auto`（优先 ripgrep）· `ripgrep` · `python`。环境覆盖：`OPENX_SEARCH_BACKEND`。 |
-| `respect_gitignore` | `true` | `grep`/`glob` 是否跳过被 `.gitignore` 忽略的文件（经 `git ls-files`）。 |
+| `respect_gitignore` | `true` | `grep`/`glob` 是否跳过被 `.gitignore` 忽略的文件（经 `git ls-files`，或 ripgrep 自身的 ignore 处理）。 |
 
-可用环境变量 `OPENX_RIPGREP` 显式指定 `rg` 路径（设为 `none` 强制纯 Python 引擎）。两个键在
-项目级 `<workspace>/.openx/settings.json` 中同样生效。
+由于 ripgrep 未随包内置，装了 `rg` 并在 `PATH` 上时代码搜索最快——安装脚本在缺失时会打印
+提示。可用环境变量 `OPENX_RIPGREP` 显式指定 `rg` 路径（设为 `none` 强制纯 Python 引擎）。
+两个键在项目级 `<workspace>/.openx/settings.json` 中同样生效。
 
 ## 项目配置（`<workspace>/.openx/settings.json`）
 

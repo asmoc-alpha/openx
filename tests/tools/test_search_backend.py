@@ -147,6 +147,32 @@ class TestPythonEngine:
         )
         assert len(hits) == 1 and hits[0].lineno == 2
 
+    async def test_binary_content_skipped(self, tmp_path):
+        # 无后缀，故按后缀过滤拦不住——靠内容嗅探（含 NUL）跳过。
+        (tmp_path / "blob").write_bytes(b"needle\x00more")
+        (tmp_path / "ok.py").write_text("needle\n")
+        hits = await fs_search.grep_files(
+            tmp_path, "needle", backend="python", respect_gitignore=False
+        )
+        assert [m.path.name for m in hits] == ["ok.py"]
+
+    async def test_oversized_file_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(fs_search, "_MAX_FILE_BYTES", 10)
+        (tmp_path / "big.py").write_text("needle\n" * 100)
+        (tmp_path / "small.py").write_text("needle\n")
+        hits = await fs_search.grep_files(
+            tmp_path, "needle", backend="python", respect_gitignore=False
+        )
+        assert [m.path.name for m in hits] == ["small.py"]
+
+    async def test_crlf_streaming_line_numbers(self, tmp_path):
+        (tmp_path / "a.py").write_bytes(b"x\r\ny\r\nneedle\r\n")
+        hits = await fs_search.grep_files(
+            tmp_path, "needle", backend="python", respect_gitignore=False
+        )
+        assert len(hits) == 1
+        assert hits[0].lineno == 3 and hits[0].line == "needle"
+
 
 # ── git 感知 ignore ──────────────────────────────────────────────
 
@@ -201,6 +227,25 @@ for i in range(n):
     sys.stdout.write(json.dumps({"type": "match", "data": {
         "path": {"text": "fake%d.py" % i}, "line_number": i + 1,
         "lines": {"text": "line %d\\n" % i}}}) + "\\n")
+sys.stdout.flush()
+'''
+
+
+# 支持 `--files` 的假 rg：`glob` 路径用 `rg --files` 枚举（逐行相对路径）。
+_FAKE_RG_FILES = '''#!/usr/bin/env python3
+import sys, os
+argv = sys.argv[1:]
+spec = os.environ.get("FAKE_RG_ARGV")
+if spec:
+    open(spec, "w").write("\\n".join(argv))
+if "--files" not in argv:
+    sys.exit(0)
+if os.environ.get("FAKE_RG_ERR"):
+    sys.stderr.write("error: boom")
+    sys.exit(2)
+for p in os.environ.get("FAKE_RG_FILES", "").splitlines():
+    if p:
+        sys.stdout.write(p + "\\n")
 sys.stdout.flush()
 '''
 
@@ -329,6 +374,91 @@ class TestGlobTool:
         assert "No files matched pattern: *.zzz" in out
 
 
+class TestGlobMatch:
+    """``glob_match`` 单元：pathlib 段语义（而非 fnmatch）。"""
+
+    def test_top_level_star(self):
+        assert fs_search.glob_match("b.py", "*.py")
+        assert not fs_search.glob_match("sub/a.py", "*.py")
+
+    def test_recursive_double_star(self):
+        assert fs_search.glob_match("b.py", "**/*.py")
+        assert fs_search.glob_match("a/b/c.py", "**/*.py")
+
+    def test_anchored_segment(self):
+        assert fs_search.glob_match("sub/a.py", "sub/*.py")
+        assert not fs_search.glob_match("x/sub/a.py", "sub/*.py")
+
+    def test_collapses_double_star(self):
+        assert fs_search.glob_match("x/sub/a.py", "**/**/*.py")
+
+    def test_bare_double_star_matches_all(self):
+        assert fs_search.glob_match("a/b/c", "**")
+        assert not fs_search.glob_match("a/b/c", "*")
+
+
+@POSIX_ONLY
+class TestRipgrepGlob:
+    """glob 走 rg（``rg --files`` 枚举）+ pathlib 匹配，与纯 Python 引擎一致。"""
+
+    def _install(self, tmp_path: Path, monkeypatch, files, err: bool = False) -> Path:
+        shim = tmp_path / "rg"
+        shim.write_text(_FAKE_RG_FILES)
+        shim.chmod(0o755)
+        monkeypatch.setenv("OPENX_RIPGREP", str(shim))
+        monkeypatch.setenv("FAKE_RG_FILES", "\n".join(files))
+        if err:
+            monkeypatch.setenv("FAKE_RG_ERR", "1")
+        monkeypatch.setattr(fs_search, "_rg_cache", None)
+        return shim
+
+    async def test_glob_via_rg(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._install(
+            tmp_path, monkeypatch,
+            ["a.py", "sub/b.py", "c.txt", "node_modules/d.py", "logo.png"],
+        )
+        out = (await GlobTool(str(ws), backend="ripgrep").execute("**/*.py")).output
+        assert "a.py" in out and "sub/b.py" in out
+        assert "c.txt" not in out
+        assert "node_modules" not in out
+        assert "logo.png" not in out  # 二进制后缀被过滤
+
+    async def test_glob_passes_files_flag(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        argv_file = tmp_path / "argv.txt"
+        self._install(tmp_path, monkeypatch, ["a.py"])
+        monkeypatch.setenv("FAKE_RG_ARGV", str(argv_file))
+        await GlobTool(str(ws), backend="ripgrep").execute("**/*.py")
+        argv = argv_file.read_text()
+        assert "--files" in argv
+        assert "!**/node_modules/**" in argv
+
+    async def test_glob_parity_with_python(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "sub").mkdir()
+        (ws / "a.py").write_text("")
+        (ws / "sub" / "b.py").write_text("")
+        (ws / "c.txt").write_text("")
+        # 假 rg 枚举与真实磁盘一致的文件集。
+        self._install(tmp_path, monkeypatch, ["a.py", "sub/b.py", "c.txt"])
+        for pattern in ("**/*.py", "*.py", "sub/*.py"):
+            rg = (await GlobTool(str(ws), backend="ripgrep").execute(pattern)).output
+            py = (await GlobTool(str(ws), backend="python").execute(pattern)).output
+            assert rg == py, (pattern, rg, py)
+
+    async def test_glob_rg_error_falls_back(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "real.py").write_text("")
+        self._install(tmp_path, monkeypatch, ["real.py"], err=True)
+        out = (await GlobTool(str(ws), backend="ripgrep").execute("*.py")).output
+        assert "real.py" in out  # 纯 Python 兜底枚举到真文件
+
+
 # ── config → ToolHost → 内置工具装配 ────────────────────────────
 
 
@@ -359,6 +489,7 @@ class TestWiring:
         tools = {t.name: t for t in build_capability_tools(host)}
         assert tools["grep"].backend == "python"
         assert tools["grep"].respect_gitignore is False
+        assert tools["glob"].backend == "python"
         assert tools["glob"].respect_gitignore is False
 
 

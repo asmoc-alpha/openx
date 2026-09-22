@@ -97,17 +97,21 @@ Provider model / key / base must be configured in a model group (optionally via
 
 `grep` and `glob` run on a shared backend with two engines: **ripgrep** (`rg`,
 parallel and `.gitignore`-aware) when it is available, otherwise an optimized
-**pure-Python** fallback (git-aware listing, expanded build/cache pruning, thread
-pool). Both produce identical output.
+**pure-Python** fallback (git-aware listing, expanded build/cache pruning,
+binary sniffing, single-threaded off-event-loop scanning). Both `grep` (content
+search) and `glob` (file enumeration via `rg --files`) use ripgrep when present,
+and both produce identical output whichever engine ran. `glob` keeps `pathlib`
+semantics: `*.py` matches only the top level while `**/*.py` recurses.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `search_backend` | `"auto"` | `auto` (prefer ripgrep) · `ripgrep` · `python`. Env override: `OPENX_SEARCH_BACKEND`. |
-| `respect_gitignore` | `true` | Skip files ignored by `.gitignore` (via `git ls-files`) in `grep`/`glob`. |
+| `respect_gitignore` | `true` | Skip files ignored by `.gitignore` (via `git ls-files`, or ripgrep's own ignore handling) in `grep`/`glob`. |
 
-An optional `rg` binary can be pointed at explicitly with the `OPENX_RIPGREP`
-environment variable (set it to `none` to force the pure-Python engine). Both
-keys also work in the project-level `<workspace>/.openx/settings.json`.
+Because ripgrep is not bundled, code search is fastest when `rg` is installed
+and on `PATH` — the installer prints a hint when it is missing. Point at a
+specific binary with `OPENX_RIPGREP` (set it to `none` to force the pure-Python
+engine). Both keys also work in the project-level `<workspace>/.openx/settings.json`.
 
 ## Project settings (`<workspace>/.openx/settings.json`)
 

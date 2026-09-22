@@ -54,7 +54,7 @@ def build_capability_tools(host) -> list:
         ReadFileTool(ws),
         WriteFileTool(ws, allow_outside),
         EditFileTool(ws, allow_outside),
-        GlobTool(ws, host.respect_gitignore),
+        GlobTool(ws, host.respect_gitignore, host.search_backend),
         ListDirectoryTool(ws),
         # 代码搜索（ripgrep 优先、纯 Python 兜底；尊重 .gitignore）
         GrepTool(ws, host.respect_gitignore, host.search_backend),

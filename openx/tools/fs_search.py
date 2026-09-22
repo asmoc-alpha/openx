@@ -13,13 +13,16 @@ Like Claude Code's Grep/Glob tools (built on ripgrep) and Codex's
 work to a fast, ignore-aware engine and keep a correct fallback:
 
 * **Tier 1 — ripgrep** (``rg``): parallel, respects ``.gitignore``/``.ignore``,
-  skips binaries. Auto-detected; never a hard dependency.
+  skips binaries. Powers **both** ``grep`` (content search) and ``glob`` (file
+  enumeration via ``rg --files``). Auto-detected; never a hard dependency.
 * **Tier 2 — pure Python**: an expanded prune set, ``git``-aware file listing
-  (authoritative ignore semantics without a ``.gitignore`` parser), and a
-  thread pool so a search never blocks the event loop.
+  (authoritative ignore semantics without a ``.gitignore`` parser), binary
+  sniffing, and off-event-loop scanning so a search never freezes the TUI.
 
 Both tiers return matches in the same order with the same shape, so tool output
-is identical no matter which engine ran.
+is identical no matter which engine ran. ``glob`` keeps ``pathlib`` (not
+``fnmatch``) semantics in both tiers: ``*.py`` matches only the top level while
+``**/*.py`` recurses — see :func:`glob_match`.
 """
 
 from __future__ import annotations
@@ -36,19 +39,20 @@ if __name__ == "__main__" and not __package__:
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
 import asyncio
+import fnmatch
 import json
 import os
 import re
 import shutil
 import subprocess
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
     "Match",
     "find_ripgrep",
+    "glob_match",
     "grep_files",
     "is_git_repo",
     "iter_files",
@@ -78,6 +82,55 @@ _BINARY_SUFFIXES = frozenset({
     ".ttf", ".otf", ".woff", ".woff2", ".eot",
     ".lock", ".pack", ".idx",
 })
+
+# 单文件大小上限：超过则跳过纯 Python 扫描（超大压缩包/数据文件单文件拖垮
+# 整次搜索，且几乎不可能命中源码级 pattern）。
+_MAX_FILE_BYTES = 5 * 1024 * 1024
+
+# 二进制嗅探窗口：纯 Python 引擎先读这么多字节，含 NUL 即判为二进制跳过——
+# 比按其后缀名过滤更可靠（无扩展名的二进制也会被拦下）。
+_SNIFF_BYTES = 8192
+
+
+# ── pathlib 语义的 glob 匹配 ─────────────────────────────────────
+#
+# ``glob`` 工具刻意保留 ``pathlib.glob`` 语义（``*.py`` 只匹配顶层、
+# ``**/*.py`` 递归含顶层），它与 ``fnmatch`` 不同——rg 的 ``-g`` 是 fnmatch
+# 语义（``*.py`` 会匹配任意层级），直接下推给 rg 会改变结果。所以 rg 路径
+# 只用来**快速枚举文件**（``rg --files``），真正的 pattern 匹配仍在 Python
+# 端用下面这个与 pathlib 逐段对齐的匹配器完成，两条引擎输出因此逐条一致。
+
+
+def _match_parts(parts: list[str], segs: list[str]) -> bool:
+    """左到右逐段匹配：``**`` 吃零或多段，其余段按 ``fnmatch`` 匹配。"""
+    if not parts:
+        return not segs
+    head = parts[0]
+    if head == "**":
+        # ``**`` 匹配零个或多个目录层级。
+        for i in range(len(segs) + 1):
+            if _match_parts(parts[1:], segs[i:]):
+                return True
+        return False
+    if not segs:
+        return False
+    return fnmatch.fnmatch(segs[0], head) and _match_parts(parts[1:], segs[1:])
+
+
+def glob_match(rel: str, pattern: str) -> bool:
+    """相对 posix 路径 ``rel`` 是否匹配 ``pattern``（``pathlib.glob`` 语义）。
+
+    - ``*.py`` 只匹配顶层（不跨 ``/``）；
+    - ``**/*.py`` 递归匹配（``**`` 匹配零或多层，故含顶层）；
+    - ``a/b/*.py`` 锚定到 ``a/b/``。
+    """
+    parts = [p for p in pattern.replace("\\", "/").split("/") if p not in ("", ".")]
+    collapsed: list[str] = []
+    for p in parts:
+        if p == "**" and collapsed and collapsed[-1] == "**":
+            continue
+        collapsed.append(p)
+    return _match_parts(collapsed, rel.split("/"))
 
 
 @dataclass(frozen=True)
@@ -230,13 +283,25 @@ def _compile(pattern: str, is_regex: bool, case_sensitive: bool) -> re.Pattern:
 
 
 def _scan_file(path: Path, compiled: re.Pattern, max_matches: int) -> list[Match]:
-    """单文件逐行搜索；返回该文件的命中（用于线程池）。"""
+    """单文件搜索；返回该文件的命中（供 :func:`_grep_python_sync` 逐文件调用）。
+
+    先按大小设上限（超大文件直接跳过，不把 GB 级数据搬进内存；``fstat`` 用已
+    打开的 fd，比 ``path.stat`` 少一次路径解析），再整块读入并做二进制嗅探
+    （含 NUL 即跳过，不再对二进制解出乱码行）。整块读 + ``splitlines`` 与原始
+    实现同语义，但省掉了二进制解码与超大读取。
+    """
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as fh:
+            if os.fstat(fh.fileno()).st_size > _MAX_FILE_BYTES:
+                return []
+            data = fh.read()
     except Exception:  # noqa: BLE001  单文件读失败（权限/编码）跳过即可
         return []
+    if b"\x00" in data[:_SNIFF_BYTES]:
+        return []  # 二进制：跳过（read_text 只会解出乱码行）
+    text = data.decode("utf-8", "replace")
     hits: list[Match] = []
-    for i, line in enumerate(content.splitlines()):
+    for i, line in enumerate(text.splitlines()):
         if compiled.search(line):
             hits.append(Match(path=path, lineno=i + 1, line=line))
             if len(hits) >= max_matches:
@@ -253,6 +318,13 @@ def _grep_python_sync(
     respect_gitignore: bool,
     max_matches: int,
 ) -> list[Match]:
+    """纯 Python 搜索：逐文件顺序扫描，命中达 ``max_matches`` 立即停。
+
+    刻意**不用线程池**：``re`` 匹配不释放 GIL，多线程拿不到 CPU 并行，只徒增
+    任务提交 / future 回调开销（实测比顺序扫描慢 ~2×）。事件循环不被阻塞由
+    外层 ``asyncio.to_thread`` 保证，这层无需再起线程。I/O 密集（冷缓存）时
+    顺序读同样足够——缓存热了之后瓶颈本就在 regex。
+    """
     compiled = _compile(pattern, is_regex, case_sensitive)
 
     if root.is_file():
@@ -262,16 +334,11 @@ def _grep_python_sync(
     if not files:
         return []
 
-    workers = min(8, max(1, (os.cpu_count() or 2)))
-    batch = max(workers * 4, 16)
     out: list[Match] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for i in range(0, len(files), batch):
-            chunk = files[i:i + batch]
-            # 逐批提交（而非 ``pool.map``，后者会一次性提交全部任务，毁掉早停）
-            futures = [pool.submit(_scan_file, f, compiled, max_matches) for f in chunk]
-            for fut in futures:
-                out.extend(fut.result())
+    for f in files:
+        hits = _scan_file(f, compiled, max_matches)
+        if hits:
+            out.extend(hits)
             if len(out) >= max_matches:
                 break
 
@@ -342,6 +409,60 @@ def _rg_base_args(respect_gitignore: bool) -> list[str]:
     for d in sorted(_SKIP_DIRS):
         args += ["-g", f"!**/{d}/**"]
     return args
+
+
+def _rg_files_args(respect_gitignore: bool) -> list[str]:
+    """``rg --files`` 的基础参数：与 :func:`_rg_base_args` 相同的 ignore /
+    hidden / 剪枝语义，只是枚举文件而非搜内容。"""
+    args = ["--no-config", "--files", "--hidden", "--no-messages"]
+    if not respect_gitignore:
+        args.append("--no-ignore")
+    for d in sorted(_SKIP_DIRS):
+        args += ["-g", f"!**/{d}/**"]
+    return args
+
+
+async def _rg_list_files(
+    rg: str, root: Path, respect_gitignore: bool
+) -> list[str] | None:
+    """用 ``rg --files`` 快速枚举文件（相对 ``root`` 的 posix 路径）。
+
+    只做枚举：pattern 匹配仍交给 :func:`glob_match`（pathlib 语义）——rg 的
+    ``-g`` 是 fnmatch 语义，直接下推会改变 ``glob`` 结果。返回 ``None`` 表示
+    rg 不可用/出错（调用方回落纯 Python）。
+    """
+    args = [rg, *_rg_files_args(respect_gitignore)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, cwd=str(root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, ValueError):
+        return None
+
+    # communicate() 并发排空 stdout/stderr——避免任一端管道写满导致子进程阻塞
+    # 而死锁（枚举没有早停，必须读完全部输出）。超时则杀进程并回落。
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        return None
+
+    rc = proc.returncode
+    if rc is not None and rc >= 2:
+        return None  # rg 报错 → 回落纯 Python，绝不假装"无匹配"
+
+    out: list[str] = []
+    for raw in stdout.split(b"\n"):
+        rel = raw.decode("utf-8", "replace").rstrip("\r")
+        if rel:
+            out.append(rel)
+    return out
 
 
 async def _grep_ripgrep(
@@ -465,46 +586,69 @@ async def grep_files(
 # ── glob 支持（pathlib 语义）────────────────────────────────────
 
 
-def _glob_python_sync(root: Path, pattern: str, respect_gitignore: bool) -> list[str]:
-    """``root.glob(pattern)`` 语义 + 剪枝 + 可选 gitignore 过滤。
-
-    刻意保留 pathlib 的 glob 语义（``*.py`` 只匹配顶层、``**/*.py`` 递归）
-    ——它与 ``fnmatch``/``PurePath.match`` 不同，不能替换。性能收益来自
-    「线程卸载 + 扩展剪枝 + gitignore 过滤」，而非替换匹配引擎。
-    """
-    try:
-        raw = list(root.glob(pattern))
-    except Exception:  # noqa: BLE001  非法 pattern / IO 失败 → 视为无匹配
-        return []
-
-    allowed: set[str] | None = None
-    if respect_gitignore:
-        rels = _git_listed_relpaths(root)
-        if rels is not None:
-            allowed = set(rels)
-
+def _filter_glob(rels: Iterable[str], pattern: str) -> list[str]:
+    """对候选相对路径施加剪枝 / 二进制过滤 + :func:`glob_match`（两引擎共用）。"""
     out: set[str] = set()
-    for p in raw:
-        try:
-            rel = p.relative_to(root).as_posix()
-        except ValueError:
+    for rel in rels:
+        parts = Path(rel).parts
+        if _SKIP_DIRS.intersection(parts):
             continue
-        if _SKIP_DIRS.intersection(Path(rel).parts):
+        if Path(rel).suffix in _BINARY_SUFFIXES:
             continue
-        if p.is_file():
-            if p.suffix in _BINARY_SUFFIXES:
-                continue
-            if allowed is not None and rel not in allowed:
-                continue
-        out.add(rel)
+        if glob_match(rel, pattern):
+            out.add(rel)
     return sorted(out)
 
 
+def _glob_python_sync(root: Path, pattern: str, respect_gitignore: bool) -> list[str]:
+    """纯 Python glob：剪枝枚举 + :func:`glob_match`（pathlib 语义）。
+
+    不再 ``root.glob(pattern)`` 整树实例化——那既无法剪枝 ``node_modules`` 等，
+    又多走一次全树遍历。改为复用 :func:`iter_files`（gitignore 感知 + 剪枝）
+    枚举候选文件，再逐条匹配 pattern。只返回**文件**（与 rg 引擎一致）。
+    """
+    if root.is_file():
+        return _filter_glob([root.name], pattern)
+    files = iter_files(root, None, respect_gitignore)
+    rels = []
+    for p in files:
+        try:
+            rels.append(p.relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return _filter_glob(rels, pattern)
+
+
+async def _glob_ripgrep(
+    rg: str, root: Path, pattern: str, respect_gitignore: bool
+) -> list[str] | None:
+    """``rg --files`` 枚举 + pathlib 语义匹配；``None`` 表示 rg 不可用/出错。"""
+    rels = await _rg_list_files(rg, root, respect_gitignore)
+    if rels is None:
+        return None
+    return _filter_glob(rels, pattern)
+
+
 async def list_matching_files(
-    root: Path, pattern: str, *, respect_gitignore: bool = True
+    root: Path,
+    pattern: str,
+    *,
+    respect_gitignore: bool = True,
+    backend: str = "auto",
 ) -> list[str]:
-    """返回匹配 ``pattern`` 的相对路径（排序）；线程卸载以免阻塞事件循环。"""
-    return await asyncio.to_thread(_glob_python_sync, Path(root), pattern, respect_gitignore)
+    """返回匹配 ``pattern`` 的相对路径（排序）；不阻塞事件循环。
+
+    ``backend`` 同 :func:`grep_files`：``auto``/``ripgrep`` 时优先用
+    ``rg --files`` 枚举（快），失败或无 rg 则回落剪枝纯 Python 枚举。
+    """
+    root = Path(root)
+    if not root.is_file() and resolve_backend(backend) == "ripgrep":
+        rg = find_ripgrep()
+        if rg:
+            res = await _glob_ripgrep(rg, root, pattern, respect_gitignore)
+            if res is not None:
+                return res
+    return await asyncio.to_thread(_glob_python_sync, root, pattern, respect_gitignore)
 
 
 if __name__ == "__main__":
@@ -520,6 +664,9 @@ if __name__ == "__main__":
             (ws_path / "b.py").write_text("nothing\nneedle again\n")
             (ws_path / "node_modules").mkdir()
             (ws_path / "node_modules" / "c.py").write_text("needle hidden\n")
+            # 二进制文件（无后缀，故按后缀过滤拦不住）：含 NUL，纯 Python
+            # 引擎应靠内容嗅探跳过
+            (ws_path / "blob").write_bytes(b"needle\x00\x01needle")
 
             # 纯 Python 引擎：跳过 node_modules，命中两处
             hits = await grep_files(
@@ -556,7 +703,20 @@ if __name__ == "__main__":
             # pathlib 的 **/ 匹配零或多个目录段 → 递归含顶层
             nested = await list_matching_files(ws_path, "**/*.py", respect_gitignore=False)
             assert nested == ["b.py", "sub/a.py"], nested
+            # blob（无后缀）不匹配 *.py
+            assert not glob_match("blob", "*.py")
             print("glob:", files, nested)
+
+            # glob_match 单元：pathlib 段语义 + ** 折叠
+            assert glob_match("b.py", "*.py")
+            assert not glob_match("sub/a.py", "*.py")
+            assert glob_match("sub/a.py", "**/*.py") and glob_match("b.py", "**/*.py")
+            assert glob_match("sub/a.py", "sub/*.py")
+            assert not glob_match("x/sub/a.py", "sub/*.py")
+            assert glob_match("x/sub/a.py", "**/**/*.py")  # 连续 ** 折叠
+            assert glob_match("a/b/c", "**")
+            assert not glob_match("a/b/c", "*")
+            print("glob_match: ok")
 
             assert resolve_backend("python") == "python"
             assert find_ripgrep() is None or isinstance(find_ripgrep(), str)

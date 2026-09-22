@@ -9,7 +9,7 @@ OpenX 与 Claude Code 在功能面上有大量重合，但 OpenX 追求的是另
 | Agentic loop | ✅ | ✅ |
 | 文件读/写/编辑 | ✅ | ✅ |
 | Shell 命令 | ✅ | ✅ |
-| 代码搜索（grep/glob） | ✅ | ✅ |
+| 代码搜索（grep/glob） | ✅（ripgrep） | ✅（ripgrep，纯 Python 兜底） |
 | Git 集成 | ✅ | ✅ |
 | 权限系统 | ✅ | ✅ |
 | 流式输出 | ✅ | ✅ |
