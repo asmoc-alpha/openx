@@ -85,6 +85,8 @@ class MessagesMixin:
             ("/workflow [name]", "List or run saved workflows"),
             ("/todos", "Show the agent's task list"),
             ("/cost", "Show cumulative token usage"),
+            ("/ledger", "Show the global decision ledger (cross-session)"),
+            ("/export-eval", "Export session trajectories (with cost fields) to an eval JSONL"),
             ("/compact", "Summarize history to free up context"),
             ("/tips", "Show usage tips"),
             ("/release-notes, /release", "Browse release notes by version"),

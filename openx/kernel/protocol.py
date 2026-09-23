@@ -422,6 +422,41 @@ def turn_started(
     }
 
 
+def turn_usage(
+    session_id: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cached_tokens: int = 0,
+    plugin_tokens: int = 0,
+    duration_ms: int = 0,
+    turn_index: int = 0,
+) -> dict[str, Any]:
+    """一个回合的**成本字段**（P-E 轨迹升级）：token 用量 + 时长。
+
+    这是 ④ 轨迹跟踪的量化底座——"上下文预算分配、压缩收益核算、装配策略
+    评估"都以此为数据源（自演进调优线 §4.1）。与会话账本的关系：
+
+    - **会话账本**事件，**不是**跨会话事实——故**不入** ``DECISION_EVENTS`` /
+      全局账本（决策与用量的归属不同）。每回合一条，由持有 ``session_store``
+      的顶层 agent emit（子代理不落盘、不 emit，避免串写父会话）。
+    - ``duration_ms`` 是**整轮**耗时（可能含多次工具往返），不是单次 LLM 调用。
+    - ``plugin_tokens`` 是装配预算口径（当轮 ACTIVE 插件 ``schemaTokens`` 之和）；
+      ``cached_tokens`` 是 provider 报告的缓存命中（未报告恒 0）。
+    - **费用（USD）字段预留**：仓库暂无定价源，待定价配置落地时再补
+      ``cost_usd``（只加字段，不改本事件形状）。
+    """
+    return {
+        "type": "turn_usage",
+        "session_id": session_id,
+        "turn_index": int(turn_index),
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "cached_tokens": int(cached_tokens),
+        "plugin_tokens": int(plugin_tokens),
+        "duration_ms": int(duration_ms),
+    }
+
+
 def resume_event(
     verdict: str,
     checkpoint_seq: int = 0,
@@ -699,6 +734,15 @@ if __name__ == "__main__":
     assert _ts["type"] == "turn_started" and _ts["history_len"] == 4
     assert _ts["resumed"] is False and turn_started("s1", 0, True)["resumed"] is True
 
+    # 成本字段（P-E）：token + 时长，字段恒在（消费者可无条件读）
+    _tu = turn_usage("s1", input_tokens=1200, output_tokens=300, cached_tokens=0,
+                     plugin_tokens=400, duration_ms=3400, turn_index=2)
+    assert _tu["type"] == "turn_usage" and _tu["input_tokens"] == 1200
+    assert _tu["duration_ms"] == 3400 and _tu["turn_index"] == 2
+    assert _tu["plugin_tokens"] == 400
+    assert turn_usage("s1")["output_tokens"] == 0  # 缺省全 0
+    assert "turn_usage" not in DECISION_EVENTS  # 会话账本事件，非跨会话决策
+
     _rs = resume_event("ok", 9, 3, repaired=1, detail="resumed at tool round 3")
     assert _rs["type"] == "resume" and _rs["verdict"] == "ok" and _rs["repaired"] == 1
     assert resume_event("torn", detail="x")["checkpoint_seq"] == 0
@@ -715,7 +759,7 @@ if __name__ == "__main__":
             "ratchet_tightened"} <= DECISION_EVENTS
 
     # 全部新事件可 JSON 序列化（要落账本）
-    for _ev in (_ck, _it, _gt, _ts, _rs, _cd, _dr):
+    for _ev in (_ck, _it, _gt, _ts, _tu, _rs, _cd, _dr):
         json.loads(json.dumps(_ev))
 
     print("openx/kernel/protocol.py OK ✓")

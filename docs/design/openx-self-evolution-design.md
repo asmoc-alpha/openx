@@ -226,7 +226,7 @@ exit_when 条件命中 → 发起退场评测。换模型 / 模型升级 = 改 P
 | 转录事件（tool_use/result、cause 链） | 会话账本 | 失败模式聚类、笨路径识别 |
 | 裁决事件（permission_decision 逐站 trace） | 会话账本 | 权限摩擦点分析（哪些 ASK 该沉淀为规则） |
 | 装配事件（load/unload/promote/熔断） | 会话账本 | 装配策略：哪类任务预装哪些插件 |
-| 成本字段（token/时长/费用） | 轨迹（P-E 待补） | 上下文预算分配、压缩收益核算 |
+| 成本字段（token/时长；费用待定价） | 轨迹（P-E 已落地：`protocol.turn_usage`） | 上下文预算分配、压缩收益核算 |
 | 决策事件（promoted/retired/rolled_back） | 全局账本 | 演进历史审计、回滚率统计 |
 
 **P-E 轨迹升级是调优线的前置**：账本补成本字段 + eval 导出——"发生过
@@ -307,10 +307,12 @@ auto 列的两条铁律：**自测是放行的前提，不是放行的替代**�
 
 记账四职责不变，自演进只加三类消费：
 
-1. **eval 导出**（P-E）：账本 → 评测任务集与对照数据——退场评测门的
-   输入；
-2. **成本字段**（P-E）：每条装配/调用事件附 token/时长/费用——调优线
-   的量化基础；
+1. **eval 导出**（P-E 已落地）：账本 → 评测任务集与对照数据——退场评测门的
+   输入；落地为 `services/eval_export.py`（会话账本 → 一行一会话的评测
+   JSONL）+ `/export-eval` 命令；
+2. **成本字段**（P-E 已落地）：每回合一条 `turn_usage` 事件，附 token
+   （input/output/cached/plugin）与整轮时长——调优线的量化基础。**费用
+   （USD）待定价配置落地时补**（只加字段）。
 3. **演进事件族补全**：plugin_created / tested / promoted / rejected /
    scaffold_retired / restored / ratchet_tightened 全落全局账本——
    **演进系统自己的历史也在账本里**（kernel 详设 §3.5 决策留痕覆盖
@@ -363,7 +365,7 @@ P-F 自产插件；K1 目录 / K2 信封 / K3 Guard / K3a ToolHost。
 | 切片 | 内容 | 依赖 | 本文章节 |
 |---|---|---|---|
 | **E1 演进声明进 Manifest** | manifest 增 `scaffold` 块（compensates / exit_when / eval_set / fallback）；无声明的脚手架逐一补声明或降级为能力插件 | P-B | §3.1 |
-| **E2 轨迹升级** | 账本补成本字段 + eval 导出（即 P-E）；全局账本（K5）承接决策事件族 | K2 | §6.1 |
+| **E2 轨迹升级** | 账本补成本字段 + eval 导出（即 P-E）——**已落地**；全局账本（K5）承接决策事件族 | K2 | §6.1 |
 | **E3 缺口感知** | 离线分析器：账本聚类失败模式 → "缺口报告"（人读）；报告可作为 context 片段回喂会话 | E2 | §2.1 |
 | **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发 | E1+E2 | §3.2-§3.3 |
 | **E5 装配策略学习** | 配对命中率 / 权限摩擦 / 上下文预算的离线报告 → overlay 建议（人终审）；auto-* 目录按使用频率排序 | E3 | §4.2-§4.3 |

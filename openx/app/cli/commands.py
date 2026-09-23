@@ -236,6 +236,33 @@ async def _cmd_ledger(agent, console, args):
     return True
 
 
+@register(
+    "export-eval",
+    description="Export session trajectories (with cost fields) to an eval JSONL",
+)
+async def _cmd_export_eval(agent, console, args):
+    """轨迹导出（P-E）：会话账本 -> eval 评测 JSONL（退场评测门的输入）。
+
+    导出**当前工作区**全部会话为一行一会话的 JSONL：每回合含用户输入、助手
+    输出、调用的工具名与成本字段（token / 时长）。可选参数指定输出路径；
+    缺省落 ``~/.openx/eval-export.jsonl``（运行时数据进 home，绝不建项目
+    ``.openx``）。只读，无审批。
+    """
+    from ...services.eval_export import export_workspace
+
+    out = Path(args[0]).expanduser() if args else None
+    try:
+        path, count = export_workspace(str(agent.workspace), out_path=out)
+    except OSError as exc:
+        console.print_warning(f"export failed: {exc}")
+        return True
+    if count:
+        console.print_success(f"✓ exported {count} session(s) → {path}")
+    else:
+        console.print_info("No sessions with recorded turns to export.")
+    return True
+
+
 @register("clear", description="Clear screen and conversation history")
 async def _cmd_clear(agent, console, args):
     agent.clear_history()

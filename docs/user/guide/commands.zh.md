@@ -32,6 +32,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/workflow [name]`（别名 `/workflows`） | 列出或运行已保存的 workflows（`.openx/workflows/`） |
 | `/todos` | 显示 agent 的任务清单 |
 | `/cost` | 显示累计 token 用量 |
+| `/export-eval [path]` | 导出会话轨迹（含成本字段）为 eval JSONL |
 | `/compact` | 压缩历史以释放上下文 |
 | `/git` | 显示 git status |
 | `/diff` | 显示 git diff |

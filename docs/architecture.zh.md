@@ -78,6 +78,7 @@ openx/
 │   │   ├── streaming.py   # 流式显示服务
 │   │   ├── checkpoint.py  # 容灾提交策略（何时快照、快照什么）
 │   │   ├── interrupt.py   # 中断控制器（信号 / Esc / 客户端打断）
+│   │   ├── eval_export.py # 轨迹 → eval JSONL 导出（含成本字段；/export-eval）
 │   │   └── exploration.py # 项目概览探测
 │   ├── ui/                # Rich TUI：console、内嵌输入框、对话框、输入捕获
 │   └── utils/             # 路径、文本、错误辅助

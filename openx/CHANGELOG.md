@@ -4,6 +4,29 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.4 — Trajectory cost fields & eval export
+
+### Every turn records its cost
+
+- Added a per-turn `turn_usage` ledger event carrying the turn's **token delta**
+  (input / output / cached / plugin) and its wall-clock duration. It is written by the
+  top-level session agent at turn end — including when the turn is interrupted or
+  raises — so a turn that went wrong still leaves its cost in the trajectory
+- Subagents don't emit it: they share the process-level kernel, so without that guard
+  their usage would be attributed to the parent session's ledger
+- This is the quantitative baseline the self-evolution tuning line needs (context
+  budgeting, compaction payoff). Token cost only — **money cost is deferred** until a
+  pricing source exists
+
+### Export trajectories as an eval set
+
+- Added `/export-eval [path]` — exports every session of the current workspace to a
+  JSONL eval set (one session per line): each turn's user input, assistant output,
+  tools called and cost fields, plus per-session totals. This is the input a
+  retirement eval gate needs, drawn from the ledger that already exists
+- Default output is `~/.openx/eval-export.jsonl`; sessions with no recorded turns are
+  skipped
+
 ## 0.1.3 — Global decision ledger
 
 ### Cross-session decisions have one home

@@ -80,6 +80,7 @@ openx/
 │   │   ├── streaming.py   # Stream display service
 │   │   ├── checkpoint.py  # Recovery submission policy (what/when to checkpoint)
 │   │   ├── interrupt.py   # Interrupt controller (signals / Esc / client interrupt)
+│   │   ├── eval_export.py # Trajectory → eval JSONL export (cost fields; /export-eval)
 │   │   └── exploration.py # Project overview detection
 │   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
 │   └── utils/             # Path, text, and error helpers

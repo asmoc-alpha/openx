@@ -357,9 +357,17 @@ Event = {
 |---|---|---|
 | 转录 | text / thinking / tool_use / tool_result | 会话账本 |
 | 控制 | permission_request / permission_decision / resource_gate_tripped / interrupt | 会话账本 |
+| 轨迹 | turn_usage（token / 时长成本字段）、provider_selected | 会话账本（P-E） |
 | 容灾 | turn_started / checkpoint / checkpoint_discarded / resume | 会话账本（§3.6） |
 | 组合 | composition_resolved / plugin_loaded / plugin_failed / plugin_skipped / registered / rejected / unregistered | 会话账本（引用全局条目） |
 | 决策 | plugin_promoted / plugin_rolled_back / scaffold_retired / scaffold_restored / ratchet_tightened | **全局账本** |
+
+**轨迹族与成本字段**（P-E 已落地）：每回合一条 `turn_usage`，cost = 该回合的
+token **增量**（input/output/cached/plugin）+ 整轮时长（`duration_ms`）。由持有
+`session_store` 的顶层 agent 在回合收尾 emit（`try/finally`，取消/异常也补记）；
+子代理不 emit（共享同一内核，否则会串写父会话账本）。这是自演进调优线的量化
+底座——`/export-eval` 把账本导成评测 JSONL（§4 切片 5）。**费用（USD）字段预留**：
+仓库暂无定价源，待定价配置落地时补 `cost_usd`（只加字段，不改事件形状）。
 
 **双账本**（K5 已落地）：
 

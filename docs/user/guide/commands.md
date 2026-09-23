@@ -33,6 +33,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/workflow [name]` (alias `/workflows`) | List or run saved workflows (`.openx/workflows/`) |
 | `/todos` | Show the agent's task list |
 | `/cost` | Show cumulative token usage |
+| `/export-eval [path]` | Export session trajectories (with cost fields) to an eval JSONL |
 | `/compact` | Summarize history to free up context |
 | `/git` | Show git status |
 | `/diff` | Show git diff |

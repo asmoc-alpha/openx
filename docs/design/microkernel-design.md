@@ -52,7 +52,7 @@ boot 组合退化为"出厂默认组合"，运行时装配在其之上增量。
 | ① 推理核心 | `kernel/reasoning/`（provider / retry） | 路由 / fallback / 限流随 N2 |
 | ② 插件装配器 | `kernel/assembly/`（loader / registry / registrations / context / validate / manifest / protocols / plugin_spec） | `protocols.py` 是类别 → 协议 → 装配层路由的唯一真源 |
 | ③ 安全审计 | `kernel/audit/`（guard 裁决管线 + hooks 用户钩子链）+ 元工具 ASK 闸 | 装配请求闸门 = load/unload/write/promote 的 ASK 弹窗；hooks 自 `core/` 迁入（2026-09-02） |
-| ④ 轨迹跟踪 | `kernel/ledger.py` + `kernel/global_ledger.py`（emit / attach_ledger / emit_decision 委托；双账本：会话 + 全局）+ `kernel/protocol.py`（事件信封 schema = 账本外化；`DECISION_EVENTS` / `decision_ref`） | **双账本 + 决策事件族已落地（K5）**；成本字段 / eval 导出随 P-E |
+| ④ 轨迹跟踪 | `kernel/ledger.py` + `kernel/global_ledger.py`（emit / attach_ledger / emit_decision 委托；双账本：会话 + 全局）+ `kernel/protocol.py`（事件信封 schema = 账本外化；`DECISION_EVENTS` / `decision_ref` / `turn_usage`） | **双账本 + 决策事件族（K5）+ 成本字段与 eval 导出（P-E）已落地**；费用（USD）待定价配置 |
 | ⑤ 沙箱执行器 | `kernel/sandbox/`（host / protect） | protect = 调用防护；进程隔离随 D9 |
 | ④b 容灾 | `kernel/recovery/`（model / store / resume）+ `services/checkpoint.py`、`services/interrupt.py` | v0.1.2 落地：回合级 checkpoint、恢复裁决、信号/取消接线；机制住内核、策略住 services |
 | 装配层（各协议 Registry） | `registrations.py` 目录：`tools` / `commands` / `contexts` / `lifecycle` / `providers` | P-D 新增 `contexts` / `lifecycle` |
@@ -346,7 +346,7 @@ load_plugin("dataquery")
    按 type 生成三协议插件（PLUGIN_SPEC v2 常驻 + 注册面 AST 契约检查，类型
    错配即拒）。单例协议（planner/compaction）列后续；checkpoint / resume
    接线已随 v0.1.2 容灾落地（见 `docs/openx-kernel-design.md` §3.6）。
-5. **P-E 轨迹升级**：事件账本补成本字段，Tracer 订阅 + eval 导出。
+5. ~~**P-E 轨迹升级**~~ **已完成**：事件账本补**成本字段**（`protocol.turn_usage`，逐回合 token/时长增量，由顶层 agent 在回合并口 emit）+ **eval 导出**（`services/eval_export.py`：会话账本 → 一行一会话的评测 JSONL，`/export-eval` 命令）。费用（USD）字段预留，待定价配置。
 6. ~~**P-F 模型自产插件**~~ **已完成**（2026-08-29）：`kernel/assembly/plugin_spec.py`
    PluginSpec（常驻系统提示）+ `tools/write_plugin_tools.py` 三元工具（write ASK
    / test ALLOW / promote ASK）+ admit 管线（manifest 校验 → 语法/契约存在性 →

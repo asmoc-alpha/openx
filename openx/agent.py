@@ -58,6 +58,7 @@ if __name__ == "__main__" and not __package__:
 
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -399,6 +400,8 @@ class OpenXAgent:
         # 累计插件 schema token（装配预算口径估算：每轮 LLM 调用把当时
         # ACTIVE 插件的 schemaTokens 之和记一笔；内置恒 0 = 基线不归插件）
         self.total_plugin_tokens: int = 0
+        # 已记账的回合数（P-E turn_usage 的 turn_index；仅顶层会话 agent 递增）
+        self._usage_turns: int = 0
         # 任务清单：与 TodoWriteTool 共享同一 list 对象
         self.todos: list[dict[str, Any]] = []
         # 最近一次 run() 的工具往返数（headless JSON 输出的 num_turns）
@@ -1025,6 +1028,47 @@ class OpenXAgent:
         except Exception:
             pass
 
+    def _emit_turn_usage(self, usage_start: dict[str, int], t_start: float) -> None:
+        """记账：**turn_usage** 事件（P-E 轨迹升级）——本回合的成本字段。
+
+        取 ``session_token_usage()`` 相对 ``usage_start`` 的**增量**（回合内
+        实际消耗），配整轮墙钟时长。两条硬纪律：
+
+        - **仅持有 ``session_store`` 的顶层 agent 落账**：``get_kernel()`` 是
+          进程级单例，子代理共享它、却不落盘；若不过这道闸，子代理的 emit
+          会串写进**父会话**账本（与 ``attach_ledger`` / ``CheckpointManager``
+          同一条守卫）。
+        - **全零增量不记**：空回合（无 token 流动）不产生账本噪音。
+
+        emit 只依赖内核出口，任何异常绝不影响回合收尾——记账不是主流程的单点。
+        """
+        if self.session_store is None:
+            return
+        try:
+            from .kernel import get_kernel
+            from .kernel.protocol import turn_usage
+
+            now = self.session_token_usage()
+            delta = {k: int(now.get(k, 0)) - int(usage_start.get(k, 0)) for k in now}
+            if not any(delta.values()):
+                return
+            self._usage_turns += 1
+            get_kernel().emit(
+                "turn_usage",
+                turn_usage(
+                    self.session_id,
+                    input_tokens=delta.get("input", 0),
+                    output_tokens=delta.get("output", 0),
+                    cached_tokens=delta.get("cached", 0),
+                    plugin_tokens=delta.get("plugin", 0),
+                    duration_ms=int((time.time() - t_start) * 1000),
+                    turn_index=self._usage_turns,
+                ),
+                origin="kernel",
+            )
+        except Exception:
+            pass
+
     def role_settings(self, role: str) -> dict:
         """取某角色在**当前组**下的设置 dict（缓存在内存）。
 
@@ -1572,10 +1616,27 @@ class OpenXAgent:
     ) -> str:
         """运行一轮对话（非流式）。
 
+        薄壳：取回合起点的用量快照与墙钟，交由 ``_run_inner`` 跑循环，**无论
+        正常返回还是异常收尾**都补记一条 ``turn_usage`` 成本字段（P-E）。
+
         基于 ``self.history.messages``：把历史 + 本轮用户消息一并发给 LLM，循环执行
         工具直到得到最终文本，最后把本轮消息并入历史。``resume`` 非空时从
         checkpoint 快照接续（同 ``stream_run``；已完成的工具调用不重放）。
         """
+        usage_start = self.session_token_usage()
+        t_start = time.time()
+        try:
+            return await self._run_inner(user_message, resume=resume)
+        finally:
+            self._emit_turn_usage(usage_start, t_start)
+
+    async def _run_inner(
+        self,
+        user_message: str | list[dict[str, Any]],
+        *,
+        resume: Any = None,
+    ) -> str:
+        """``run`` 的实际循环体（薄壳之外，便于统一记 turn_usage）。"""
         state, new_turn, turn_llm, modal = self._seed_turn(user_message, resume)
         self._begin_checkpoint(
             state, new_turn, engine="run", modal=modal,
@@ -1819,6 +1880,10 @@ class OpenXAgent:
             resumed=resume is not None,
         )
         progress = _TurnProgress()
+        # P-E 成本字段：回合起点的用量快照 + 墙钟，收尾时（含取消）落一条
+        # turn_usage 增量事件。
+        usage_start = self.session_token_usage()
+        t_start = time.time()
         try:
             async for chunk in self._turn_stream(
                 state, new_turn, turn_llm, progress
@@ -1833,6 +1898,8 @@ class OpenXAgent:
                     new_turn, progress.text, state.tool_rounds
                 )
             raise
+        finally:
+            self._emit_turn_usage(usage_start, t_start)
 
     async def _turn_stream(
         self,
