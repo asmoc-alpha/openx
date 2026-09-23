@@ -28,6 +28,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/forget <name>` | Delete a memory by name |
 | `/permissions` (alias `/perms`) | Show and manage stored permission rules |
 | `/hooks` | Show configured hooks |
+| `/ledger` | Show the global decision ledger (cross-session) and verify its hash chain |
 | `/mcp` | Show MCP server status |
 | `/workflow [name]` (alias `/workflows`) | List or run saved workflows (`.openx/workflows/`) |
 | `/todos` | Show the agent's task list |

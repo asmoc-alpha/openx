@@ -180,6 +180,62 @@ async def _cmd_plugins(agent, console, args):
     return True
 
 
+@register(
+    "ledger",
+    description="Show the global decision ledger (cross-session) + integrity check",
+)
+async def _cmd_ledger(agent, console, args):
+    """全局账本面板（K5，§3.2）：决策事件族 + 哈希链校验。
+
+    决策（晋升 / 回滚 / 退场 / 棘轮收紧）是跨会话事实，落
+    ``~/.openx/ledger.jsonl``——本命令是它的读面，兼作 §3.4 的校验工具。
+    """
+    from ...kernel.global_ledger import GlobalLedgerStore
+
+    store = GlobalLedgerStore()
+    events = store.recent(limit=20)
+    if not events:
+        console.print_info(
+            "No decisions recorded yet.\n"
+            "[dim]Promoting a plugin (/plugins) records the first one.[/dim]"
+        )
+        return True
+
+    console.raw.print("\n[bold]Global Ledger[/bold]  "
+                      "[dim](~/.openx/ledger.jsonl · cross-session decisions)[/dim]\n")
+    for ev in events:
+        kind = ev.get("type", "?")
+        target = ev.get("plugin") or ""
+        seq = ev.get("seq", "")
+        session = ev.get("session") or ""
+        style = {
+            "plugin_promoted": "green",
+            "plugin_rolled_back": "yellow",
+            "scaffold_retired": "cyan",
+            "scaffold_restored": "cyan",
+            "ratchet_tightened": "red",
+        }.get(kind, "white")
+        parts = [f"[{style}]{kind}[/{style}]"]
+        if target:
+            parts.append(f"[bold]{target}[/bold]")
+        tail = f"[dim]#{seq}"
+        if session:
+            tail += f" · {session[:8]}"
+        parts.append(tail + "[/dim]")
+        console.raw.print("  • " + "  ".join(parts))
+
+    broken = store.verify()
+    console.raw.print()
+    if broken:
+        console.print_warning(
+            f"⚠ hash chain broken at seq {', '.join(str(s) for s in broken)} "
+            "— ledger may have been edited"
+        )
+    else:
+        console.print_success(f"✓ chain intact ({len(store.read_all())} decisions)")
+    return True
+
+
 @register("clear", description="Clear screen and conversation history")
 async def _cmd_clear(agent, console, args):
     agent.clear_history()

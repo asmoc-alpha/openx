@@ -390,7 +390,9 @@ async def test_promote_plugin_records_decision(kernel_env):
     ws, _ = kernel_env
     k = get_kernel()
     sink = Sink()
+    global_sink = Sink()
     k.attach_ledger(sink, session="s1")
+    k.attach_global_ledger(global_sink)
     k.ensure_loaded(str(ws))
     r = await WritePluginTool(k, None).execute("greet", "打招呼", GEN_CODE, GEN_TEST)
     assert r.success
@@ -398,7 +400,13 @@ async def test_promote_plugin_records_decision(kernel_env):
     r = await PromotePluginTool(k).execute("auto-greet")
     assert r.success
     assert k.plugin_help("auto-greet")["manifest"]["trust"] == "user"
-    assert any(e.type == "plugin_promoted" for e in sink.events)
+    # K5（§3.2）：决策全文落**全局账本**，会话账本只留引用（不复制内容）
+    assert any(e.type == "plugin_promoted" for e in global_sink.events)
+    refs = [e for e in sink.events if e.type == "decision_ref"]
+    assert refs and refs[0].payload["decision"] == "plugin_promoted"
+    assert refs[0].payload["ledger"] == "global"
+    assert refs[0].payload["seq"] == global_sink.events[-1].seq  # 引用对齐全局 seq
+    assert not any(e.type == "plugin_promoted" for e in sink.events)
 
     # 非 auto-* 不能晋升
     r = await PromotePluginTool(k).execute("builtin-tools")

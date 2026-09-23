@@ -7,6 +7,7 @@
 - ``audit/``     ③ 安全审计（guard 裁决管线 / hooks 用户钩子链）
 - ``sandbox/``   ⑤ 沙箱执行（host/protect）
 - ``ledger.py``  ④ 轨迹跟踪（事件账本，emit/attach_ledger 委托）
+- ``global_ledger.py`` ④ 全局账本（决策事件族的跨会话留痕，emit_decision 委托）
 - ``protocol.py`` ④ 轨迹跟踪的协议面（事件信封 schema，账本外化的单一真源）
 - ``inventory.py`` PluginInfo 共享模型
 
@@ -47,6 +48,8 @@ from .inventory import (
     PluginInfo,
 )
 from .ledger import Ledger
+from .global_ledger import GlobalLedgerStore
+from .protocol import Event, decision_ref
 from ..builtin import BUILTIN_PROVIDERS_ID, BUILTIN_TOOLS_ID
 
 __all__ = [
@@ -100,6 +103,14 @@ class PluginKernel:
         self.workspace = ""
         # ④ 轨迹跟踪（K2b）：事件账本委托 Ledger（kernel/ledger.py）
         self._ledger = Ledger()
+        # ④ 全局账本（K5，§3.2）：决策事件族的跨会话留痕。与会话账本分开：
+        # 决策是跨会话事实，不落任一会话。惰性自挂接默认文件 sink（见
+        # emit_decision）——保证"记账先于动作"不被漏接线破坏。
+        self._global_ledger = Ledger()
+        self._global_attached = False
+        # 已晋升（trust 由 auto -> user）的插件名：卸载它们 = 回滚，记
+        # plugin_rolled_back（回答"这个插件为什么没了"）。
+        self._promoted: set[str] = set()
 
     def registry(self, kind: str) -> Optional[PluginRegistry]:
         """取某类注册项的注册表（消费方唯一取用通道）。"""
@@ -538,6 +549,65 @@ class PluginKernel:
         """
         return self._ledger.emit(type_, payload, cause, origin)
 
+    # ── 全局账本（K5，§3.2）：决策事件族的唯一出口 ──────────────
+
+    def attach_global_ledger(
+        self,
+        sink: Callable[[Event], None],
+        start_seq: int = 0,
+        start_digest: str = "",
+    ) -> None:
+        """挂接全局账本出口（显式覆盖默认文件 sink；测试/嵌入用）。
+
+        幂等：已挂接即忽略——全局账本是进程级事实，多 agent 重复挂接不应
+        重置计数器。缺省路径（``~/.openx/ledger.jsonl``）由 ``emit_decision``
+        惰性自挂接，故生产无需显式调用；测试挂自己的 sink 以观察。
+        """
+        if self._global_attached:
+            return
+        self._global_ledger.attach(sink, session="", start_seq=start_seq,
+                                   start_digest=start_digest)
+        self._global_attached = True
+
+    def _ensure_global_ledger(self) -> None:
+        """惰性自挂接默认文件 sink：从既有账本续 seq 与哈希链（跨进程也续链）。"""
+        if self._global_attached:
+            return
+        store = GlobalLedgerStore()
+        count, tail = store.scan()
+        self._global_ledger.attach(
+            store.append, session="", start_seq=count, start_digest=tail
+        )
+        self._global_attached = True
+
+    def emit_decision(
+        self,
+        type_: str,
+        payload: dict[str, Any],
+        cause: Optional[int] = None,
+        origin: str = "user",
+    ) -> Event:
+        """决策事件（K5，§3.2）：全文上**全局账本**，会话账本留引用。
+
+        - 全局账本（``~/.openx/ledger.jsonl``）：跨会话事实的唯一权威所在地，
+          payload 补 ``session`` 归因字段（"哪次会话做的这个决定"）。
+        - 会话账本：只记一条 ``decision_ref``（``(ledger, seq)`` 引用，
+          **不复制内容**）——回放单会话时按需展开全局条目。
+
+        返回全局账本条目（其 ``seq`` 是全局 seq，不是会话 seq）。
+        """
+        self._ensure_global_ledger()
+        enriched = dict(payload)
+        enriched.setdefault("session", self._ledger.session)
+        g_event = self._global_ledger.emit(type_, enriched, cause, origin)
+        self.emit(
+            "decision_ref",
+            decision_ref(type_, g_event.seq, session=self._ledger.session),
+            cause=cause,
+            origin=origin,
+        )
+        return g_event
+
     # ── 清单 ────────────────────────────────────────────────
 
     def inventory(self) -> list[PluginInfo]:
@@ -648,6 +718,15 @@ class PluginKernel:
             "plugin_unloaded",
             {"type": "plugin_unloaded", "plugin": name, "source": info.source},
         )
+        # 回滚 = 卸载（§5.2）：卸载一个曾晋升的插件是**跨会话决策**，
+        # 落全局账本（K5，§3.2）——回答"这个插件为什么没了"。
+        if name in self._promoted:
+            self._promoted.discard(name)
+            self.emit_decision(
+                "plugin_rolled_back",
+                {"type": "plugin_rolled_back", "plugin": name},
+                origin="user",
+            )
         return (True, f"plugin unloaded: {name}")
 
     def plugin_help(self, name: str) -> Optional[dict]:
@@ -699,21 +778,23 @@ class PluginKernel:
     def promote_plugin(self, name: str) -> tuple[bool, str]:
         """用户确认晋升（P-F）：``auto-*`` 插件 trust 升 user + 决策记账。
 
-        只记决策留痕（plugin_promoted 事件）与 trust 升级；boot 持久化
-        （写回组合/overlay）列后续。回滚仍走 unload_plugin。
+        决策（``plugin_promoted``）落**全局账本**（K5，§3.2）：晋升是跨会话
+        事实，会话账本只留引用。记账先于改 trust（守"记账先于动作"）。
+        boot 持久化（写回组合/overlay）列后续。回滚仍走 unload_plugin。
         """
         info = self._plugins.get(name)
         if info is None or info.phase != PHASE_ACTIVE:
             return (False, f"plugin not active: {name}")
         if not name.startswith("auto-"):
             return (False, "only auto-* (model-produced) plugins can be promoted")
-        info.manifest = dict(info.manifest)
-        info.manifest["trust"] = "user"
-        self.emit(
+        self.emit_decision(
             "plugin_promoted",
             {"type": "plugin_promoted", "plugin": name, "trust": "user"},
             origin="user",
         )
+        info.manifest = dict(info.manifest)
+        info.manifest["trust"] = "user"
+        self._promoted.add(name)
         return (True, f"plugin promoted: {name} (trust=user)")
 
     def unregister_tool(self, name: str) -> None:

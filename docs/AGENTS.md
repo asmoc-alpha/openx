@@ -14,10 +14,13 @@ link there.
 | `docs/user/` | Product-facing guides: commands, modes & permissions, configuration, sessions | Extension how-tos, internal design |
 | `docs/subsystems/` | One reference page per subsystem: semantics, configuration, limits | Teaching sequences, step-by-step tutorials |
 | `docs/cookbook/` | Step-by-step how-tos (extending OpenX) | Design rationale |
+| `docs/design/` | Mechanism & evolution design docs — the design source that precedes code changes | User-facing usage guides |
+| `docs/openx-*.md`, `docs/*.html` | Whole-architecture / kernel design references and architecture diagrams (single-language archive) | Per-subsystem reference |
 | `docs/comparison.md` | Feature comparison with Claude Code | — |
 
 Placement: usage behavior → `user/`; subsystem semantics → `subsystems/`; how-tos →
-`cookbook/`; module structure → `architecture.md`; contributor workflow → `development.md`.
+`cookbook/`; module structure → `architecture.md`; contributor workflow → `development.md`;
+mechanism/evolution design → `design/`.
 
 ## Writing rules
 
@@ -34,14 +37,19 @@ Placement: usage behavior → `user/`; subsystem semantics → `subsystems/`; ho
 
 ## Bilingual pairing
 
-Every page exists as a pair: `xxx.md` (English) and `xxx.zh.md` (Chinese). Pairs update
-together — a change to one side updates the other in the same commit.
+**Paired pages** — `README.md`/`README.zh.md`, the top-level `docs/` pages
+(`architecture`, `development`, `comparison`), and everything under `user/`, `subsystems/`,
+and `cookbook/` — exist as `xxx.md` (English) + `xxx.zh.md` (Chinese). Pairs update
+together: a change to one side updates the other in the same commit.
 
-- Header navigation: English pages start with `English | [中文](xxx.zh.md)`; Chinese pages
-  start with `[English](xxx.md) | 中文`.
+**Single-language docs** (no `.zh.md` pair, by design): `docs/AGENTS.md` (this file,
+English); the design and architecture archive — `docs/design/*.md`, `docs/openx-*.md`,
+`docs/*.html` — and `docs/openx-serve.md` (Chinese).
+
+- Header navigation: English pages start with `English | [中文](xxx.zh.md)`; Chinese
+  pages start with `[English](xxx.md) | 中文`.
 - Technical terms stay in English inside Chinese prose (tool, subagent, workflow, hook,
   MCP, session, …).
-- `docs/AGENTS.md` (this file) is English-only.
 
 ## Indexes
 

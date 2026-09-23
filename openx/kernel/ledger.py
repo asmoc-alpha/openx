@@ -30,6 +30,23 @@ from .protocol import Event, digest_of
 _log = logging.getLogger("openx.kernel")
 
 
+def verify_chain(events: list[Event]) -> list[int]:
+    """扫描事件序列，复算 digest 链，返回**断裂处的 seq**（空 = 完好）。
+
+    §3.4 的校验工具（K5）：``digest = h(prev || canonical(本条))`` 是一条单链，
+    任何中段篡改（改 payload）或删除（跳号）都会让后续 digest 复算不匹配--
+    只要能读到存储的事件，就能发现历史被动过。目标强度是**事后可发现**，
+    不是密码学对抗：不阻断读取，只报告断点（空列表 = 链完好）。
+    """
+    broken: list[int] = []
+    prev = ""
+    for event in events:
+        if event.digest != digest_of(prev, event):
+            broken.append(event.seq)
+        prev = event.digest
+    return broken
+
+
 class Ledger:
     """事件账本：唯一事件出口，seq/digest 哈希链，append-only。
 
@@ -43,6 +60,11 @@ class Ledger:
         self._session: str = ""
         self._seq: int = 0
         self._prev_digest: str = ""
+
+    @property
+    def session(self) -> str:
+        """当前挂接的会话 id（K5：``emit_decision`` 取它做全局条目的归因）。"""
+        return self._session
 
     def attach(
         self,
@@ -133,4 +155,22 @@ if __name__ == "__main__":
     ledger4.attach(_Sink(), session="s1", start_seq=5)
     e4 = ledger4.emit("d", {"type": "d"})
     assert e4.digest == digest_of("", e4)
+    assert ledger4.session == "s1"  # K5：归因用的只读属性
+
+    # verify_chain（K5 §3.4）：完好 / 篡改中间 / 删除中间 三态
+    import copy as _copy
+
+    chain = Ledger()
+    chain.attach(_Sink(), session="s")
+    good = [chain.emit("x", {"type": "x", "n": i}) for i in range(5)]
+    assert verify_chain(good) == []  # 完好
+
+    tampered = _copy.deepcopy(good)
+    tampered[2].payload["n"] = 999  # 改中段 payload → 该条复算不匹配
+    assert verify_chain(tampered) == [tampered[2].seq]
+    assert verify_chain(good) == []  # 原链不受影响
+
+    deleted = good[:2] + good[3:]  # 删中段 → 后继那条复算不匹配
+    assert verify_chain(deleted) == [deleted[2].seq]
+
     print("openx/kernel/ledger.py OK ✓")

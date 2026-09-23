@@ -18,12 +18,17 @@ openx/
 │   ├── memory.py          # Persistent memory (~/.openx/memory/)
 │   ├── instructions.py    # OPENX.md loading (global / project / subdir)
 │   ├── image.py           # Image & clipboard helpers (multimodal)
+│   ├── model_groups.py    # modelGroups schema + per-role resolution (the only model/provider config)
+│   ├── coding_memory.py   # Coding memory (project conventions/decisions, project-scoped)
+│   ├── skills.py          # Skills: installable Markdown instruction packs
+│   ├── changelog.py       # CHANGELOG.md parsing (What's-new panel, /release-notes)
 │   ├── app/
 │   │   ├── cli/           # commands.py (slash registry) / interactive.py (REPL +
 │   │   │                  #   streaming) / single_shot.py / setup_wizard.py
 │   │   └── serve/         # Web surface (aiohttp optional dep) + static assets
 │   ├── kernel/            # Microkernel (five-piece trust base)
 │   │   ├── assembly/      #   ② Plugin assembler: loader/registry/manifest/protocols…
+│   │   ├── inventory.py   #   ② Plugin inventory: read-only loader-tree projection (/plugins)
 │   │   ├── reasoning/     #   ① Reasoning core: provider/retry
 │   │   ├── audit/         #   ③ Security audit: guard verdict pipeline + hooks (user hook chain)
 │   │   ├── sandbox/       #   ⑤ Sandbox executor: host/protect
@@ -41,7 +46,9 @@ openx/
 │   │   ├── fleet.py       # Fleet monitor (multi-agent view)
 │   │   └── workflow.py    # Workflow engine (deterministic multi-agent orchestration)
 │   ├── llm/
-│   │   └── client.py      # Async LLM client (OpenAI-compatible, streaming)
+│   │   ├── base.py        # Shared provider orchestration (chat/stream skeleton, error mapping)
+│   │   ├── openai_compat.py # openai-compat provider + LLMClient compatibility facade
+│   │   └── anthropic.py   # anthropic-compat provider (optional `anthropic` extra)
 │   ├── mcp/
 │   │   ├── transport.py   # stdio NDJSON transport (spawn + line framing)
 │   │   ├── client.py      # Zero-dependency JSON-RPC client
@@ -61,8 +68,14 @@ openx/
 │   │   ├── mode_tools.py  # choose_mode (manual → auto/plan choice)
 │   │   ├── task_tools.py  # task_output, task_stop
 │   │   ├── subagent_tool.py # task (delegates to a subagent)
-│   │   └── workflow_tool.py # workflow (runs orchestration scripts)
+│   │   ├── workflow_tool.py # workflow (runs orchestration scripts)
+│   │   ├── plugin_tools.py # list/load/unload/plugin_help (model-driven assembly)
+│   │   ├── write_plugin_tools.py # write/test/promote_plugin (self-authored plugins)
+│   │   ├── structured_output.py # structured_output (JSON-Schema result contract)
+│   │   ├── memory_tool.py # memory (agent-decided remember/recall)
+│   │   └── console_dialog.py # Async-first dialog channel (ask_user / plan approval)
 │   ├── services/
+│   │   ├── assembly.py    # Consumption-side assembly: tool instantiation, provider resolution, context/UI collection
 │   │   ├── tool_executor.py # Permission + hook gate, serial prepare → parallel execute
 │   │   ├── streaming.py   # Stream display service
 │   │   ├── checkpoint.py  # Recovery submission policy (what/when to checkpoint)
@@ -95,7 +108,7 @@ Permission checks and hook invocations happen during serial preparation, inside
 |---|---|---|
 | Surface | `app/cli/`, `app/serve/`, `ui/` | REPL, single-shot, headless and web entry; terminal rendering |
 | Kernel | `kernel/` (five-piece: assembly/reasoning/audit/trace/sandbox, incl. protocol & hooks), `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display, verdicts & ledger |
-| Model | `llm/` | OpenAI-compatible async client, streaming, retry with backoff |
+| Model | `llm/` | Provider implementations (openai-compat / anthropic-compat), streaming; retry/backoff lives in the kernel (`kernel/reasoning/`) |
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |
 | Context & memory | `instructions.py`, `memory.py`, `orchestration/history.py` | OPENX.md instructions, persistent memory, history + compaction |
 | Orchestration | `orchestration/subagent.py`, `orchestration/workflow.py`, `orchestration/tasks.py`, `orchestration/fleet.py` | Subagents, deterministic workflows, background tasks (hard-wired, P2+ plugin-ization) |

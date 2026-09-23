@@ -290,7 +290,7 @@ base bundle = f(模型能力档案) · 双棘轮：安全只紧不松，能力�
         <div class="cap">④ 轨迹跟踪（记账 = 证据系统 · append-only 是物理的）</div>
         <div class="regs">
           <span class="reg">会话账本 <span class="c">· sessions/*.jsonl · 回放与单会话审计</span></span>
-          <span class="reg">全局账本 <span class="c">· ledger.jsonl · 跨会话决策留痕（K5 待落）</span></span>
+          <span class="reg">全局账本 <span class="c">· ledger.jsonl · 跨会话决策留痕（K5 已落地）</span></span>
           <span class="reg">cause 链 = 归因链 <span class="c">· 任何结果上溯到发起意图</span></span>
           <span class="reg">决策事件族 <span class="c">· promoted / rolled_back / retired / ratchet_tightened</span></span>
           <span class="reg">成本 + eval 导出 <span class="c">· P-E 轨迹升级，自演进数据底座</span></span>
@@ -475,13 +475,13 @@ base bundle = f(模型能力档案) · 双棘轮：安全只紧不松，能力�
 <div class="road">
   <div class="box done">
     <div class="cap">已完成</div>
-    <div class="p"><b>K1</b> 注册目录表驱动 · <b>K2</b> 事件信封+突变记账 · <b>K3a</b> ToolHost+API 收敛 · <b>K3</b> Guard 七站管线<br>
+    <div class="p"><b>K1</b> 注册目录表驱动 · <b>K2</b> 事件信封+突变记账 · <b>K3a</b> ToolHost+API 收敛 · <b>K3</b> Guard 七站管线 · <b>K5</b> 全局账本+决策事件族<br>
     <b>P-A</b> 元工具装配 · <b>P-B</b> Manifest · <b>P-C</b> 调用防护 · <b>P-D</b> 协议分类（tool/context/lifecycle/ui）· <b>P-F</b> 自产插件（write/test/promote + 沙箱自测）<br>
     <b>P4</b> openx serve + Web 端（远程批准 / 多端 attach / 复盘 / panels）</div>
   </div>
   <div class="box next">
     <div class="cap">下一步（内核补全）</div>
-    <div class="p"><b>K4</b> 资源闸析出 · <b>K5</b> 全局账本+决策事件族 · <b>K6</b> 晋升门动态插入（MCP pilot）· <b>K7</b> prompt 片段收口（K8 能力注册表化）<br>
+    <div class="p"><b>K4</b> 资源闸析出 · <b>K6</b> 晋升门动态插入（MCP pilot）· <b>K7</b> prompt 片段收口（K8 能力注册表化）<br>
     <b>P-E</b> 轨迹升级（成本字段 + eval 导出）· <b>P6</b> 能力档案 + overlay + 退场评测</div>
   </div>
   <div class="box selfe">
@@ -525,7 +525,7 @@ base bundle = f(模型能力档案) · 双棘轮：安全只紧不松，能力�
   <dt>① 推理核心<span class="st part">部分落地</span></dt><dd>provider 形状与重试/退避已入核（kernel/reasoning）。路由 / fallback / 限流随多 provider 成熟度入核（决断 N2）。入核理由：没有它模型不会思考，"由模型决定装配"不成立。</dd>
   <dt>② 插件装配器<span class="st have">已落地</span></dt><dd>注册目录表驱动（K1）：tools / commands / contexts / lifecycle / ui_slots / providers 逐类元数据，新增一类注册项 = 目录加一行 + 校验器，不改内核主体。五阶段 loader；动态插入复用同一五阶段（同源同门）。消费方装配策略（实例化仲裁 / provider 解析 / 命令分发）已迁出内核（K3a）。</dd>
   <dt>③ 安全审计<span class="st have">已落地</span></dt><dd>Guard 七站裁决管线（K3）：Verdict 半格上确界折叠，任何站只升严不降宽；hooks 按映射表折入第④站；高危强制与存储裁决固定序，存储永不放宽危险。每次裁决记 permission_decision（含逐站 trace）。资源闸析出为 K4；晋升门 admit 以 MCP 为 pilot（K6）。</dd>
-  <dt>④ 轨迹跟踪<span class="st part">部分落地</span></dt><dd>append-only 是物理的：内核只有 emit()，账本只以追加模式打开。记账先于动作。会话账本已升格（K2），全局账本与决策事件族随 K5，成本字段与 eval 导出随 P-E -- 后者是自演进调优线的数据底座。</dd>
+  <dt>④ 轨迹跟踪<span class="st part">部分落地</span></dt><dd>append-only 是物理的：内核只有 emit()，账本只以追加模式打开。记账先于动作。会话账本已升格（K2），全局账本与决策事件族已落地（K5），成本字段与 eval 导出随 P-E -- 后者是自演进调优线的数据底座。</dd>
   <dt>⑤ 沙箱执行器<span class="st part">部分落地</span></dt><dd>ToolHost（K3a）：工具工厂 factory(host)，host 是 agent 的只读数据投影 -- 插件任何阶段拿不到 loop / 闸门 / llm / 完整 config。调用防护（P-C）：timeout / 输出上限 / 熔断（3 次失败自动摘除）/ 结构化错误。执行隔离（进程沙箱）为 D9 远期加固，auto 级不可降级。</dd>
 </dl>
 

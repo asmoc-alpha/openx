@@ -88,10 +88,27 @@ def digest_of(prev_digest: str, event: Event) -> str:
     """轻量哈希链：h(prev || canonical(event))。
 
     强度取舍：目标是事后审计*可发现*，不是密码学对抗--单链摘要即可，
-    不引签名、不引外部信任锚。P1 只填不校验；校验工具随 K5 全局账本。
+    不引签名、不引外部信任锚。校验工具见 ``kernel/ledger.py::verify_chain``
+    （K5）：扫描账本复算本链，断裂处可发现中段篡改/删除。
     """
     blob = (prev_digest + canonical_event(event)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+# ── 决策事件族（K5，§3.2）：跨会话事实，落**全局账本** ────────────
+#
+# 决策与转录/控制/容灾/组合事件的归属不同：晋升、退场、回滚、棘轮收紧
+# 是跨会话事实，塞进任一会话都是错误归属（§3.2）。族成员全文上全局账本
+# ``~/.openx/ledger.jsonl``；会话账本只留 ``decision_ref`` 引用（D1，不复制
+# 内容）。族常量是单一真源--新增决策事件改这里一处。
+DECISION_EVENTS: frozenset[str] = frozenset({
+    "plugin_promoted",
+    "plugin_rolled_back",
+    "scaffold_retired",
+    "scaffold_restored",
+    "ratchet_tightened",
+})
+
 
 
 # ── 下行（server → client）──────────────────────────────────────
@@ -436,6 +453,23 @@ def checkpoint_discarded(reason: str, checkpoint_seq: int = 0) -> dict[str, Any]
     }
 
 
+def decision_ref(decision: str, global_seq: int, session: str = "") -> dict[str, Any]:
+    """会话账本里的**决策引用**（K5，§3.2）：指向全局账本条目，不复制内容。
+
+    决策事件（``DECISION_EVENTS``）全文落全局账本；会话账本只记这条引用，
+    使回放单会话时能按 (ledger, seq) 展开全局条目。``decision`` 是被引用的
+    决策类型，``seq`` 是它在**全局账本**里的 seq（非会话 seq）。
+    """
+    return {
+        "type": "decision_ref",
+        "decision": decision,
+        "ledger": "global",
+        "seq": int(global_seq),
+        "session": session,
+    }
+
+
+
 # ── 上行（client → server）──────────────────────────────────────
 
 @dataclass
@@ -671,8 +705,17 @@ if __name__ == "__main__":
 
     _cd = checkpoint_discarded("stale")
     assert _cd["type"] == "checkpoint_discarded" and _cd["reason"] == "stale"
+
+    # 决策引用（K5，§3.2）：会话账本引用全局账本条目，不复制内容
+    _dr = decision_ref("plugin_promoted", 12, session="s1")
+    assert _dr["type"] == "decision_ref" and _dr["ledger"] == "global"
+    assert _dr["decision"] == "plugin_promoted" and _dr["seq"] == 12
+    assert "plugin_promoted" in DECISION_EVENTS
+    assert {"plugin_rolled_back", "scaffold_retired", "scaffold_restored",
+            "ratchet_tightened"} <= DECISION_EVENTS
+
     # 全部新事件可 JSON 序列化（要落账本）
-    for _ev in (_ck, _it, _gt, _ts, _rs, _cd):
+    for _ev in (_ck, _it, _gt, _ts, _rs, _cd, _dr):
         json.loads(json.dumps(_ev))
 
     print("openx/kernel/protocol.py OK ✓")

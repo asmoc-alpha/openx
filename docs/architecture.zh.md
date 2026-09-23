@@ -16,12 +16,17 @@ openx/
 │   ├── memory.py          # 持久记忆（~/.openx/memory/）
 │   ├── instructions.py    # OPENX.md 加载（全局 / 项目 / 子目录）
 │   ├── image.py           # 图片与剪贴板辅助（多模态）
+│   ├── model_groups.py    # modelGroups schema + 逐角色解析（唯一的模型/provider 配置入口）
+│   ├── coding_memory.py   # 编程记忆（项目约定/决策，项目级隔离）
+│   ├── skills.py          # Skills：可安装的 Markdown 指令包
+│   ├── changelog.py       # CHANGELOG.md 解析（What's-new 面板、/release-notes）
 │   ├── app/
 │   │   ├── cli/           # commands.py（斜杠命令注册表）/ interactive.py（REPL +
 │   │   │                  #   流式显示）/ single_shot.py（单次）/ setup_wizard.py（向导）
 │   │   └── serve/         # Web 端（aiohttp 可选依赖）+ 静态前端资源
 │   ├── kernel/            # 微内核（五件套信任基座）
 │   │   ├── assembly/      #   ② 插件装配器：loader/registry/manifest/protocols…
+│   │   ├── inventory.py   #   ② 插件清单：loader 树的只读投影（/plugins）
 │   │   ├── reasoning/     #   ① 推理核心：provider/retry
 │   │   ├── audit/         #   ③ 安全审计：guard 裁决管线 + hooks 用户钩子链
 │   │   ├── sandbox/       #   ⑤ 沙箱执行器：host/protect
@@ -39,7 +44,9 @@ openx/
 │   │   ├── fleet.py       # Fleet 监控（多 agent 视图）
 │   │   └── workflow.py    # Workflow 引擎（确定性多 agent 编排）
 │   ├── llm/
-│   │   └── client.py      # 异步 LLM 客户端（OpenAI 兼容、流式）
+│   │   ├── base.py        # provider 实现共享编排面（chat/stream 骨架 + 错误翻译）
+│   │   ├── openai_compat.py # openai-compat 实现 + LLMClient 兼容门面
+│   │   └── anthropic.py   # anthropic-compat 实现（可选 `anthropic` extra）
 │   ├── mcp/
 │   │   ├── transport.py   # stdio NDJSON 传输（spawn + 行分帧）
 │   │   ├── client.py      # 零依赖 JSON-RPC 客户端
@@ -59,8 +66,14 @@ openx/
 │   │   ├── mode_tools.py  # choose_mode（manual → auto/plan 选择）
 │   │   ├── task_tools.py  # task_output、task_stop
 │   │   ├── subagent_tool.py # task（委托给 subagent）
-│   │   └── workflow_tool.py # workflow（运行编排脚本）
+│   │   ├── workflow_tool.py # workflow（运行编排脚本）
+│   │   ├── plugin_tools.py # list/load/unload/plugin_help（模型驱动装配）
+│   │   ├── write_plugin_tools.py # write/test/promote_plugin（模型自产插件）
+│   │   ├── structured_output.py # structured_output（JSON Schema 结果契约）
+│   │   ├── memory_tool.py # memory（agent 自主记忆/召回）
+│   │   └── console_dialog.py # async 优先的对话框通道（ask_user / 计划审批）
 │   ├── services/
+│   │   ├── assembly.py    # 消费方装配策略：工具实例化、provider 解析、上下文/UI 征集
 │   │   ├── tool_executor.py # 权限 + hook 门控，串行准备 → 并行执行
 │   │   ├── streaming.py   # 流式显示服务
 │   │   ├── checkpoint.py  # 容灾提交策略（何时快照、快照什么）
@@ -91,7 +104,7 @@ openx/
 |---|---|---|
 | 产品表面 | `app/cli/`、`app/serve/`、`ui/` | REPL、单次与 headless 入口、Web 端；终端渲染 |
 | 内核 | `kernel/`（五件套：装配/推理/审计/轨迹/沙箱，含协议与 hooks）、`agent.py`、`services/tool_executor.py`、`services/streaming.py` | turn 循环、工具分发（串行准备 → 并行执行）、流式显示、裁决与账本 |
-| 模型层 | `llm/` | OpenAI 兼容异步客户端、流式、带退避的重试 |
+| 模型层 | `llm/` | provider 实现（openai-compat / anthropic-compat）、流式；重试/退避在内核（`kernel/reasoning/`） |
 | 能力层 | `tools/`、`mcp/` | 面向模型的工具（fs、shell、搜索、git、web、todo、plan、task、workflow）与外部 MCP 工具 |
 | 上下文与记忆 | `instructions.py`、`memory.py`、`orchestration/history.py` | OPENX.md 指令、持久记忆、历史 + 压缩 |
 | 编排层 | `orchestration/subagent.py`、`orchestration/workflow.py`、`orchestration/tasks.py`、`orchestration/fleet.py` | subagents、确定性 workflows、后台任务（硬连线，P2+ 插件化） |

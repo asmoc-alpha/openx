@@ -30,8 +30,8 @@ product. How the feature surface compares today:
 | Background tasks | ✅ | ✅ |
 | Auto-compaction | ✅ | ✅ |
 | Notebook editing | ✅ | ❌ |
-| Anthropic-native API format | ✅ | ❌ (OpenAI-compatible endpoints only) |
-| Multi-provider | ❌ (Anthropic only) | ✅ (OpenAI-compatible) |
+| Anthropic-native API format | ✅ | ✅ (anthropic-compat: official + compatible endpoints) |
+| Multi-provider | ❌ (Anthropic only) | ✅ (`modelGroups`: openai-compat + anthropic-compat) |
 | Open source | ❌ | ✅ (MIT) |
 | Language | TypeScript | Python |
 

@@ -9,8 +9,8 @@
 > `microkernel-design.md`（四职责与搁置决定）。
 >
 > 与 2026-08 架构图的映射：本文落地的是内核五件套中 **① 推理核心**的
-> 现状面——形状进内核（`kernel/provider.py`）、重试/退避归内核
-> （`kernel/retry.py`）、实现进零件（`llm/openai_compat.py`、
+> 现状面——形状进内核（`kernel/reasoning/provider.py`）、重试/退避归内核
+> （`kernel/reasoning/retry.py`）、实现进零件（`llm/openai_compat.py`、
 > `llm/anthropic.py`）；路由 / fallback / 限流 / 结构化输出约束等推理核心
 > 其余面为增量（microkernel-design §5.3 N2）。协议适配一律留在 llm/，
 > 内核只认识错误契约，不 import 任何 SDK。
@@ -26,13 +26,13 @@
 |---|---|---|
 | 接入方式 | `agent.py:158` 硬编码 `LLMClient(config)` | 未过内核：换 provider = 改代码，不是换零件 |
 | 接口形状 | `LLMClient.chat/stream_chat` 事实存在 | 不是显式契约；实现与形状混在一个类里 |
-| 重试 | `llm/client.py` 内嵌（429/5xx/连接/断流、Retry-After、指数退避+抖动、60s 封顶、on_retry 可见性） | 归实现所有，与总架构"重试归内核"相悖 |
+| 重试 | `llm/client.py`（今 `llm/openai_compat.py`）内嵌（429/5xx/连接/断流、Retry-After、指数退避+抖动、60s 封顶、on_retry 可见性） | 归实现所有，与总架构"重试归内核"相悖 |
 | 配置 | 扁平 `api_key/api_base/model` 三件套 | 单连接；多 provider 无处安放 |
 | 格式 | 仅 OpenAI 兼容 | Anthropic 原生 ❌（对比文档已知差距） |
 
 ## 2. 接口形状：内核不变量（P-A）
 
-**形状进内核，实现进零件。** 新增 `kernel/provider.py`，纯定义、零
+**形状进内核，实现进零件。** 新增 `kernel/reasoning/provider.py`，纯定义、零
 SDK 依赖：
 
 ```python
@@ -61,7 +61,7 @@ class ProviderFatalError(Exception):
 
 ## 3. 重试上收内核（决断：现在做）
 
-新增 `kernel/retry.py`，语义与现有 `LLMClient` **逐条等价**（这是硬
+新增 `kernel/reasoning/retry.py`，语义与现有 `LLMClient` **逐条等价**（这是硬
 约束，不是"差不多"）：
 
 ```python
@@ -172,8 +172,8 @@ kind、model、origin=user|kernel）。切换留痕是将来"为什么这次回�
 
 ## 9. 落地切片（每步可独立验收，前三步行为≡现状）
 
-1. ~~**M1 形状与重试上收**~~ **已完成**（2026-08-26）：`kernel/provider.py`
-   （形状+错误契约）+ `kernel/retry.py`（策略+`RetryingProvider`）；
+1. ~~**M1 形状与重试上收**~~ **已完成**（2026-08-26）：`kernel/reasoning/provider.py`
+   （形状+错误契约）+ `kernel/reasoning/retry.py`（策略+`RetryingProvider`）；
    `llm/openai_compat.py` 重构为单次实现 + 门面；`llm/base.py` 收口实现
    层的共享编排面（chat/stream_chat 骨架 + SDK 异常->契约翻译，openai_compat
    与 anthropic 共用）；重试测试迁移至内核层，语义断言逐条不变。
@@ -199,7 +199,7 @@ kind、model、origin=user|kernel）。切换留痕是将来"为什么这次回�
 | 重试上收改坏久经考验的语义 | 语义逐条搬运 + 门面保旧 API + 既有 llm 测试改跑门面路径且断言不变 |
 | Anthropic 转换错误（格式细节多） | 转换层纯函数化、双向单测全覆盖、伪 SSE 流测试；不碰联网 |
 | 配置迁移破坏存量用户 | 无 `providers` 键走 default 合成路径，扁平字段优先级不变；迁移路径专项测试 |
-| 内核膨胀（违背"小到可审计"） | `kernel/provider.py`/`retry.py` 只含形状与策略（~250 行，零 SDK import）；协议适配全部留在 llm/ |
+| 内核膨胀（违背"小到可审计"） | `kernel/reasoning/` 下只含形状与策略（provider.py / retry.py，~250 行，零 SDK import）；协议适配全部留在 llm/ |
 
 ---
 

@@ -27,8 +27,8 @@ OpenX 与 Claude Code 在功能面上有大量重合，但 OpenX 追求的是另
 | 后台任务 | ✅ | ✅ |
 | 自动压缩（compaction） | ✅ | ✅ |
 | Notebook 编辑 | ✅ | ❌ |
-| Anthropic 原生 API 格式 | ✅ | ❌（仅 OpenAI 兼容端点） |
-| 多 provider | ❌（仅 Anthropic） | ✅（OpenAI 兼容） |
+| Anthropic 原生 API 格式 | ✅ | ✅（anthropic-compat：官方与兼容端点） |
+| 多 provider | ❌（仅 Anthropic） | ✅（`modelGroups`：openai-compat + anthropic-compat） |
 | 开源 | ❌ | ✅（MIT） |
 | 语言 | TypeScript | Python |
 

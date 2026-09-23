@@ -52,7 +52,7 @@ boot 组合退化为"出厂默认组合"，运行时装配在其之上增量。
 | ① 推理核心 | `kernel/reasoning/`（provider / retry） | 路由 / fallback / 限流随 N2 |
 | ② 插件装配器 | `kernel/assembly/`（loader / registry / registrations / context / validate / manifest / protocols / plugin_spec） | `protocols.py` 是类别 → 协议 → 装配层路由的唯一真源 |
 | ③ 安全审计 | `kernel/audit/`（guard 裁决管线 + hooks 用户钩子链）+ 元工具 ASK 闸 | 装配请求闸门 = load/unload/write/promote 的 ASK 弹窗；hooks 自 `core/` 迁入（2026-09-02） |
-| ④ 轨迹跟踪 | `kernel/ledger.py` + `kernel/protocol.py`（emit / attach_ledger 委托；事件信封 schema = 账本外化） | 成本字段 / eval 导出随 P-E；protocol 自 `core/` 迁入（2026-09-02） |
+| ④ 轨迹跟踪 | `kernel/ledger.py` + `kernel/global_ledger.py`（emit / attach_ledger / emit_decision 委托；双账本：会话 + 全局）+ `kernel/protocol.py`（事件信封 schema = 账本外化；`DECISION_EVENTS` / `decision_ref`） | **双账本 + 决策事件族已落地（K5）**；成本字段 / eval 导出随 P-E |
 | ⑤ 沙箱执行器 | `kernel/sandbox/`（host / protect） | protect = 调用防护；进程隔离随 D9 |
 | ④b 容灾 | `kernel/recovery/`（model / store / resume）+ `services/checkpoint.py`、`services/interrupt.py` | v0.1.2 落地：回合级 checkpoint、恢复裁决、信号/取消接线；机制住内核、策略住 services |
 | 装配层（各协议 Registry） | `registrations.py` 目录：`tools` / `commands` / `contexts` / `lifecycle` / `providers` | P-D 新增 `contexts` / `lifecycle` |

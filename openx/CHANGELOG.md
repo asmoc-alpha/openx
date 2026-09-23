@@ -4,6 +4,25 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.3 — Global decision ledger
+
+### Cross-session decisions have one home
+
+- Added a **global decision ledger** at `~/.openx/ledger.jsonl`. Promotions, rollbacks,
+  scaffold retirement and ratchet tightening are *cross-session* facts — filing them
+  under whichever session happened to be running misattributes them. They now land in
+  one authoritative place, and the session ledger keeps a `decision_ref` pointing at
+  the global entry instead of copying its content
+- Added `/ledger` — the read surface for that ledger: the most recent decisions with
+  their attribution (what, which session, when), plus an integrity check
+- The global ledger reuses the session ledger's `seq` + hash chain, and the chain
+  **continues across processes**: a restart resumes both `seq` and `digest` from the
+  existing file, so a tampered middle entry is reported rather than silently
+  re-anchored from empty
+- Decisions wired today: `plugin_promoted` (promotion is now recorded globally) and
+  `plugin_rolled_back` (unloading a previously promoted plugin). The `scaffold_*` and
+  `ratchet_tightened` emitters arrive with the retirement-eval slice
+
 ## 0.1.2 — Recovery checkpoints, interrupt memory & auto plan mode
 
 ### Recovery: turn-level checkpoints

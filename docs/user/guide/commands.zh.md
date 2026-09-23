@@ -27,6 +27,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/forget <name>` | 按名称删除一条记忆 |
 | `/permissions`（别名 `/perms`） | 查看与管理已存储的权限规则 |
 | `/hooks` | 显示已配置的 hooks |
+| `/ledger` | 显示全局账本（跨会话决策）并校验其哈希链 |
 | `/mcp` | 显示 MCP server 状态 |
 | `/workflow [name]`（别名 `/workflows`） | 列出或运行已保存的 workflows（`.openx/workflows/`） |
 | `/todos` | 显示 agent 的任务清单 |

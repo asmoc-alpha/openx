@@ -1,5 +1,11 @@
-# OpenX 内核详设 v2.2 · 编排 / 沙箱执行 / 插件维护 / 记账 / 容灾
+# OpenX 内核详设 v2.3 · 编排 / 沙箱执行 / 插件维护 / 记账 / 容灾
 
+> v2.3（落地 K5）**双账本**：新增**全局账本** `~/.openx/ledger.jsonl`
+> （`kernel/global_ledger.py`）与**决策事件族**（`protocol.DECISION_EVENTS`）——
+> 决策全文上全局账本，会话账本只留 `decision_ref` 引用（§3.2 兑现）；
+> §3.4 校验工具落地（`ledger.verify_chain` + `/ledger` 命令）。晋升
+> （`plugin_promoted`）改落全局账本，新增回滚（`plugin_rolled_back`）。
+>
 > v2.2（2026-09-11）增补 **§3.6 容灾**：回合级 checkpoint 与中断恢复落地
 > （`kernel/recovery/` + `services/checkpoint.py` / `services/interrupt.py`），
 > 兑现 §2.3 的 `resource_gate_tripped` 与 §3.2 控制族的 `interrupt`；
@@ -355,15 +361,22 @@ Event = {
 | 组合 | composition_resolved / plugin_loaded / plugin_failed / plugin_skipped / registered / rejected / unregistered | 会话账本（引用全局条目） |
 | 决策 | plugin_promoted / plugin_rolled_back / scaffold_retired / scaffold_restored / ratchet_tightened | **全局账本** |
 
-**双账本**：
+**双账本**（K5 已落地）：
 
 - **会话账本** `~/.openx/sessions/*.jsonl`（现有会话存储升格）：回放与
   单会话审计的依据。
-- **全局账本** `~/.openx/ledger.jsonl`：跨会话决策留痕。晋升、退场、
-  回滚、棘轮收紧是跨会话事实，塞进任一会话都是错误归属--"这个插件哪来
-  的、为什么压缩模块没了"的答案只该有一个权威所在地。
-- 关系：会话账本以 (ledger, seq) 引用全局条目，不复制内容。回放单会话
+- **全局账本** `~/.openx/ledger.jsonl`（`kernel/global_ledger.py`）：跨会话
+  决策留痕。晋升、退场、回滚、棘轮收紧是跨会话事实，塞进任一会话都是错误
+  归属--"这个插件哪来的、为什么压缩模块没了"的答案只该有一个权威所在地。
+- 关系：会话账本以 (ledger, seq) 引用全局条目，不复制内容（`decision_ref`
+  事件：`{type:"decision_ref", decision, ledger:"global", seq}`）。回放单会话
   时全局条目按需展开。
+- 落点分工：决策族常量住 `protocol.DECISION_EVENTS`（单一真源）；
+  `kernel.emit_decision()` 是唯一出口（全文上全局账本 + 会话说引用，
+  payload 补 `session` 归因）；全局账本复用 `Ledger` 的 seq/digest 哈希链，
+  默认文件 sink 由内核**惰性自挂接**（生产无需接线，跨进程续 seq 与链）。
+  已接线：`plugin_promoted`（晋升）、`plugin_rolled_back`（卸载曾晋升的插件
+  = 回滚）；`scaffold_*` / `ratchet_tightened` 的 emitter 随 E4 退场评测门。
 
 ### 3.3 回放语义
 
@@ -382,6 +395,12 @@ Event = {
 强度取舍：目标是**事后审计可发现**，不是密码学对抗--摘要链即可，不引
 签名、不引外部信任锚。digest 断链 = 审计告警事件（本身也记账），不阻断
 读取。
+
+**落地（K5）**：校验工具 `ledger.verify_chain(events) -> list[int]` 复算
+摘要链、返回断裂处的 seq（空 = 完好）——改中段 payload 或删中间一条，
+其后继条目复算即不匹配。`GlobalLedgerStore.verify()` 对全局账本文件跑它，
+`/ledger` 命令是其用户面。**"断链本身记账"暂缓**：写回同一账本会形成
+自指回环，先只做"可发现"，留到有真实消费方时再加。
 
 ### 3.5 记账的可执行性
 
@@ -472,7 +491,7 @@ executor 持有同款分工。
 | ~~`permissions.py` + executor prepare 闸门~~ | §2.2 升格入 `kernel/guard.py` | 已落地（K3）：七站管线 + 半格折叠 + `permission_decision` 记账；prompter/rules/mode 闭包注入，UI 不进内核 |
 | ~~无（回合级持久化缺口）~~ | §3.6 容灾 | 已落地（v0.1.2）：`kernel/recovery/`（模型/存储/裁决）+ `services/checkpoint.py`、`services/interrupt.py`（策略/信号）；`on_checkpoint` / `on_resume` 接线完成，`interrupt` / `resource_gate_tripped` 事件兑现 |
 | `kernel/protocol.py`（Event 信封 + digest 链） | §3.1 单一真源 | 已落地（K2）；转录事件 cause 链随 K3 |
-| `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；双账本与决策事件族随 K5 |
+| `kernel.emit`/`attach_ledger` + `sessions/*.jsonl` 信封行 | §3.2 会话账本 | 已落地（K2）；**双账本与决策事件族已落地（K5）**：全局账本 `global_ledger.py` + `emit_decision` + `verify_chain` |
 | `app/cli/commands.py` 内置命令 dict | §1.1 commands | 半插件化：插件命令已走注册表，27 个内置命令仍硬编码、消费方双源合并；升格 builtin-commands 插件随 K8 |
 | `mcp/`（`mcp__*` 工具直并入 agent.tools） | §1.1 tools + §1.6 | 绕过注册表：无校验/仲裁/provenance/记账；K8 收口，兼作 K6 admit() 的 pilot |
 | `instructions.py` / `skills.py` / 记忆提示常量 | §1.1 prompt_fragments | 硬连线 prompt 源；K7 收口 |
@@ -480,7 +499,7 @@ executor 持有同款分工。
 | `memory.py` / `coding_memory.py` | §1.1 memory_backends | 硬连线；P2+ |
 | `orchestration/sessions/history/subagent/workflow/tasks` | §1.1 coordination | 硬连线；P2+ |
 | `agent.py` 直 import 具体工具（`git_status`、`MEMORY_INSTRUCTIONS`、`StructuredOutputTool`） | §1.5 零引用 | 破洞：loop 认识具体插件；随 K7/K8 修 |
-| `tools/base.py`（Tool/ToolResult 形状） | §1.1 校验器 | 形状应上移内核（`kernel/provider.py` 先例）；随 K8 |
+| `tools/base.py`（Tool/ToolResult 形状） | §1.1 校验器 | 形状应上移内核（`kernel/reasoning/provider.py` 先例）；随 K8 |
 | ~~内核上消费方助手（`instantiate_tools`/`build_provider`/`lookup_command` 等）~~ | §0 取用通道收敛 | 已落地（K3a）：迁往 `services/assembly.py` 与 `commands.py` |
 | ~~工具工厂签名 `factory(agent)`~~ | §1.4 ToolHost | 已落地（K3a）：`factory(host)`，`kernel/host.py` |
 
@@ -507,7 +526,13 @@ executor 持有同款分工。
    只警告不阻断（收紧做成 `hook_failure_mode` 可配项，留评审）。
 5. **K4 资源闸析出**：轮次/停止/预算从 loop 不变量析出，为 loop 槽化
    （P2）清场。
-6. **K5 全局账本**：决策事件族 + 双账本引用。
+6. ~~**K5 全局账本**~~ **已完成**：双账本引用 + 决策事件族。`kernel/global_ledger.py`
+   （全局账本文件面：append / scan / read / verify，复用 `Ledger` 哈希链）+
+   `protocol.DECISION_EVENTS`（族单一真源）+ `protocol.decision_ref`（会话侧引用）
+   + `kernel.emit_decision()`（全文上全局、会话说引用、惰性自挂接默认 sink）+
+   `ledger.verify_chain()`（§3.4 校验工具）+ `/ledger` 命令。已接线
+   `plugin_promoted`（晋升改落全局）与 `plugin_rolled_back`（卸载曾晋升的插件
+   = 回滚）；`scaffold_*` / `ratchet_tightened` 的 emitter 随 E4。
 7. **K6 晋升门 + 动态插入**：admit() 会话内热插路径（只读先行）。
    **以 MCP 为 pilot**：connect 即 session 作用域动态插入，复用同一
    五阶段校验，不另造测试场景。
@@ -526,6 +551,10 @@ executor 持有同款分工。
    合并一档带过期语义？（现实现是两档：单次/记住；建议保持）
 2. **全局账本的信任边界**：用户可否手编全局账本（如手动记一条"我批准
    过"）？建议不可--手编断链，审计告警；用户意图走 overlay/晋升门。
+   **（K5）** 机制已就位：`verify_chain` 能发现中段篡改/删除，`/ledger`
+   会告警；"断链本身记账"暂缓（避免自指回环）。**手编不设物理阻断**——
+   账本是用户自己的文件，靠"改了就断链、断链即告警"的可发现性约束，
+   而非加锁。
 3. **哈希链强度**：单链摘要 vs 每会话一条链 + 全局链锚定？（建议前者，
    后者等 P6 脚手架退场需要跨会话证据链时再升）
 4. **hooks 的只紧不松过滤在运行时判定**（折叠时丢弃降宽意见）还是在
