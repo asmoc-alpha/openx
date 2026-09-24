@@ -39,6 +39,33 @@ Verify:
    "Running my tool".
 3. `pytest` — existing tools keep passing.
 
+## Declare a scaffold
+
+A plugin that exists only to **compensate for a model shortcoming** (history
+compression, intent routing, subagents, memory retrieval, a harness loop…) must
+carry its own obituary. Declare it in `__openx_meta__`:
+
+```python
+__openx_meta__ = {
+    "type": "capability.tool",
+    "trust": "user",
+    "summary": "Compress long histories",
+    "scaffold": {
+        "compensates": "the model's context window is finite",
+        "exit_when": "long-session eval passes without compression",
+        "eval_set": "evals/long-session.jsonl",     # optional
+        "fallback": "reinstall-on-regression",       # optional
+    },
+}
+```
+
+`compensates` and `exit_when` are **mandatory** — a module that cannot answer
+both has no business existing as a scaffold: either it belongs in the kernel or
+it is an ordinary capability plugin. The kernel validates the block's shape
+(missing required fields reject the plugin; unknown values are warnings only) and
+surfaces it through `/plugins`, `list_plugins` and `plugin_help`. The declaration
+is the input to the retirement eval gate; declaring one is not evidence by itself.
+
 ## Configuration-only extension points
 
 No code changes needed:

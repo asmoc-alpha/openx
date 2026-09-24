@@ -4,6 +4,25 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.5 — Scaffold retirement declarations
+
+### Every scaffold declares why it exists and when it should retire
+
+- Added an optional `scaffold` block to the plugin manifest (`__openx_meta__`):
+  `compensates` (which model shortcoming the module offsets) and `exit_when`
+  (when it should leave), plus optional `eval_set` (the retirement eval task set)
+  and `fallback` (how it comes back when the model regresses). `compensates` and
+  `exit_when` are **mandatory** — per v4.1 standard three, a module that cannot
+  answer both has no business existing as a scaffold: either it belongs in the
+  kernel or it is an ordinary capability plugin
+- The kernel validates the block's **shape** only: a missing required field
+  rejects the plugin; an unknown `fallback` value or extra key is a warning
+  (the same discipline as `type` / `mount` / `permissions`)
+- Surfaced read-only through `/plugins`, `list_plugins` (a `⚑scaffold` marker on
+  the directory row) and `plugin_help` (the full declaration). This is the input
+  the retirement eval gate consumes — declaring a scaffold is not evidence by
+  itself
+
 ## 0.1.4 — Trajectory cost fields & eval export
 
 ### Every turn records its cost

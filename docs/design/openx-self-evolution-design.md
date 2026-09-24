@@ -49,7 +49,7 @@ agent 在运行中改变自己的能力面、策略或组合，且每次改变�
 |---|---|---|---|
 | 能力层 | 插件（自产 auto-* / 第三方 / 用户）、MCP、skills | 候选池 → 模型配对 → 晋升门 → 热插 | P-A/P-B/P-C/P-F 已落地 |
 | 策略层 | 装配策略（哪类任务装哪些插件）、prompt 片段、上下文预算、记忆写入 | 上下文协议（context/v1）+ overlay 补丁 + 轨迹分析 | context/v1 已落地；策略学习待 E5 |
-| 脚手架层 | loop / 压缩 / 路由 / 子代理 / 记忆检索 | compensates + exit_when 声明 + 退场评测门 | 声明待 E1，评测门待 E4 |
+| 脚手架层 | loop / 压缩 / 路由 / 子代理 / 记忆检索 | compensates + exit_when 声明 + 退场评测门 | 声明已落地（E1），评测门待 E4 |
 | 组合层 | 模型能力档案、用户/项目 overlay | base bundle = f(档案)，overlay 补丁原语 | P6 待落地 |
 
 **TCB（内核五件套 + 七项不变量）不在任何一层。** 演进全部表现为"改
@@ -98,7 +98,7 @@ openx 的独特立场：**别家把自演进做成"模型自己的能力"，open
 | ③ 沙箱验证 | 出证据：self_test 跑绿 | admit 管线③：daemon 线程自测 + 10s join 超时即拒；调用防护（timeout/熔断/输出上限） | 已落地（P-C/P-F） |
 | ④ 晋升门 | 审批：只读热插 / 写类用户确认 | admit()：形状校验 → 静态扫描 → 自测 → 会话热插 → 用户晋升 | 已落地；K6 以 MCP 为 pilot |
 | ⑤ 灰度激活 | 先 session 后 persistent | 注册作用域：session（不进下次 boot）→ 晋升（写回组合） | 已落地（session）；persistent 写回组合待 P6 |
-| ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **待 E1/E4** |
+| ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **待 E4**（E1 声明已落地） |
 
 ### 1.2 三条演进主线
 
@@ -177,7 +177,7 @@ write_plugin(manifest, code, test)     ← 结构化输出，schema 即契约
 ### 3.1 声明先行：每个脚手架必须自带讣告
 
 v4.1 标准三：每个脚手架声明 `compensates` 与 `exit_when`。落地形态 =
-声明进 manifest（E1）：
+声明进 manifest（**E1 已落地**）：
 
 ```yaml
 # 例：历史压缩插件的演进声明
@@ -190,6 +190,13 @@ scaffold:
 
 答不出 compensates 与 exit_when 的模块，按标准三没有资格以脚手架身份
 存在——要么进内核（TCB，永不演进），要么降级为普通能力插件。
+
+**落地形态（E1）**：`manifest.py::validate_manifest` 校验 `scaffold` 块的形状——
+`compensates` 与 `exit_when` 缺失或非空串即拒载；`fallback` 不在词汇表
+（`reinstall-on-regression`）、块内有未知键只警告不拒（与 type/mount 同纪律）。
+声明经 `PluginInfo.scaffold` 落到只读投影，`/plugins`、`list_plugins`、
+`plugin_help` 三个读面各自暴露（目录给轻量标记，详情给全量）。内核只做
+形状校验——**声明本身不构成证据，退场仍须 E4 的评测门**。
 
 ### 3.2 退场三步（v4.1 §10.2，落为可执行流程）
 
@@ -364,7 +371,7 @@ P-F 自产插件；K1 目录 / K2 信封 / K3 Guard / K3a ToolHost。
 
 | 切片 | 内容 | 依赖 | 本文章节 |
 |---|---|---|---|
-| **E1 演进声明进 Manifest** | manifest 增 `scaffold` 块（compensates / exit_when / eval_set / fallback）；无声明的脚手架逐一补声明或降级为能力插件 | P-B | §3.1 |
+| **E1 演进声明进 Manifest** | manifest 增 `scaffold` 块（compensates / exit_when / eval_set / fallback）——**已落地**；无声明的脚手架逐一补声明或降级为能力插件 | P-B | §3.1 |
 | **E2 轨迹升级** | 账本补成本字段 + eval 导出（即 P-E）——**已落地**；全局账本（K5）承接决策事件族 | K2 | §6.1 |
 | **E3 缺口感知** | 离线分析器：账本聚类失败模式 → "缺口报告"（人读）；报告可作为 context 片段回喂会话 | E2 | §2.1 |
 | **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发 | E1+E2 | §3.2-§3.3 |

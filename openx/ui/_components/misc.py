@@ -69,6 +69,13 @@ class MiscMixin:
             if contrib:
                 parts.append("[dim]·[/] " + " [dim]·[/] ".join(contrib))
             self._console.print(" ".join(parts))
+            if info.scaffold:
+                self._console.print(
+                    "    [dim]◌ scaffold: "
+                    f"{escape(str(info.scaffold.get('compensates', '')))} "
+                    "[dim]·[/] exit when "
+                    f"{escape(str(info.scaffold.get('exit_when', '')))}[/dim]"
+                )
             if info.error:
                 self._console.print(f"    [red]{MARK_FAIL} {escape(info.error)}[/red]")
             for w in info.warnings:

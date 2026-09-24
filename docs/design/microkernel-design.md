@@ -139,9 +139,20 @@ lifecycle: 调度 / 持久化（挂在会话生命周期上，而非 Loop 上）
   "cost": { "schemaTokens": 800 },    // 装配预算控制
   "isolation": "process",             // 隔离级别(user 级强制 process,不可降级)
   "timeout": "30s",
-  "dependencies": ["kernel.spi.tracer"]
+  "dependencies": ["kernel.spi.tracer"],
+  "scaffold": {                       // 可选: 补偿模型短板的模块的自带讣告(E1)
+    "compensates": "模型上下文有限",
+    "exit_when": "长会话免压缩评测通过(任务成功率不掉点)",
+    "eval_set": "evals/long-session.jsonl",   // 退场评测任务集
+    "fallback": "reinstall-on-regression"     // 模型降级时如何回挂
+  }
 }
 ```
+
+`scaffold` 块是演进声明（E1，自演进详设 §3.1）：只有"补偿模型短板"的模块
+（压缩 / 路由 / 子代理 / 记忆检索 / loop 本体……）才写，普通能力插件不写。
+`compensates` 与 `exit_when` 是必答项——答不出讣告的模块没有资格以脚手架身份
+存在；声明由退场评测门（E4）消费，内核只做形状校验。
 
 ---
 

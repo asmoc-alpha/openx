@@ -40,3 +40,5 @@ class PluginInfo:
     # permissions/dependencies 由消费方经 manifest.get 读）
     manifest: dict = field(default_factory=dict)
     manifest_warnings: list[str] = field(default_factory=list)
+    # E1 脚手架演进声明：compensates/exit_when/eval_set/fallback（空 = 非脚手架）
+    scaffold: dict = field(default_factory=dict)

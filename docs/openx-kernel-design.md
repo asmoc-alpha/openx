@@ -385,6 +385,9 @@ token **增量**（input/output/cached/plugin）+ 整轮时长（`duration_ms`�
   默认文件 sink 由内核**惰性自挂接**（生产无需接线，跨进程续 seq 与链）。
   已接线：`plugin_promoted`（晋升）、`plugin_rolled_back`（卸载曾晋升的插件
   = 回滚）；`scaffold_*` / `ratchet_tightened` 的 emitter 随 E4 退场评测门。
+  脚手架的**演进声明**（E1，`manifest.scaffold` 块：compensates / exit_when /
+  eval_set / fallback）已落地——声明是 E4 评测门的输入，内核只做形状校验
+  （必答项缺失拒载，词汇外值只警告），`PluginInfo.scaffold` 落到只读投影。
 
 ### 3.3 回放语义
 

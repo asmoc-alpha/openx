@@ -182,6 +182,10 @@ Loader 五阶段照旧：**发现（目录 + entry-points + 动态 base）→ �
 
 **不消融**：内置工具包 / 适配器——模型的手，不补偿短板只演进。
 
+上述声明以 manifest 的 `scaffold` 块落地（E1）：`compensates` 与 `exit_when`
+必答，`eval_set` / `fallback` 可选；答不出讣告的模块要么进内核、要么降级为
+普通能力插件。
+
 ### 10.2 双棘轮
 
 - **安全棘轮**：单向，只紧不松。

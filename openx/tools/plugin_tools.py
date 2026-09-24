@@ -81,7 +81,10 @@ class ListPluginsTool(Tool):
             if tok:
                 cost = f" · {tok} tok"
             group = f" [{r.get('type')}]" if r.get("type") else ""
-            lines.append(f"• {r['id']}{group} [{status}] {summary}{cost}")
+            scaffold = " ⚑scaffold" if r.get("scaffold") else ""
+            lines.append(
+                f"• {r['id']}{group}{scaffold} [{status}] {summary}{cost}"
+            )
         return ToolResult(output="\n".join(lines))
 
 
@@ -125,6 +128,16 @@ class PluginHelpTool(Tool):
             lines.append(f"lifecycle: {', '.join(info['lifecycle'])}")
         if info.get("ui_slots"):
             lines.append(f"ui_slots: {', '.join(info['ui_slots'])}")
+        scaffold = info.get("scaffold") or {}
+        if scaffold:
+            lines.append(
+                "scaffold: compensates=" + str(scaffold.get("compensates", ""))
+                + f" · exit_when={scaffold.get('exit_when', '')}"
+            )
+            if scaffold.get("eval_set"):
+                lines.append(f"  eval_set: {scaffold['eval_set']}")
+            if scaffold.get("fallback"):
+                lines.append(f"  fallback: {scaffold['fallback']}")
         if info.get("warnings"):
             lines.append(f"warnings: {', '.join(info['warnings'])}")
         if info.get("error"):
@@ -207,6 +220,14 @@ if __name__ == "__main__":
                 {"id": "dataviz", "phase": "active", "scope": "session",
                  "source": "test-dir", "summary": "画图", "cost": {"schemaTokens": 400},
                  "tools": ["viz"], "commands": []},
+                # E1：带脚手架演进声明的插件（补偿模型短板，自带讣告）
+                {"id": "histcompact", "phase": "active", "scope": "boot",
+                 "source": "test-dir", "summary": "历史压缩", "cost": {},
+                 "tools": [], "commands": [],
+                 "scaffold": {"compensates": "上下文有限",
+                              "exit_when": "长会话免压缩评测通过",
+                              "eval_set": "evals/long-session.jsonl",
+                              "fallback": "reinstall-on-regression"}},
             ]
             self.loaded = False
             self.unloaded = False
@@ -239,11 +260,17 @@ if __name__ == "__main__":
         r = await ListPluginsTool(kernel).execute()
         assert "builtin-tools" in r.output and "dataviz" in r.output
         assert "400 tok" in r.output and "(session)" in r.output
+        assert "histcompact ⚑scaffold" in r.output  # E1：脚手架标记
         r = await ListPluginsTool(kernel).execute(filter="viz")
         assert "dataviz" in r.output and "builtin-tools" not in r.output
 
         r = await PluginHelpTool(kernel).execute("dataviz")
         assert "tools: viz" in r.output and "summary: 画图" in r.output
+        # E1：脚手架声明经 plugin_help 展开
+        r = await PluginHelpTool(kernel).execute("histcompact")
+        assert "compensates=上下文有限" in r.output
+        assert "exit_when=长会话免压缩评测通过" in r.output
+        assert "eval_set: evals/long-session.jsonl" in r.output
         r = await PluginHelpTool(kernel).execute("nope")
         assert "not found" in r.output
 

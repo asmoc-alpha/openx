@@ -89,4 +89,13 @@ PLUGIN_SPEC = """\
 - self_test 只做纯内存断言，不做文件/网络副作用；
 - 权限按需声明（fs:read / fs:write / network / shell / process）；
 - timeout 只对工具类有意义（插件工具的执行超时秒数）。
+
+脚手架声明（可选；仅"补偿模型短板"的模块用，普通能力插件不写）：
+  __openx_meta__ = { ..., "scaffold": {
+        "compensates": "模型上下文有限",          # 必答：补偿哪个短板
+        "exit_when":   "长会话免压缩评测通过",      # 必答：何时该退场
+        "eval_set":    "evals/long-session.jsonl", # 可选：退场评测任务集
+        "fallback":    "reinstall-on-regression" }} # 可选：模型降级时如何回挂
+  compensates 与 exit_when 缺一即拒载——答不出讣告的模块没有资格以脚手架身份
+  存在，要么进内核、要么降级为普通能力插件。声明由退场评测门（E4）消费。
 """

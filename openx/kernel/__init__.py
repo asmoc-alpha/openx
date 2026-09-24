@@ -35,7 +35,7 @@ from typing import Any, Callable, Optional
 
 from .assembly import loader
 from .assembly.context import PluginCommand, PluginContext
-from .assembly.manifest import validate_manifest
+from .assembly.manifest import scaffold_of, validate_manifest
 from .assembly.protocols import PROTOCOLS, route
 from .assembly.registrations import REGISTRATIONS
 from .assembly.registry import PluginRegistry
@@ -250,6 +250,7 @@ class PluginKernel:
 
         problems → 抛 ValueError（调用方落 FAILED，拒载）；warnings →
         info.manifest_warnings（未知 type/mount/permission 只记不拒）。
+        可选的 ``scaffold`` 演进声明（E1）另行落 ``info.scaffold`` 供读面消费。
         """
         meta = getattr(loaded, "__openx_meta__", None)
         if meta is None:
@@ -263,6 +264,7 @@ class PluginKernel:
         cost = meta.get("cost")
         if isinstance(cost, dict):
             info.cost = dict(cost)
+        info.scaffold = scaffold_of(meta)
 
     # ── 契约：ctx 回调 ──────────────────────────────────────
 
@@ -649,6 +651,8 @@ class PluginKernel:
                 "type": p.manifest.get("type", ""),
                 "mount": p.manifest.get("mount", ""),
                 "trust": p.manifest.get("trust", "user"),
+                # E1：是否带脚手架演进声明（轻量标记；详情经 plugin_help 展开）
+                "scaffold": bool(p.scaffold),
             }
             for p in self._plugins.values()
         ]
@@ -683,6 +687,7 @@ class PluginKernel:
         info.contexts = []
         info.lifecycle = []
         info.ui_slots = []
+        info.scaffold = {}
         if not self._load_apply(spec, info):
             return (False, f"plugin failed to load: {info.error}")
         info.scope = "session"
@@ -754,6 +759,8 @@ class PluginKernel:
             # P-B：manifest 全量 + 校验警告
             "manifest": dict(info.manifest),
             "manifest_warnings": list(info.manifest_warnings),
+            # E1：脚手架演进声明（compensates/exit_when/eval_set/fallback）
+            "scaffold": dict(info.scaffold),
         }
 
     def _purge_plugin_entries(self, plugin_id: str) -> None:

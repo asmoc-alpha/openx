@@ -38,6 +38,30 @@ class MyTool(Tool):
 2. 运行 `openx`，让 agent 使用 `my_tool`——权限弹窗会显示 "Running my tool"。
 3. `pytest`——既有工具保持通过。
 
+## 声明脚手架
+
+只为**补偿模型短板**而存在的插件（历史压缩、意图路由、子代理、记忆检索、
+harness loop……）必须自带讣告。在 `__openx_meta__` 里声明：
+
+```python
+__openx_meta__ = {
+    "type": "capability.tool",
+    "trust": "user",
+    "summary": "压缩长历史",
+    "scaffold": {
+        "compensates": "模型上下文有限",
+        "exit_when": "长会话免压缩评测通过",
+        "eval_set": "evals/long-session.jsonl",     # 可选
+        "fallback": "reinstall-on-regression",       # 可选
+    },
+}
+```
+
+`compensates` 与 `exit_when` 是**必答项**——答不出两者的模块没有资格以脚手架
+身份存在：要么进内核，要么就是普通能力插件。内核只校验块的形状（必答项缺失即
+拒载；值不在词汇表只警告），并经 `/plugins`、`list_plugins`、`plugin_help`
+暴露。声明是退场评测门的输入——声明本身不是证据。
+
 ## 纯配置扩展点
 
 无需改代码：
