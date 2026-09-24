@@ -48,9 +48,9 @@ agent 在运行中改变自己的能力面、策略或组合，且每次改变�
 | 层 | 演进对象 | 对应机制 | 现状 |
 |---|---|---|---|
 | 能力层 | 插件（自产 auto-* / 第三方 / 用户）、MCP、skills | 候选池 → 模型配对 → 晋升门 → 热插 | P-A/P-B/P-C/P-F 已落地 |
-| 策略层 | 装配策略（哪类任务装哪些插件）、prompt 片段、上下文预算、记忆写入 | 上下文协议（context/v1）+ overlay 补丁 + 轨迹分析 | context/v1 已落地；策略学习待 E5 |
-| 脚手架层 | loop / 压缩 / 路由 / 子代理 / 记忆检索 | compensates + exit_when 声明 + 退场评测门 | 声明已落地（E1），评测门待 E4 |
-| 组合层 | 模型能力档案、用户/项目 overlay | base bundle = f(档案)，overlay 补丁原语 | P6 待落地 |
+| 策略层 | 装配策略（哪类任务装哪些插件）、prompt 片段、上下文预算、记忆写入 | 上下文协议（context/v1）+ overlay 补丁 + 轨迹分析 | context/v1 已落地；策略学习部分落地（E3/E5/E6） |
+| 脚手架层 | loop / 压缩 / 路由 / 子代理 / 记忆检索 | compensates + exit_when 声明 + 退场评测门 | 声明已落地（E1）；评测门策略 + 组合跳过 + 档案联动已落地（E4/P6） |
+| 组合层 | 模型能力档案、用户/项目 overlay | base bundle = f(档案)，overlay 补丁原语 | **已落地（P6）**：`kernel/assembly/composition.py` + `/composition`；晋升写回组合（E7） |
 
 **TCB（内核五件套 + 七项不变量）不在任何一层。** 演进全部表现为"改
 组合输入"，内核零改动——这是 v4.1 §10.3"演进即重组"的完整含义。
@@ -97,8 +97,8 @@ openx 的独特立场：**别家把自演进做成"模型自己的能力"，open
 | ② 生成候选 | 产出插件 / 补丁 / 退场建议 | PluginSpec 契约 + write_plugin 结构化输出；模型配对产"候选+建议位置" | 已落地（P-F） |
 | ③ 沙箱验证 | 出证据：self_test 跑绿 | admit 管线③：daemon 线程自测 + 10s join 超时即拒；调用防护（timeout/熔断/输出上限） | 已落地（P-C/P-F） |
 | ④ 晋升门 | 审批：只读热插 / 写类用户确认 | admit()：形状校验 → 静态扫描 → 自测 → 会话热插 → 用户晋升 | 已落地；K6 以 MCP 为 pilot |
-| ⑤ 灰度激活 | 先 session 后 persistent | 注册作用域：session（不进下次 boot）→ 晋升（写回组合） | 已落地（session）；persistent 写回组合待 P6 |
-| ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **部分落地（E4）**：决策记账 + 组合跳过 + 门策略已落；runner 与 P6 联动待 |
+| ⑤ 灰度激活 | 先 session 后 persistent | 注册作用域：session（不进下次 boot）→ 晋升（写回组合） | **已落地（P6/E7）**：`promote_plugin` 写回用户 overlay `enable`（`scope=persistent`），下次 boot 进应载清单；`auto-*` 出厂默认不进 boot |
+| ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **部分落地（E4）**：决策记账 + 组合跳过 + 门策略已落；runner 待；**档案联动自动回挂已落地（P6）** |
 
 ### 1.2 三条演进主线
 
@@ -225,8 +225,10 @@ scaffold:
 装载。退场集合由**全局账本折叠**（单一真源），跨进程存活（重启后仍退场）。
 步骤①的**评测门策略**已落地（`services/retirement_gate.compare_success`：带 vs
 摘除对比 → retire/keep + 证据），但**真正跑** eval_set 任务的执行器未落地；
-**档案联动自动回挂**（§3.3）待 P6。故"动态 base 删一行"在无档案/overlay 时
-表现为"退场登记表——组合跳过"，等 P6 接入档案后再接自动回挂。
+**档案联动自动回挂已落地（P6）**：`model_profile.retire` 声明该模型不再需要的
+脚手架（派生退场，`REASON_PROFILE_RETIRED`），`require` 撤销之——换档即重算
+应载清单（`composition.resolve`），即"模型降级时自动回挂"。档案退场是**派生
+状态**，**不覆盖**账本决策的退场（用户裁决权威，须 `/scaffolds restore`）。
 
 消融线的方向与安全棘轮正交：能力棘轮**双向**（跟模型实测进退），安全
 棘轮**单向**（只紧不松）——脚手架退得再多，Guard 与资源闸一寸不让。
@@ -269,13 +271,16 @@ exit_when 条件命中 → 发起退场评测。换模型 / 模型升级 = 改 P
 
 ### 4.3 先离线，后在线
 
-- **第一步（E5，离线）——部分落地**：分析报告——人从轨迹读"缺口报告（E3
+- **第一步（E5，离线）——已落地**：分析报告——人从轨迹读"缺口报告（E3
   `/gaps`）/ 装配命中率（E5 `/assembly`）/ 权限摩擦点"，再手动改 overlay。
   人闭环，系统只出证据。已落地：`services/assembly_report.py` 对齐**当前组合**
   （`kernel.list_plugins`）与**近期用量**（会话账本工具调用）→ 每插件调用数、
   未使用者（带工具非内置）、使用频率序、最常用工具，及文本**建议**
-  （`/assembly suggestions`，如"回滚 auto-*"）。**overlay 编辑原语（把建议写回
-  组合）待 P6**——现阶段建议只是文本，人手动处置；
+  （`/assembly suggestions`，如"回滚 auto-*"）。**overlay 编辑原语已落地
+  （P6）**：overlay 是 JSON 文件（`~/.openx/openx.json` / `<ws>/.openx/openx.json`，
+  `enable`/`disable`），人据此把建议写回组合；`/composition` 只读面板复核结果。
+  **纪律不变**：建议永远只是候选，`/assembly suggestions` 仍只出文本、绝不自动
+  改组合——写回动作由人（或晋升门）执行。
 - **第二步（远期，在线）**：模型自己读自己的轨迹摘要，产出 overlay
   补丁建议——但补丁仍过晋升门，用户终审。**在线化只改建议的发起者，
   不改门的位置。**
@@ -411,10 +416,10 @@ P-F 自产插件；K1 目录 / K2 信封 / K3 Guard / K3a ToolHost。
 | **E1 演进声明进 Manifest** | manifest 增 `scaffold` 块（compensates / exit_when / eval_set / fallback）——**已落地**；无声明的脚手架逐一补声明或降级为能力插件 | P-B | §3.1 |
 | **E2 轨迹升级** | 账本补成本字段 + eval 导出（即 P-E）——**已落地**；全局账本（K5）承接决策事件族 | K2 | §6.1 |
 | **E3 缺口感知** | 离线分析器：账本聚类失败模式 → "缺口报告"（人读）；报告可作为 context 片段回喂会话——**已落地**（`/gaps`，四类信号 + 回喂片段；在线自知仍隐式） | E2 | §2.1 |
-| **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发——**决策记账 + 组合跳过 + 门策略已落地（收窄）**；runner 与档案联动待 | E1+E2 | §3.2-§3.3 |
-| **E5 装配策略学习** | 配对命中率 / 权限摩擦 / 上下文预算的离线报告 → overlay 建议（人终审）；auto-* 目录按使用频率排序——**装配命中率报告已落地**（`/assembly`：调用序/未使用者/建议文本，权限摩擦归 E3 `/gaps`）；overlay 建议写回待 P6 | E3 | §4.2-§4.3 |
+| **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发——**决策记账 + 组合跳过 + 门策略 + 档案联动已落地**；runner（真正跑 eval_set）待 | E1+E2 | §3.2-§3.3 |
+| **E5 装配策略学习** | 配对命中率 / 权限摩擦 / 上下文预算的离线报告 → overlay 建议（人终审）；auto-* 目录按使用频率排序——**装配命中率报告已落地**（`/assembly`：调用序/未使用者/建议文本，权限摩擦归 E3 `/gaps`）；overlay 编辑原语已落地（P6，人写回） | E3 | §4.2-§4.3 |
 | **E6 经验沉淀闭环** | 会话收尾提炼 → 记忆写入 → context/v1 召回 → 召回质量回账——**已落地（离线版）**（`/distill`：三候选提炼 + `save` 人审写入 + `memory_recall` 回账；后端注册项/使用判定待） | E2，K7（prompt 收口）协同 | §4.4 |
-| **E7 晋升持久化** | promote 写回组合（overlay enable 原语），persistent 作用域完整落地 | K6 + overlay（P6） | §1.1 环⑤ |
+| **E7 晋升持久化** | promote 写回组合（overlay enable 原语），persistent 作用域完整落地——**已落地（P6/E7）**：`promote_plugin` 写回用户 overlay `enable` + `scope=persistent`；回滚 `unload_plugin` 摘除 | K6 + overlay（P6） | §1.1 环⑤ |
 
 切片间只有数据依赖没有机制依赖：E2 是底座，E1/E3 可并行，E4-E6
 各自独立交付价值。

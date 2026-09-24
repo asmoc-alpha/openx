@@ -43,3 +43,5 @@ class PluginInfo:
     manifest_warnings: list[str] = field(default_factory=list)
     # E1 脚手架演进声明：compensates/exit_when/eval_set/fallback（空 = 非脚手架）
     scaffold: dict = field(default_factory=dict)
+    # P6 组合输入：组合跳过/退场的原因标签（disabled/retired 时非空）
+    skip_reason: str = ""

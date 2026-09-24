@@ -30,6 +30,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/hooks` | Show configured hooks |
 | `/ledger` | Show the global decision ledger (cross-session) and verify its hash chain |
 | `/scaffolds [retire\|restore] [name]` | List scaffolds; retire or restore one (records a cross-session decision) |
+| `/composition [json]` | Show the resolved composition: bundle + skipped items + reasons (see [composition](../subsystems/composition.md)) |
 | `/gaps [json\|context]` | Offline gap report: cluster recent sessions' failure modes (see [offline analysis](../subsystems/offline-analysis.md)) |
 | `/assembly [json\|suggestions]` | Offline assembly report: what's loaded vs actually used (see [offline analysis](../subsystems/offline-analysis.md)) |
 | `/distill [json\|save\|recall]` | Distill candidate experiences from recent sessions into memory (see [experience distillation](../subsystems/experience.md)) |

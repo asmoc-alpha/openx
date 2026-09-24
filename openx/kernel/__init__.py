@@ -33,7 +33,7 @@ import inspect
 import logging
 from typing import Any, Callable, Optional
 
-from .assembly import loader
+from .assembly import composition, loader
 from .assembly.context import PluginCommand, PluginContext
 from .assembly.manifest import scaffold_of, validate_manifest
 from .assembly.protocols import PROTOCOLS, route
@@ -116,6 +116,8 @@ class PluginKernel:
         # 惰性从全局账本折叠（首次 _reload 时；见 _retired_of），随后由
         # retire/restore 就地增删。组合据此跳过退场脚手架（PHASE_RETIRED）。
         self._retired: Optional[dict[str, dict[str, Any]]] = None
+        # P6 组合决议（最近一次 _reload 的结果；未装载过为 None）。
+        self._composition: composition.Composition | None = None
 
     def registry(self, kind: str) -> Optional[PluginRegistry]:
         """取某类注册项的注册表（消费方唯一取用通道）。"""
@@ -124,56 +126,124 @@ class PluginKernel:
     # ── 装配 / 生命周期 ─────────────────────────────────────
 
     def ensure_loaded(self, workspace: str) -> None:
-        """幂等加载；键 =（用户目录, 项目目录, 禁用表），变则重载。"""
-        key = (
-            str(loader.user_plugins_dir()),
-            str(loader.project_plugins_dir(workspace)),
-            tuple(sorted(_disabled_ids())),
-        )
+        """幂等加载；键 =（用户目录, 项目目录, 禁用表, overlay×2, profile），变则重载。
+
+        P6：组合输入（用户/项目 overlay + 激活档案）纳入键——任一 overlay/profile
+        文件内容变更（mtime/size 变）即触发重组，组合决议随之刷新。
+        """
+        key = self._compose_key(workspace)
         if key == self._load_key:
             return
         self._reload(str(workspace), key)
 
+    @staticmethod
+    def _file_sig(path: Any) -> tuple:
+        """文件签名 ``(path, mtime_ns, size)``；缺失/不可读 → ``(path, 0, 0)``。"""
+        try:
+            st = path.stat()
+            return (str(path), st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (str(path), 0, 0)
+
+    def _compose_key(self, workspace: str) -> tuple:
+        """加载键：目录 + 禁用表 + 组合输入签名（P6）。"""
+        profile_name = composition.active_profile_name()
+        return (
+            str(loader.user_plugins_dir()),
+            str(loader.project_plugins_dir(workspace)),
+            tuple(sorted(_disabled_ids())),
+            self._file_sig(composition.user_overlay_path()),
+            self._file_sig(composition.project_overlay_path(workspace)),
+            self._file_sig(composition.profile_path(profile_name)),
+            profile_name,
+        )
+
     def _reload(self, workspace: str, key: tuple) -> None:
         disabled = set(key[2])
         retired = self._retired_of()   # E4：退场集合从全局账本折叠（惰性、一次）
+        # P6 组合输入：overlay（用户/项目）+ 激活档案 → 应载清单
+        user_overlay = composition.load_overlay(composition.user_overlay_path())
+        project_overlay = composition.load_overlay(composition.project_overlay_path(workspace))
+        profile = composition.load_profile(composition.active_profile_name())
+        specs = loader.discover(workspace)
+        comp = composition.resolve(
+            [s.id for s in specs],
+            retired_by_ledger=set(retired),
+            user_overlay=user_overlay,
+            project_overlay=project_overlay,
+            settings_disabled=disabled,
+            profile=profile,
+        )
+        # overlay 显式 enable 的插件在 boot 装载时即标记 persistent（灰度终点）
+        persistent = set(user_overlay.enable) | set(project_overlay.enable)
+
         self.registries = {
             r.kind: PluginRegistry(r.kind, r.validator) for r in REGISTRATIONS
         }
         self._plugins = {}
         self.workspace = workspace
+        self._composition = comp
         # base bundle 内置插件恒先挂载（列表序即优先级的结构性前提）：
         # builtin-tools 在前--组合决议/首条注册事件的既有次序不变
         from ..builtin import BUILTIN_PLUGINS
 
         for spec in BUILTIN_PLUGINS:
-            self._load_one(spec, disabled, retired)
-        for spec in loader.discover(workspace):
-            self._load_one(spec, disabled, retired)
+            self._load_one(spec, comp, persistent)
+        for spec in specs:
+            self._load_one(spec, comp, persistent)
         # 组合决议记账：每次实际重组（键变化）固化为一条事件，任何一次
         # 会话的组合都能事后复现。幂等跳过（键未变）不记。
+        # P6：payload 增 profile 摘要 + overlay 操作 + 跳过明细；旧键
+        # （workspace/plugins/disabled）保留，账本格式向后兼容。
         self.emit(
             "composition_resolved",
             {
                 "type": "composition_resolved",
                 "workspace": workspace,
                 "plugins": list(self._plugins),  # 加载序（优先级序）
-                "disabled": sorted(disabled),
+                "disabled": sorted(comp.disabled),
+                "profile": comp.profile,
+                "overlay": comp.ops,
+                "skipped": comp.skipped(),
             },
         )
         # 全部插件处理完成才提交加载键：中途异常（含内置致命）保持旧键，
         # 下次 ensure_loaded 完整重试，不留半载状态。
         self._load_key = key
 
+    def composition_summary(self) -> dict[str, Any]:
+        """当前组合决议摘要（P6）：应载/跳过/档案/overlay 操作（只读投影）。
+
+        未装载过时返回空壳（调用方先 ``ensure_loaded``）。
+        """
+        comp = getattr(self, "_composition", None)
+        if comp is None:
+            return {"loaded": False}
+        return {
+            "loaded": True,
+            "profile": comp.profile,
+            "overlay": comp.ops,
+            "load": list(comp.load),
+            "disabled": dict(comp.disabled),
+            "retired": dict(comp.retired),
+        }
+
     def _retired_of(self) -> dict[str, dict[str, Any]]:
         """退场登记表（E4）：首次从全局账本折叠，此后就地增删（单一真源）。
 
         惰性推导让内核构造不触发 IO；跨进程"摘除可恢复"由账本续接保证——
         新进程首次重组即从 ``~/.openx/ledger.jsonl`` 折出退场集合。
+
+        P6：**账本折叠仅含用户裁决的退场**；模型档案驱动的退场（profile.retire）
+        是派生状态，由 :func:`composition.resolve` 另行叠加（换档即自动回挂）。
         """
         if self._retired is None:
             self._retired = retired_scaffolds(GlobalLedgerStore().read_all())
         return self._retired
+
+    def _profile_retired(self) -> set[str]:
+        """当前激活档案声明「不再需要」的脚手架集合（P6，调用期读档）。"""
+        return set(composition.load_profile(composition.active_profile_name()).retire)
 
     def _force_reload(self) -> None:
         """强制重组（retire/restore 后让组合反映新状态）。未装载过则留给首次
@@ -183,7 +253,7 @@ class PluginKernel:
             self.ensure_loaded(self.workspace)
 
     def _load_one(
-        self, spec: loader.PluginSpec, disabled: set, retired: dict[str, dict]
+        self, spec: loader.PluginSpec, comp: composition.Composition, persistent: set[str]
     ) -> None:
         if spec.id in self._plugins:  # 重复 id（含撞内置）：先见者赢
             _log.warning("duplicate plugin id %r; first wins", spec.id)
@@ -192,21 +262,28 @@ class PluginKernel:
             id=spec.id, source=spec.source, phase=PHASE_LOADING, builtin=spec.builtin
         )
         self._plugins[spec.id] = info
-        if spec.id in disabled and not spec.builtin:
+        # P6：禁用（组合 skip）——内置插件不受组合输入约束（禁用表/overlay 对其无效）
+        if spec.id in comp.disabled and not spec.builtin:
             info.phase = PHASE_DISABLED
+            info.skip_reason = comp.disabled[spec.id]
             return
         # E4 退场脚手架：组合跳过（不导入、不贡献），代码与注册仍在——摘除
         # 不是删除。声明从账本条目回填，故 /plugins 与 plugin_help 仍能展示
-        # 其 compensates/exit_when（插件本体未被导入）。
-        if spec.id in retired and not spec.builtin:
+        # 其 compensates/exit_when（插件本体未被导入）。P6：退场亦可是 profile
+        # 驱动（档案联动）——此时无账本条目，声明留空（插件未被导入）。
+        if spec.id in comp.retired and not spec.builtin:
             info.phase = PHASE_RETIRED
-            payload = retired[spec.id]
+            info.skip_reason = comp.retired[spec.id]
+            payload = self._retired_of().get(spec.id, {})
             info.scaffold = {
                 key: payload[key]
                 for key in ("compensates", "exit_when", "eval_set", "fallback")
                 if payload.get(key)
             }
             return
+        # overlay 显式 enable（含 E7 晋升写回）：boot 装载即标 persistent
+        if not spec.builtin and spec.id in persistent:
+            info.scope = "persistent"
         if not self._load_apply(spec, info):
             return
         self.emit(
@@ -690,8 +767,10 @@ class PluginKernel:
                 "trust": p.manifest.get("trust", "user"),
                 # E1：是否带脚手架演进声明（轻量标记；详情经 plugin_help 展开）
                 # E4：退场脚手架未被导入，标记改由账本登记表回填
-                "scaffold": bool(p.scaffold) or p.id in self._retired_of(),
+                "scaffold": bool(p.scaffold) or p.phase == PHASE_RETIRED,
                 "retired": p.phase == PHASE_RETIRED,
+                # P6：组合跳过/退场原因（active 时为空）
+                "skip_reason": p.skip_reason,
             }
             for p in self._plugins.values()
         ]
@@ -737,16 +816,22 @@ class PluginKernel:
         return (True, f"plugin loaded: {name} (session)")
 
     def unload_plugin(self, name: str) -> tuple[bool, str]:
-        """会话内卸载（P-A）：仅限 ``scope="session"`` 的插件增量。
+        """会话内卸载（P-A）/ 回滚晋升（E7）。
 
-        boot 插件属于组合输入，运行时卸载会与组合语义冲突——走组合重载
-        （ensure_loaded / /workspace），不在此卸载。按 provenance 清全部
-        注册条目并记账（unregistered / plugin_unloaded）。
+        - ``scope="session"``：会话增量卸载。
+        - ``scope="persistent"``（曾晋升、已写回 overlay enable）：**回滚 = 卸载**
+          ——摘掉用户 overlay 的 enable，下次 boot 该 auto-* 插件回到出厂默认
+          （不进应载清单），并记 ``plugin_rolled_back`` 决策。
+        - ``scope="boot"``：boot 插件属组合输入，运行时卸载与组合语义冲突——
+          走组合重载（overlay disable + ensure_loaded），不在此卸载。
+
+        按 provenance 清全部注册条目并记账（unregistered / plugin_unloaded）。
         """
         info = self._plugins.get(name)
         if info is None or info.phase != PHASE_ACTIVE:
             return (False, f"plugin not active: {name}")
-        if info.scope != "session":
+        persistent_rollback = info.scope == "persistent"
+        if info.scope not in ("session", "persistent"):
             return (
                 False,
                 f"plugin {name} is boot-scoped; reload via composition, "
@@ -771,6 +856,15 @@ class PluginKernel:
                 {"type": "plugin_rolled_back", "plugin": name},
                 origin="user",
             )
+        # E7：回滚一并撤销组合写回（用户 overlay enable），下次 boot 复原。
+        if persistent_rollback:
+            try:
+                overlay = composition.load_overlay(composition.user_overlay_path())
+                if name in overlay.enable:
+                    overlay.enable.discard(name)
+                    composition.save_overlay(composition.user_overlay_path(), overlay)
+            except OSError as exc:
+                _log.warning("rollback: overlay write failed for %s: %s", name, exc)
         return (True, f"plugin unloaded: {name}")
 
     def plugin_help(self, name: str) -> Optional[dict]:
@@ -802,6 +896,8 @@ class PluginKernel:
             # E4：退场脚手架未被导入，声明已在 _load_one 从账本条目回填
             "scaffold": dict(info.scaffold),
             "retired": info.phase == PHASE_RETIRED,
+            # P6：组合跳过/退场原因
+            "skip_reason": info.skip_reason,
         }
 
     def _purge_plugin_entries(self, plugin_id: str) -> None:
@@ -824,11 +920,15 @@ class PluginKernel:
                     )
 
     def promote_plugin(self, name: str) -> tuple[bool, str]:
-        """用户确认晋升（P-F）：``auto-*`` 插件 trust 升 user + 决策记账。
+        """用户确认晋升（P-F）：``auto-*`` 插件 trust 升 user + **写回组合** + 记账。
 
         决策（``plugin_promoted``）落**全局账本**（K5，§3.2）：晋升是跨会话
         事实，会话账本只留引用。记账先于改 trust（守"记账先于动作"）。
-        boot 持久化（写回组合/overlay）列后续。回滚仍走 unload_plugin。
+
+        E7 晋升持久化：晋升 = **写回组合**——把 *name* 加入用户 overlay 的
+        ``enable``（``~/.openx/openx.json``），故下次 boot 该 auto-* 插件进应载
+        清单（灰度终点 persistent）。写失败仅告警降级，不影响晋升本身
+        （组合是证据系统，不该单点）。回滚走 unload_plugin（摘 overlay enable）。
         """
         info = self._plugins.get(name)
         if info is None or info.phase != PHASE_ACTIVE:
@@ -843,7 +943,13 @@ class PluginKernel:
         info.manifest = dict(info.manifest)
         info.manifest["trust"] = "user"
         self._promoted.add(name)
-        return (True, f"plugin promoted: {name} (trust=user)")
+        info.scope = "persistent"
+        # E7：写回组合（用户级 overlay enable）——"先 session 后 persistent"的落点
+        try:
+            composition.enable_in_overlay(composition.user_overlay_path(), name)
+        except OSError as exc:
+            _log.warning("promote: overlay writeback failed for %s: %s", name, exc)
+        return (True, f"plugin promoted: {name} (trust=user, persistent)")
 
     # ── 退场（E4）：脚手架消融线的组合层动作 ──────────────────
 
@@ -864,7 +970,7 @@ class PluginKernel:
         一键回挂。
         """
         info = self._plugins.get(name)
-        if name in self._retired_of():
+        if name in self._retired_of() or name in self._profile_retired():
             return (False, f"scaffold already retired: {name}")
         if info is None or info.phase != PHASE_ACTIVE:
             return (False, f"plugin not active: {name}")
@@ -891,9 +997,16 @@ class PluginKernel:
         """回挂一个已退场脚手架（E4）：``scaffold_restored`` 上全局账本 + 重新装载。
 
         摘除可恢复（§5.2）：回挂 = 后续一条 ``scaffold_restored``——账本折叠
-        因此丢弃该名，重组时脚手架重新进入应载清单。模型降级自动回挂（档案
-        联动）待 P6；本动作是它的人工出口。
+        因此丢弃该名，重组时脚手架重新进入应载清单。**模型档案驱动**的退场
+        （profile.retire，P6 档案联动）不走本动作——它是派生状态，改档案即自动
+        回挂，故此处显式拒绝以免"看似成功却不生效"。
         """
+        if name in self._profile_retired():
+            reason = (
+                f"{name} is retired by the active model profile; "
+                "edit the profile to restore it"
+            )
+            return (False, reason)
         if name not in self._retired_of():
             return (False, f"scaffold not retired: {name}")
         payload: dict[str, Any] = {"type": "scaffold_restored", "plugin": name}

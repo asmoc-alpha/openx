@@ -363,7 +363,17 @@ load_plugin("dataquery")
    / test ALLOW / promote ASK）+ admit 管线（manifest 校验 → 语法/契约存在性 →
    **进程内 self_test** → 落盘 → load_plugin → 重建）+ `plugin_promoted` 决策事件。
    自测在进程内跑（D9 进程隔离为后续加固，write 的 ASK 闸是当前信任锚点）；
-   promote 的 boot 持久化（进组合/overlay）列后续。
+   promote 的 boot 持久化（进组合/overlay）见下条 P6/P7。
+7. ~~**P6 组合输入 + P7 晋升持久化**~~ **已完成**（v0.1.10）：
+   `kernel/assembly/composition.py` —— `Overlay` / `ModelProfile` / 纯函数
+   `resolve`（`model_profile × 用户 overlay × 项目 overlay → 应载清单`，同键
+   用户赢项目）+ overlay/profile 文件 IO（JSON，零额外依赖）。内核 `_reload`
+   接线：组合输入（overlay 文件 + profile 文件签名）纳入加载键，变更即重组；
+   `composition_resolved` 增 `profile`/`overlay`/`skipped` 字段 + `/composition`
+   只读面板。**E7 晋升持久化**：`promote_plugin` 写回用户 overlay `enable`（
+   `scope=persistent`，下次 boot 进应载清单），回滚 `unload_plugin` 摘除之。
+   **`auto-*` 出厂默认不进 boot**——「先 session 后 persistent」的灰度由此兑现。
+   **档案联动自动回挂**（§3.3）：`profile.retire` 派生退场、换档即重算。
 
 > **搁置决定（2026-08-24，延续）**：沙箱执行（K1c/K3/K4）与记账深化整体暂缓，
 > 已落地 K2a/K2b 行为中性保留不回退；当前活跃方向为插件维护补全（卸载/

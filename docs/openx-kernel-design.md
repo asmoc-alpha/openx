@@ -1,5 +1,13 @@
 # OpenX 内核详设 v2.3 · 编排 / 沙箱执行 / 插件维护 / 记账 / 容灾
 
+> **P6/P7 落地（组合输入 + 晋升持久化）**：§1.3 引入**组合输入**——
+> `kernel/assembly/composition.py`（`model_profile × 用户/项目 overlay → 应载清单`，
+> 纯函数 `resolve`）+ 内核 `_reload` 接线（overlay/profile 纳入加载键）+
+> `composition_resolved` 增 profile/overlay/skipped 字段 + `/composition` 面板。
+> overlay 落为 **JSON**（`~/.openx/openx.json` / `<ws>/.openx/openx.json`）；
+> `auto-*` **出厂默认不进 boot**（灰度：session → 晋升写回组合）；
+> **E7 晋升持久化**：`promote_plugin` 写回用户 overlay `enable`。详见 §1.3。
+>
 > v2.3（落地 K5）**双账本**：新增**全局账本** `~/.openx/ledger.jsonl`
 > （`kernel/global_ledger.py`）与**决策事件族**（`protocol.DECISION_EVENTS`）——
 > 决策全文上全局账本，会话账本只留 `decision_ref` 引用（§3.2 兑现）；
@@ -133,24 +141,38 @@ provenance = { plugin_id, source, scope, inserted_at_seq }
 
 ```
 model_profile（按模型版本的能力面）
-  × 用户 overlay（~/.openx/openx.yml，补丁原语：add/remove/replace/enable/disable）
-  × 项目 overlay（.openx/openx.yml，同原语）
+  × 用户 overlay（~/.openx/openx.json，补丁原语：add/remove/replace/enable/disable）
+  × 项目 overlay（<ws>/.openx/openx.json，同原语）
   = 应载清单（computed bundle）——loader 只装载清单内插件
 ```
 
 - **决议记账**：每次 boot 把计算结果固化为 `composition_resolved` 事件
-  （含 profile 摘要、overlay 操作、最终清单）。这是"演进即重组"可审计
-  的落点--任何一次会话的组合都能事后复现。
+  （含 profile 摘要、overlay 操作、最终清单、跳过明细）。这是"演进即重组"
+  可审计的落点--任何一次会话的组合都能事后复现。
 - 补丁语义按 cordis.patch.yml 式：overlay 只作用于 f(档案) 的计算结果，
   不直接互相覆盖；同键冲突用户级赢项目级。
 - **不加载 ≡ 现状**（标准四）：overlay 为空且档案未声明任何脚手架
   requires 时，应载清单 = 内置插件 + 目录/entry-points 全集，行为与
   今天逐字节等价。
-- P1 落地形态：档案与 overlay 尚未引入，应载清单退化为"全集"--但
-  决议记账从第一天就有（空组合也记），账本格式不因功能分期而改。
 - **迁移语义**：settings.json 顶层 `plugins.disabled`（P1 开关）在
   overlay 落地时升格为用户级 overlay 的 `disable` 原语语法糖--迁移期
   双读（两处并集生效），写只走 overlay；不出现两个并存的写真相源。
+- **文件格式**：overlay 落为 **JSON**（`openx.json`，非 .yml）——保持
+  openx 零额外依赖、与 `settings.json` 同构；原设计草图为 `.yml`。
+- **模型档案**：具名 JSON 档 `~/.openx/profiles/<name>.json`
+  （`{"name","retire","require"}`），激活名取自 settings 的
+  `plugins.profile`。`retire` = 该模型不再需要的脚手架（派生退场，换档即
+  重算 = 档案联动自动回挂）；`require` = 撤销派生退场。**不覆盖**账本决策的
+  退场（用户裁决权威）。
+- **auto-\* 出厂默认**：模型自产插件（§2.4 独立信任档）默认**不进 boot**——
+  「先 session 后晋升」的灰度落点：经 overlay `enable`（晋升写回）或用户显式
+  enable 才进应载清单。非 auto-* 插件不受影响。
+- **落地形态（P6，已完成）**：`kernel/assembly/composition.py`（`Overlay` /
+  `ModelProfile` / 纯函数 `resolve` + overlay/profile 文件 IO）+ 内核
+  `_reload` 接线（组合输入纳入加载键，overlay 文件变更即重组）+
+  `composition_resolved` 增字段 + `/composition` 只读面板。**E7 晋升持久化**：
+  `promote_plugin` 写回用户 overlay `enable`（persistent 作用域），回滚
+  `unload_plugin` 摘除之。档案与 overlay 的写真相源唯一（overlay 文件）。
 
 ### 1.4 加载编排：五阶段
 

@@ -29,6 +29,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/hooks` | 显示已配置的 hooks |
 | `/ledger` | 显示全局账本（跨会话决策）并校验其哈希链 |
 | `/scaffolds [retire\|restore] [name]` | 列出脚手架；退场或回挂其一（记为跨会话决策） |
+| `/composition [json]` | 显示解析后的组合：应载清单 + 跳过项 + 原因（见 [组合输入](../subsystems/composition.zh.md)） |
 | `/gaps [json\|context]` | 缺口报告（离线）：聚类最近会话的失败模式（见 [离线分析](../subsystems/offline-analysis.zh.md)） |
 | `/assembly [json\|suggestions]` | 装配报告（离线）：装了什么 vs 实际用了什么（见 [离线分析](../subsystems/offline-analysis.zh.md)） |
 | `/distill [json\|save\|recall]` | 从最近会话提炼候选经验写入记忆（见 [经验沉淀](../subsystems/experience.zh.md)） |

@@ -386,6 +386,65 @@ async def _cmd_assembly(agent, console, args):
 
 
 @register(
+    "composition",
+    description="Show the resolved composition (profile × overlay → bundle) (P6)",
+)
+async def _cmd_composition(agent, console, args):
+    """组合面板（P6）：模型档案 × overlay → 应载清单 / 跳过明细。
+
+    - 无参：人读面板（应载清单 + 跳过项及原因 + 档案/overlay 操作）；
+    - ``/composition json``：结构化摘要（``composition_summary``）。
+
+    只读投影：读内核最近一次组合决议（``kernel.composition_summary``）。
+    改组合走 overlay 文件（``~/.openx/openx.json`` / ``<ws>/.openx/openx.json``）
+    或 ``/scaffolds`` / ``promote_plugin``，本命令不改任何东西。
+    """
+    from rich.markup import escape
+
+    from ...kernel import get_kernel
+
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+    summary = kernel.composition_summary()
+    if args and args[0].lower() == "json":
+        console.raw.print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return True
+
+    if not summary.get("loaded"):
+        console.print_info("Composition not resolved yet.")
+        return True
+
+    profile = summary.get("profile") or "(none)"
+    console.raw.print(
+        "\n[bold]Composition[/bold]  "
+        f"[dim](model profile: {escape(str(profile))})[/dim]\n"
+    )
+    console.raw.print("[bold]Load[/bold] ("
+                      f"{len(summary.get('load', []))} plugin(s) in bundle)")
+    for pid in summary.get("load", []):
+        console.raw.print(f"  [green]✓[/green] {escape(str(pid))}")
+
+    skipped = {}
+    skipped.update(summary.get("retired") or {})
+    skipped.update(summary.get("disabled") or {})
+    if skipped:
+        console.raw.print("\n[bold]Skip[/bold]")
+        for pid in sorted(skipped):
+            console.raw.print(
+                f"  [yellow]·[/yellow] {escape(str(pid))} "
+                f"[dim]({escape(str(skipped[pid]))})[/dim]"
+            )
+
+    overlay = summary.get("overlay") or {}
+    for source in ("user", "project"):
+        ops = overlay.get(source) or {}
+        if ops:
+            rendered = ", ".join(f"{k}={len(v)}" for k, v in sorted(ops.items()))
+            console.raw.print(f"\n[dim]overlay[{source}]: {escape(rendered)}[/dim]")
+    return True
+
+
+@register(
     "distill",
     description="Distill candidate experiences from recent sessions into memory (E6)",
 )

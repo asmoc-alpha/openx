@@ -27,7 +27,7 @@ openx/
 │   │   │                  #   streaming) / single_shot.py / setup_wizard.py
 │   │   └── serve/         # Web surface (aiohttp optional dep) + static assets
 │   ├── kernel/            # Microkernel (five-piece trust base)
-│   │   ├── assembly/      #   ② Plugin assembler: loader/registry/manifest/protocols…
+│   │   ├── assembly/      #   ② Plugin assembler: loader/registry/manifest/protocols/composition…
 │   │   ├── inventory.py   #   ② Plugin inventory: read-only loader-tree projection (/plugins)
 │   │   ├── reasoning/     #   ① Reasoning core: provider/retry
 │   │   ├── audit/         #   ③ Security audit: guard verdict pipeline + hooks (user hook chain)

@@ -411,3 +411,81 @@ async def test_promote_plugin_records_decision(kernel_env):
     # 非 auto-* 不能晋升
     r = await PromotePluginTool(k).execute("builtin-tools")
     assert "only auto-" in r.output
+
+
+# ── E7 晋升持久化：promote 写回组合（overlay enable）────────────────
+
+
+def _user_overlay(settings):
+    from openx.kernel.assembly import composition
+
+    return composition.load_overlay(Path(settings).parent / "openx.json")
+
+
+async def test_promote_writes_overlay_and_marks_persistent(kernel_env):
+    """晋升 = 写回组合：用户 overlay enable + scope=persistent。"""
+    ws, settings = kernel_env
+    k = get_kernel()
+    k.ensure_loaded(str(ws))
+    r = await WritePluginTool(k, None).execute("greet", "打招呼", GEN_CODE, GEN_TEST)
+    assert r.success
+    assert k.plugin_help("auto-greet")["scope"] == "session"
+
+    r = await PromotePluginTool(k).execute("auto-greet")
+    assert r.success and "persistent" in r.output
+    assert k.plugin_help("auto-greet")["scope"] == "persistent"
+    # 写回组合：用户 overlay 的 enable 含该插件
+    assert "auto-greet" in _user_overlay(settings).enable
+
+
+async def test_promoted_auto_survives_reboot(kernel_env):
+    """晋升持久化：新内核实例 boot 时该 auto-* 进应载清单（scope=persistent）。"""
+    from openx.kernel import reset_kernel
+
+    ws, _ = kernel_env
+    k = get_kernel()
+    k.ensure_loaded(str(ws))
+    r = await WritePluginTool(k, None).execute("greet", "打招呼", GEN_CODE, GEN_TEST)
+    assert r.success
+    assert await PromotePluginTool(k).execute("auto-greet")
+
+    reset_kernel()               # 模拟重启：全新内核，仅凭盘上 overlay 复原
+    k2 = get_kernel()
+    k2.ensure_loaded(str(ws))
+    info = k2.plugin_help("auto-greet")
+    assert info["phase"] == "active" and info["scope"] == "persistent"
+
+
+async def test_unpromoted_auto_not_loaded_after_reboot(kernel_env):
+    """未晋升的 auto-* 插件重启后不进 boot（出厂默认排除）。"""
+    from openx.kernel import reset_kernel
+
+    ws, _ = kernel_env
+    k = get_kernel()
+    k.ensure_loaded(str(ws))
+    r = await WritePluginTool(k, None).execute("greet", "打招呼", GEN_CODE, GEN_TEST)
+    assert r.success   # 仅会话热插，未晋升
+
+    reset_kernel()
+    k2 = get_kernel()
+    k2.ensure_loaded(str(ws))
+    info = k2.plugin_help("auto-greet")
+    assert info["phase"] == "disabled" and info["skip_reason"] == "auto-unpromoted"
+
+
+async def test_rollback_removes_overlay_enable(kernel_env):
+    """回滚 = 卸载：从用户 overlay 摘掉 enable，记 plugin_rolled_back。"""
+    ws, settings = kernel_env
+    k = get_kernel()
+    global_sink = Sink()
+    k.attach_global_ledger(global_sink)
+    k.ensure_loaded(str(ws))
+    r = await WritePluginTool(k, None).execute("greet", "打招呼", GEN_CODE, GEN_TEST)
+    assert r.success
+    assert await PromotePluginTool(k).execute("auto-greet")
+    assert "auto-greet" in _user_overlay(settings).enable
+
+    ok, _ = k.unload_plugin("auto-greet")
+    assert ok
+    assert "auto-greet" not in _user_overlay(settings).enable
+    assert "plugin_rolled_back" in global_sink.types()

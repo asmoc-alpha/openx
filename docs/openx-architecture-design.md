@@ -64,7 +64,7 @@ model_profile:
 ```
 
 - **动态 base bundle**：出厂组合 = `f(档案)` 的计算结果。脚手架以 `requires` / `exit_when` 声明对档案的依赖，loader 据此计算该模型下应挂哪些模块。换模型、模型升级 → 组合自动变化，零代码改动。
-- 用户 overlay（`~/.openx/openx.yml`）与项目 overlay（`.openx/openx.yml`）以补丁语义（cordis.patch.yml 式）作用在计算结果上。
+- 用户 overlay（`~/.openx/openx.json`）与项目 overlay（`<ws>/.openx/openx.json`）以补丁语义（cordis.patch.yml 式，落为 JSON 以保持零额外依赖）作用在计算结果上。
 - 与协议层的版本协商对称：**一个面向端，一个面向模型**。
 
 ## 5. ① 端层：薄客户端

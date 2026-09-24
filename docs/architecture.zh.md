@@ -25,7 +25,7 @@ openx/
 │   │   │                  #   流式显示）/ single_shot.py（单次）/ setup_wizard.py（向导）
 │   │   └── serve/         # Web 端（aiohttp 可选依赖）+ 静态前端资源
 │   ├── kernel/            # 微内核（五件套信任基座）
-│   │   ├── assembly/      #   ② 插件装配器：loader/registry/manifest/protocols…
+│   │   ├── assembly/      #   ② 插件装配器：loader/registry/manifest/protocols/composition…
 │   │   ├── inventory.py   #   ② 插件清单：loader 树的只读投影（/plugins）
 │   │   ├── reasoning/     #   ① 推理核心：provider/retry
 │   │   ├── audit/         #   ③ 安全审计：guard 裁决管线 + hooks 用户钩子链

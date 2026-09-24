@@ -4,6 +4,35 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.10 — Composition & promotion persistence
+
+### Resolve the load bundle from a model profile × overlays, and make promotion real
+
+- Added **composition inputs** (`kernel/assembly/composition.py`): the loader no
+  longer loads "everything it can find" but the **computed bundle** — the result
+  of `model_profile × user overlay × project overlay`. Same-key conflicts resolve
+  **user over project**; `settings.json`'s `plugins.disabled` becomes the legacy
+  form of a user-level `disable` (both read, writes only to the overlay)
+- Overlays are **JSON** (`~/.openx/openx.json`, `<ws>/.openx/openx.json`) to keep
+  OpenX dependency-free; a **model profile** is a named sheet under
+  `~/.openx/profiles/<name>.json` (`{"retire": [...], "require": [...]}`),
+  selected by `plugins.profile`. An empty overlay reproduces today's behaviour
+  exactly
+- **`auto-*` plugins are excluded from the boot bundle by default** — model-produced
+  plugins only survive a restart once enabled. This is what makes *"session first,
+  then persistent"* real
+- **Promotion persistence (E7)**: `promote_plugin` now **writes the plugin back
+  into the composition** (user overlay `enable`) and marks it `scope=persistent`,
+  so it is in the boot bundle next time; `unload_plugin` rolls a persistent plugin
+  back by removing it from the overlay
+- **Profile-driven retirement** (auto-remount): `profile.retire` skips scaffolds
+  the model no longer needs (a derived state — changing the profile recomputes the
+  bundle), `require` restores them; neither overrides a retirement the user
+  *decided* via the ledger
+- Every recomposition appends a `composition_resolved` event now carrying the
+  profile name, overlay operations and skip reasons; `/composition [json]` shows
+  the bundle and why each plugin was skipped
+
 ## 0.1.9 — Experience distillation
 
 ### Turn sessions into durable memory, and account for recall
