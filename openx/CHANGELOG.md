@@ -4,6 +4,25 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.7 — Gap report
+
+### Turn the session ledger into a human-readable gap report
+
+- Added `/gaps`: an offline analyzer over recent sessions that clusters four
+  kinds of recurring, actionable failure signal — `tool_failure` (a tool that
+  keeps erroring), `permission_friction` (the same tool asked-and-approved
+  repeatedly), `denied_calls` (the same tool blocked repeatedly) and `detour`
+  (the same call repeated in one session). Incidental signals are filtered by
+  per-kind thresholds and entries are ordered by severity
+- `/gaps context` prints the report as a compact **context fragment** you can
+  paste into `OPENX.md` (or contribute from a `context.memory` plugin) to feed
+  the gaps back into the next session's system prompt; `/gaps json` prints the
+  structured report (`openx-gap-report/v1`)
+- The report is **evidence, not action**: it only reads the current workspace's
+  session ledger (offline, read-only) and never writes rules, plugins or config.
+  Tool-failure detection is a heuristic (a leading `Error:` line in the
+  tool-result text)
+
 ## 0.1.6 — Scaffold retirement
 
 ### Scaffolds can now retire, and the decision is recorded

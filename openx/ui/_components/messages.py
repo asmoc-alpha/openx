@@ -87,6 +87,7 @@ class MessagesMixin:
             ("/cost", "Show cumulative token usage"),
             ("/ledger", "Show the global decision ledger (cross-session)"),
             ("/scaffolds", "List scaffolds; retire or restore one (retirement gate)"),
+            ("/gaps [json|context]", "Offline gap report: cluster failure modes from recent sessions"),
             ("/export-eval", "Export session trajectories (with cost fields) to an eval JSONL"),
             ("/compact", "Summarize history to free up context"),
             ("/tips", "Show usage tips"),

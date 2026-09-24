@@ -308,6 +308,44 @@ async def _cmd_scaffolds(agent, console, args):
 
 
 @register(
+    "gaps",
+    description="Offline gap report: cluster failure modes from recent sessions (E3)",
+)
+async def _cmd_gaps(agent, console, args):
+    """缺口报告（E3 缺口感知）：读最近会话账本 → 失败模式聚类 → 人读报告。
+
+    - 无参：打印人读报告（工具错误 / 权限摩擦 / 反复被拒 / 绕路）；
+    - ``/gaps context``：打印**上下文片段**（可并入系统提示回喂下次会话）；
+    - ``/gaps json``：打印结构化报告（``openx-gap-report/v1``）。
+
+    离线、只读、无审批——报告是**证据不是审批**（人据 §4.3 决定是否沉淀规则 /
+    生成插件 / 调整装配）。只读本工作区会话；绝不建项目 ``.openx``。
+    """
+    from rich.markup import escape
+
+    from ...services.gap_report import (
+        MAX_SESSIONS,
+        analyze_workspace,
+        as_context_fragment,
+        render_text,
+    )
+
+    report = analyze_workspace(str(agent.workspace), limit=MAX_SESSIONS)
+    mode = args[0].lower() if args else ""
+    if mode == "json":
+        console.raw.print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif mode == "context":
+        fragment = as_context_fragment(report)
+        if fragment:
+            console.raw.print(escape(fragment))
+        else:
+            console.print_info("No gaps detected in recent sessions.")
+    else:
+        console.raw.print(escape(render_text(report)))
+    return True
+
+
+@register(
     "export-eval",
     description="Export session trajectories (with cost fields) to an eval JSONL",
 )

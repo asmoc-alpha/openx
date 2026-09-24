@@ -106,7 +106,7 @@ All flags and slash commands: [docs/user/guide/commands.md](docs/user/guide/comm
 | Page | Covers |
 |---|---|
 | [User guides](docs/user/index.md) | commands, modes & permissions, configuration, sessions |
-| [Subsystem reference](docs/subsystems/README.md) | subagents, workflows, background tasks, hooks, MCP, recovery |
+| [Subsystem reference](docs/subsystems/README.md) | subagents, workflows, background tasks, hooks, MCP, scaffolds, offline analysis, recovery |
 | [Web UI (`openx serve`)](docs/openx-serve.md) | browser chat, remote approval, session replay |
 | [Architecture](docs/architecture.md) | module tree and runtime loop |
 | [Development](docs/development.md) | contributor setup, tests, lint |
