@@ -30,6 +30,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/ledger` | 显示全局账本（跨会话决策）并校验其哈希链 |
 | `/scaffolds [retire\|restore] [name]` | 列出脚手架；退场或回挂其一（记为跨会话决策） |
 | `/gaps [json\|context]` | 缺口报告（离线）：聚类最近会话的失败模式（见 [离线分析](../subsystems/offline-analysis.zh.md)） |
+| `/assembly [json\|suggestions]` | 装配报告（离线）：装了什么 vs 实际用了什么（见 [离线分析](../subsystems/offline-analysis.zh.md)） |
 | `/mcp` | 显示 MCP server 状态 |
 | `/workflow [name]`（别名 `/workflows`） | 列出或运行已保存的 workflows（`.openx/workflows/`） |
 | `/todos` | 显示 agent 的任务清单 |

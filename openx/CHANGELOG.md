@@ -4,6 +4,24 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.8 — Assembly report
+
+### Align the loaded composition with actual usage
+
+- Added `/assembly`: an offline report that pairs the current composition
+  (`/plugins`) against recent usage (the tool calls in the session ledger). It
+  ranks active plugins by how often their tools were invoked, lists
+  **assembled-but-never-used** plugins (active, non-builtin, zero calls — stop
+  loading them, or batch-roll-back `auto-*`), and shows the top tools
+- `/assembly suggestions` prints tuning suggestions as text — e.g. *roll back
+  auto plugin 'x'* — for a human to act on; `/assembly json` prints the
+  structured report (`openx-assembly-report/v1`)
+- Plugins that contribute no tools (`context.memory` / `lifecycle` / `ui.panel`)
+  are marked non-measurable rather than falsely reported as unused
+- Same discipline as `/gaps`: offline, read-only, **evidence not action** — it
+  never writes rules, plugins or config. Writing suggestions back into the
+  composition (overlay) is a later slice
+
 ## 0.1.7 — Gap report
 
 ### Turn the session ledger into a human-readable gap report

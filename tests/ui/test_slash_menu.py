@@ -273,15 +273,18 @@ class TestMenuInRealEditor:
             p.close()
 
     def test_down_then_enter_selects_second(self):
+        # 期望项由数据源派生（menu_entries 名单会随命令增删变化，不写死首项）
+        from openx.app.cli.commands import menu_entries
+
+        names = [name for name, _, _ in menu_entries()]
         p = PtyPrompt()
         try:
             p.wait_for("❯")
-            p.type(b"/")                     # 全量菜单，首项按字母序
-            p.wait_for("auto-approve")
+            p.type(b"/")                     # 全量菜单，按 menu_entries 顺序
+            p.wait_for(names[0])
             p.type(b"\x1b[B")                # ↓ 选中第二项
             p.type(b"\r")
-            line = p.finish()["line"]
-            assert line.startswith("/") and line != "/auto-approve"
+            assert p.finish()["line"] == "/" + names[1]
         finally:
             p.close()
 

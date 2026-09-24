@@ -346,6 +346,46 @@ async def _cmd_gaps(agent, console, args):
 
 
 @register(
+    "assembly",
+    description="Offline assembly report: what's loaded vs actually used (E5)",
+)
+async def _cmd_assembly(agent, console, args):
+    """装配报告（E5 装配策略学习）：当前组合 × 近期用量 → 配对命中率。
+
+    - 无参：人读报告（使用频率序 / 装了却未用的插件 / 最常用工具）；
+    - ``/assembly suggestions``：改 overlay 的**建议**（人终审，§4.3）；
+    - ``/assembly json``：结构化报告（``openx-assembly-report/v1``）。
+
+    离线、只读：读当前组合（``kernel.list_plugins``）+ 最近会话账本的工具调用。
+    **只出证据不产动作**——建议永远只是候选，绝不自动改组合。
+    """
+    from rich.markup import escape
+
+    from ...kernel import get_kernel
+    from ...services.assembly_report import (
+        MAX_SESSIONS,
+        build_workspace_report,
+        render_text,
+        suggestions,
+    )
+
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+    report = build_workspace_report(
+        str(agent.workspace), kernel.list_plugins(), limit=MAX_SESSIONS
+    )
+    mode = args[0].lower() if args else ""
+    if mode == "json":
+        console.raw.print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif mode == "suggestions":
+        for line in suggestions(report):
+            console.raw.print(f"• {escape(line)}")
+    else:
+        console.raw.print(escape(render_text(report)))
+    return True
+
+
+@register(
     "export-eval",
     description="Export session trajectories (with cost fields) to an eval JSONL",
 )
