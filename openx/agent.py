@@ -425,6 +425,8 @@ class OpenXAgent:
 
         # Coding Agent 结构化记忆（项目级 + 全局）
         self.coding_memory = CodingMemoryStore(workspace=str(self.workspace))
+        # E6 召回回账：上一次组提示并入的记忆 id（去重用——同一提示版本不重复记账）
+        self._last_recall_ids: list[str] = []
 
         # 构建工具注册表（todos 与 console 以引用方式注入相应工具）
         self.tools: dict[str, Tool] = self._build_tools()
@@ -480,9 +482,11 @@ class OpenXAgent:
             prompt += memory_context
 
         # 注入 Coding Agent 结构化记忆（带 token 预算控制）
-        coding_mem_prompt = self.coding_memory.build_context_prompt()
+        recalled: list = []
+        coding_mem_prompt = self.coding_memory.build_context_prompt(collect=recalled)
         if coding_mem_prompt:
             prompt += coding_mem_prompt
+        self._emit_memory_recall(recalled)
 
         # 注入记忆系统使用指令（告诉 agent 何时自主记忆/召回）
         prompt += MEMORY_INSTRUCTIONS
@@ -1063,6 +1067,36 @@ class OpenXAgent:
                     plugin_tokens=delta.get("plugin", 0),
                     duration_ms=int((time.time() - t_start) * 1000),
                     turn_index=self._usage_turns,
+                ),
+                origin="kernel",
+            )
+        except Exception:
+            pass
+
+    def _emit_memory_recall(self, recalled: list) -> None:
+        """记账：**memory_recall** 事件（E6 召回回账）——本次组提示并入了哪些记忆。
+
+        与 ``_emit_turn_usage`` 同一条纪律：**仅持有 ``session_store`` 的顶层
+        agent 落账**（子代理共享内核但不落盘，若不过这道闸会串写父会话账本）；
+        **同一提示版本不重复记**（召回 id 序列与上次相同则跳过，避免每次重建
+        系统提示都刷一条）。emit 只依赖内核出口，任何异常绝不影响提示构建。
+        """
+        if self.session_store is None or not recalled:
+            return
+        ids = [m.id for m in recalled]
+        if ids == self._last_recall_ids:
+            return
+        try:
+            from .kernel import get_kernel
+            from .kernel.protocol import memory_recall
+
+            self._last_recall_ids = list(ids)
+            get_kernel().emit(
+                "memory_recall",
+                memory_recall(
+                    ids,
+                    [m.category for m in recalled],
+                    chars=sum(len(m.content) for m in recalled),
                 ),
                 origin="kernel",
             )

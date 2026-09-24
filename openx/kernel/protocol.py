@@ -457,6 +457,27 @@ def turn_usage(
     }
 
 
+def memory_recall(
+    ids: list[str],
+    categories: list[str] | None = None,
+    chars: int = 0,
+) -> dict[str, Any]:
+    """一次系统提示构建时**被召回并入提示**的记忆（E6 召回回账）。
+
+    会话账本事件（非跨会话事实，不入 ``DECISION_EVENTS`` / 全局账本）。语义：
+    "这次组提示，coding memory 召回了哪几条"。它是召回质量的数据源——被频繁
+    召回的记忆是否真被使用，靠后续离线分析（本事件只如实记录召回事实，不做
+    判断）。``ids`` 是记忆 id 列表，``categories`` 与之等长（可选，供分类统计），
+    ``chars`` 是并入提示的字符数（预算核对）。
+    """
+    return {
+        "type": "memory_recall",
+        "ids": [str(i) for i in ids],
+        "categories": [str(c) for c in (categories or [])],
+        "chars": int(chars),
+    }
+
+
 def resume_event(
     verdict: str,
     checkpoint_seq: int = 0,
@@ -747,6 +768,14 @@ if __name__ == "__main__":
     assert _rs["type"] == "resume" and _rs["verdict"] == "ok" and _rs["repaired"] == 1
     assert resume_event("torn", detail="x")["checkpoint_seq"] == 0
 
+    # 召回回账（E6）：会话账本事件，携带被召回的记忆 id
+    _mr = memory_recall(["m1", "m2"], ["code_convention", "debug_pattern"], chars=120)
+    assert _mr["type"] == "memory_recall" and _mr["ids"] == ["m1", "m2"]
+    assert _mr["categories"] == ["code_convention", "debug_pattern"]
+    assert _mr["chars"] == 120
+    assert memory_recall([])["ids"] == [] and memory_recall([])["categories"] == []
+    assert "memory_recall" not in DECISION_EVENTS  # 会话账本事件，非跨会话决策
+
     _cd = checkpoint_discarded("stale")
     assert _cd["type"] == "checkpoint_discarded" and _cd["reason"] == "stale"
 
@@ -759,7 +788,7 @@ if __name__ == "__main__":
             "ratchet_tightened"} <= DECISION_EVENTS
 
     # 全部新事件可 JSON 序列化（要落账本）
-    for _ev in (_ck, _it, _gt, _ts, _tu, _rs, _cd, _dr):
+    for _ev in (_ck, _it, _gt, _ts, _tu, _rs, _cd, _dr, _mr):
         json.loads(json.dumps(_ev))
 
     print("openx/kernel/protocol.py OK ✓")

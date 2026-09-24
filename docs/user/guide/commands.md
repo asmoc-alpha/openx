@@ -32,6 +32,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/scaffolds [retire\|restore] [name]` | List scaffolds; retire or restore one (records a cross-session decision) |
 | `/gaps [json\|context]` | Offline gap report: cluster recent sessions' failure modes (see [offline analysis](../subsystems/offline-analysis.md)) |
 | `/assembly [json\|suggestions]` | Offline assembly report: what's loaded vs actually used (see [offline analysis](../subsystems/offline-analysis.md)) |
+| `/distill [json\|save\|recall]` | Distill candidate experiences from recent sessions into memory (see [experience distillation](../subsystems/experience.md)) |
 | `/mcp` | Show MCP server status |
 | `/workflow [name]` (alias `/workflows`) | List or run saved workflows (`.openx/workflows/`) |
 | `/todos` | Show the agent's task list |

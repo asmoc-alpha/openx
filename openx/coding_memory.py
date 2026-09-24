@@ -354,6 +354,7 @@ class CodingMemoryStore:
         *,
         context_paths: list[str] | None = None,
         char_budget: int = DEFAULT_CHAR_BUDGET,
+        collect: list["CodingMemory"] | None = None,
     ) -> str:
         """构建注入系统提示的记忆片段（带 token 预算控制）。
 
@@ -361,6 +362,9 @@ class CodingMemoryStore:
         1. 有 context_paths 时优先召回路径相关记忆；
         2. 剩余预算按 importance 填充高优记忆；
         3. 超出预算时截断。
+
+        ``collect``：可选出参列表——把**实际并入提示**的记忆追加进去（供
+        E6 召回回账：agent 据此记一条 ``memory_recall`` 事件）。不传则无副作用。
         """
         entries = self._load_all()
         if not entries:
@@ -405,6 +409,8 @@ class CodingMemoryStore:
             if used_chars + len(entry_line) > char_budget:
                 break
             lines.append(entry_line)
+            if collect is not None:
+                collect.append(mem)
             used_chars += len(entry_line)
 
         if len(lines) <= 4:  # 只有标题没有内容

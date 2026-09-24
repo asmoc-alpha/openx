@@ -84,7 +84,7 @@ openx "fix the failing test" --output-format json   # headless / CI
 | 页面 | 内容 |
 |---|---|
 | [用户指南](docs/user/index.zh.md) | 命令、模式与权限、配置、会话 |
-| [子系统参考](docs/subsystems/README.zh.md) | subagents、workflows、后台任务、hooks、MCP、脚手架、离线分析、容灾 |
+| [子系统参考](docs/subsystems/README.zh.md) | subagents、workflows、后台任务、hooks、MCP、脚手架、离线分析、经验沉淀、容灾 |
 | [Web 端（openx serve）](docs/openx-serve.md) | 浏览器对话、远程审批、会话回放 |
 | [架构](docs/architecture.zh.md) | 模块树与运行时循环 |
 | [开发指南](docs/development.zh.md) | 贡献者环境、测试、lint |

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openx"
-version = "0.1.8"
+version = "0.1.9"
 description = "OpenX - An open-source, verifiable and evolvable agent runtime"
 readme = "README.md"
 license = {text = "MIT"}

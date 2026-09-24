@@ -89,6 +89,7 @@ class MessagesMixin:
             ("/scaffolds", "List scaffolds; retire or restore one (retirement gate)"),
             ("/gaps [json|context]", "Offline gap report: cluster failure modes from recent sessions"),
             ("/assembly [json|suggestions]", "Offline assembly report: what's loaded vs actually used"),
+            ("/distill [json|save|recall]", "Distill candidate experiences from recent sessions; save to memory"),
             ("/export-eval", "Export session trajectories (with cost fields) to an eval JSONL"),
             ("/compact", "Summarize history to free up context"),
             ("/tips", "Show usage tips"),

@@ -4,6 +4,27 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.9 — Experience distillation
+
+### Turn sessions into durable memory, and account for recall
+
+- Added `/distill`: mines recent sessions for **candidate experiences** —
+  `workflow` (a shell command that succeeded repeatedly), `debug_pattern` (a tool
+  that first errored then succeeded) and `project_fact` (a repeatedly edited
+  file). Commands run only once are ignored; candidates are deduplicated and
+  ordered by kind then frequency
+- `/distill save` writes the candidates into coding memory with
+  `source="distill"` (distinguishable from model- and user-written memories, so
+  they can be reviewed or batch-removed); `/distill json` prints the structured
+  report (`openx-distill-report/v1`)
+- **Recall accounting**: when the agent assembles a system prompt, every coding
+  memory it includes is now recorded as a `memory_recall` event in the session
+  ledger; `/distill recall` aggregates them into a recall-frequency ranking — the
+  data source for the "memory quality" question
+- Offline and read-only over the session ledger; writing happens only on the
+  explicit `/distill save`. Writes go to `~/.openx/coding-memory/`, never into a
+  project `.openx`
+
 ## 0.1.8 — Assembly report
 
 ### Align the loaded composition with actual usage

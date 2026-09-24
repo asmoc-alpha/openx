@@ -386,6 +386,56 @@ async def _cmd_assembly(agent, console, args):
 
 
 @register(
+    "distill",
+    description="Distill candidate experiences from recent sessions into memory (E6)",
+)
+async def _cmd_distill(agent, console, args):
+    """经验提炼（E6 经验沉淀闭环）：会话账本 → 候选经验 → 记忆写入 / 召回回账。
+
+    - 无参：候选经验（workflow / debug_pattern / project_fact）人读列表；
+    - ``/distill json``：结构化报告（``openx-distill-report/v1``）；
+    - ``/distill save``：把候选落进 coding memory（``source="distill"``，可按来源
+      批量回滚）——**命令调用即授权**（人审）；
+    - ``/distill recall``：召回回账（哪条记忆被组提示召回了多少次）。
+
+    离线、只读会话账本；只有 ``save`` 写记忆（且写入 home，不碰项目）。
+    """
+    from rich.markup import escape
+
+    from ...services.distill import (
+        MAX_SESSIONS,
+        distill_workspace,
+        recall_report_workspace,
+        render_recall,
+        render_text,
+        save_candidates,
+    )
+
+    mode = args[0].lower() if args else ""
+    if mode == "recall":
+        report = recall_report_workspace(str(agent.workspace), limit=MAX_SESSIONS)
+        console.raw.print(escape(render_recall(report)))
+        return True
+
+    report = distill_workspace(str(agent.workspace), limit=MAX_SESSIONS)
+    if mode == "json":
+        console.raw.print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif mode == "save":
+        candidates = report.get("candidates") or []
+        if not candidates:
+            console.print_info("No candidate experiences to save.")
+            return True
+        saved = save_candidates(agent.coding_memory, candidates, scope="project")
+        console.print_success(
+            f"Saved {len(saved)} memory entr{'y' if len(saved) == 1 else 'ies'} "
+            "from recent sessions (source=distill)."
+        )
+    else:
+        console.raw.print(escape(render_text(report)))
+    return True
+
+
+@register(
     "export-eval",
     description="Export session trajectories (with cost fields) to an eval JSONL",
 )

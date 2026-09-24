@@ -14,4 +14,5 @@ in [user/](../user/index.md); step-by-step how-tos in [cookbook/](../cookbook/ex
 | MCP | [mcp.md](mcp.md) | Model Context Protocol servers over stdio, zero extra dependencies |
 | Scaffolds | [scaffolds.md](scaffolds.md) | Declare why a compensating module exists and when it retires; retire/restore with a ledger trail |
 | Offline analysis | [offline-analysis.md](offline-analysis.md) | Cluster the session ledger into human-readable reports (gap report `/gaps`, assembly report `/assembly`) |
+| Experience distillation | [experience.md](experience.md) | Mine candidate experiences from sessions into memory; recall accounting (`/distill`) |
 | Recovery | [recovery.md](recovery.md) | Turn-level checkpoints: resume an interrupted turn without replaying completed tool calls |
