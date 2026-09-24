@@ -15,6 +15,7 @@ PHASE_LOADING = "loading"
 PHASE_ACTIVE = "active"
 PHASE_FAILED = "failed"
 PHASE_DISABLED = "disabled"
+PHASE_RETIRED = "retired"   # E4：退场脚手架——组合跳过（不装载），代码与注册仍在
 
 
 @dataclass

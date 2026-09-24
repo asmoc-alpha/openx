@@ -86,6 +86,7 @@ class MessagesMixin:
             ("/todos", "Show the agent's task list"),
             ("/cost", "Show cumulative token usage"),
             ("/ledger", "Show the global decision ledger (cross-session)"),
+            ("/scaffolds", "List scaffolds; retire or restore one (retirement gate)"),
             ("/export-eval", "Export session trajectories (with cost fields) to an eval JSONL"),
             ("/compact", "Summarize history to free up context"),
             ("/tips", "Show usage tips"),

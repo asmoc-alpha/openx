@@ -384,7 +384,11 @@ token **增量**（input/output/cached/plugin）+ 整轮时长（`duration_ms`�
   payload 补 `session` 归因）；全局账本复用 `Ledger` 的 seq/digest 哈希链，
   默认文件 sink 由内核**惰性自挂接**（生产无需接线，跨进程续 seq 与链）。
   已接线：`plugin_promoted`（晋升）、`plugin_rolled_back`（卸载曾晋升的插件
-  = 回滚）；`scaffold_*` / `ratchet_tightened` 的 emitter 随 E4 退场评测门。
+  = 回滚）；**`scaffold_retired` / `scaffold_restored` 已接线（E4）**——
+  `retire_scaffold` / `restore_scaffold` 是脚手架退场/回挂的唯一出口
+  （payload 带声明与评测证据），退场集合由**全局账本折叠**（`retired_scaffolds`，
+  单一真源、跨进程存活），组合据此跳过（`PHASE_RETIRED`，不导入、不贡献，
+  代码与注册仍在）。`ratchet_tightened` 的 emitter 仍待（安全棘轮收紧）。
   脚手架的**演进声明**（E1，`manifest.scaffold` 块：compensates / exit_when /
   eval_set / fallback）已落地——声明是 E4 评测门的输入，内核只做形状校验
   （必答项缺失拒载，词汇外值只警告），`PluginInfo.scaffold` 落到只读投影。
@@ -543,7 +547,8 @@ executor 持有同款分工。
    + `kernel.emit_decision()`（全文上全局、会话说引用、惰性自挂接默认 sink）+
    `ledger.verify_chain()`（§3.4 校验工具）+ `/ledger` 命令。已接线
    `plugin_promoted`（晋升改落全局）与 `plugin_rolled_back`（卸载曾晋升的插件
-   = 回滚）；`scaffold_*` / `ratchet_tightened` 的 emitter 随 E4。
+   = 回滚）；`scaffold_retired` / `scaffold_restored` 的 emitter 随 **E4** 接线
+   （见 §3.2）；`ratchet_tightened` 仍待。
 7. **K6 晋升门 + 动态插入**：admit() 会话内热插路径（只读先行）。
    **以 MCP 为 pilot**：connect 即 session 作用域动态插入，复用同一
    五阶段校验，不另造测试场景。

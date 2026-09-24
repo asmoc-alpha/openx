@@ -237,6 +237,77 @@ async def _cmd_ledger(agent, console, args):
 
 
 @register(
+    "scaffolds",
+    description="List scaffolds; retire or restore one (E1 declarations / E4 retirement)",
+)
+async def _cmd_scaffolds(agent, console, args):
+    """脚手架面板（E1 声明 / E4 退场）：列声明、退场、回挂。
+
+    - 无参：列全部脚手架（含已退场的）及其 compensates / exit_when / eval_set；
+    - ``/scaffolds retire <name>``：用户确认退场——``scaffold_retired`` 上全局
+      账本 + 组合跳过（但代码与注册仍在，可回挂）；仅对带 scaffold 声明的
+      插件合法；
+    - ``/scaffolds restore <name>``：回挂——``scaffold_restored`` + 重新装载。
+
+    摘除须用户确认（自演进详设 §5.1）：退场是组合层动作，模型不直接持有该
+    工具；模型可发起评测（future），人终审摘除。
+    """
+    from rich.markup import escape
+
+    from ...kernel import get_kernel
+
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+
+    sub = args[0].lower() if args else ""
+    if sub in ("retire", "restore"):
+        if len(args) < 2:
+            console.print_warning(f"usage: /scaffolds {sub} <name>")
+            return True
+        name = args[1]
+        if sub == "retire":
+            ok, message = kernel.retire_scaffold(name)
+        else:
+            ok, message = kernel.restore_scaffold(name)
+        if ok:
+            if agent is not None:
+                agent._rebuild_tools()  # 组合变更 -> 工具下一轮生效
+            console.print_success(f"✓ {message}")
+        else:
+            console.print_warning(message)
+        return True
+
+    rows = [r for r in kernel.list_plugins() if r.get("scaffold")]
+    if not rows:
+        console.print_info(
+            "No scaffolds declared.\n"
+            "[dim]A scaffold declares a `scaffold` block in __openx_meta__ "
+            "(compensates / exit_when).[/dim]"
+        )
+        return True
+    console.raw.print("\n[bold]Scaffolds[/bold]  "
+                      "[dim](E1 declarations · E4 retirement)[/dim]\n")
+    for r in rows:
+        decl = (kernel.plugin_help(r["id"]) or {}).get("scaffold") or {}
+        retired = bool(r.get("retired"))
+        status = "retired" if retired else r.get("phase", "?")
+        color = "cyan" if retired else "white"
+        console.raw.print(
+            f"  • [{color}]{escape(str(r['id']))}[/{color}] "
+            f"[dim]({escape(str(status))})[/dim]"
+        )
+        for label, key in (("compensates", "compensates"),
+                           ("exit when", "exit_when"),
+                           ("eval set", "eval_set"),
+                           ("fallback", "fallback")):
+            if decl.get(key):
+                console.raw.print(
+                    f"      [dim]{label}: {escape(str(decl[key]))}[/dim]"
+                )
+    return True
+
+
+@register(
     "export-eval",
     description="Export session trajectories (with cost fields) to an eval JSONL",
 )

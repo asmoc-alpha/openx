@@ -52,6 +52,9 @@ class MiscMixin:
                 marker, style = f"{MARK_OK} active", SUCCESS_STYLE
             elif info.phase == "failed":
                 marker, style = f"{MARK_FAIL} failed", "red"
+            elif info.phase == "retired":
+                # E4：退场脚手架——组合跳过（不装载），可 /scaffolds restore 回挂
+                marker, style = f"{MARK_PENDING} retired", DIM
             elif info.phase == "disabled":
                 marker, style = f"{MARK_PENDING} disabled", DIM
             else:

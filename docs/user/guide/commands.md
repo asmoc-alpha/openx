@@ -29,6 +29,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/permissions` (alias `/perms`) | Show and manage stored permission rules |
 | `/hooks` | Show configured hooks |
 | `/ledger` | Show the global decision ledger (cross-session) and verify its hash chain |
+| `/scaffolds [retire\|restore] [name]` | List scaffolds; retire or restore one (records a cross-session decision) |
 | `/mcp` | Show MCP server status |
 | `/workflow [name]` (alias `/workflows`) | List or run saved workflows (`.openx/workflows/`) |
 | `/todos` | Show the agent's task list |

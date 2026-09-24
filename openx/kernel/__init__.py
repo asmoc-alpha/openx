@@ -45,10 +45,11 @@ from .inventory import (
     PHASE_DISABLED,
     PHASE_FAILED,
     PHASE_LOADING,
+    PHASE_RETIRED,
     PluginInfo,
 )
 from .ledger import Ledger
-from .global_ledger import GlobalLedgerStore
+from .global_ledger import GlobalLedgerStore, retired_scaffolds
 from .protocol import Event, decision_ref
 from ..builtin import BUILTIN_PROVIDERS_ID, BUILTIN_TOOLS_ID
 
@@ -111,6 +112,10 @@ class PluginKernel:
         # 已晋升（trust 由 auto -> user）的插件名：卸载它们 = 回滚，记
         # plugin_rolled_back（回答"这个插件为什么没了"）。
         self._promoted: set[str] = set()
+        # E4 退场登记表：``{scaffold_id: 退场条目 payload}``。**账本即单一真源**，
+        # 惰性从全局账本折叠（首次 _reload 时；见 _retired_of），随后由
+        # retire/restore 就地增删。组合据此跳过退场脚手架（PHASE_RETIRED）。
+        self._retired: Optional[dict[str, dict[str, Any]]] = None
 
     def registry(self, kind: str) -> Optional[PluginRegistry]:
         """取某类注册项的注册表（消费方唯一取用通道）。"""
@@ -131,6 +136,7 @@ class PluginKernel:
 
     def _reload(self, workspace: str, key: tuple) -> None:
         disabled = set(key[2])
+        retired = self._retired_of()   # E4：退场集合从全局账本折叠（惰性、一次）
         self.registries = {
             r.kind: PluginRegistry(r.kind, r.validator) for r in REGISTRATIONS
         }
@@ -141,9 +147,9 @@ class PluginKernel:
         from ..builtin import BUILTIN_PLUGINS
 
         for spec in BUILTIN_PLUGINS:
-            self._load_one(spec, disabled)
+            self._load_one(spec, disabled, retired)
         for spec in loader.discover(workspace):
-            self._load_one(spec, disabled)
+            self._load_one(spec, disabled, retired)
         # 组合决议记账：每次实际重组（键变化）固化为一条事件，任何一次
         # 会话的组合都能事后复现。幂等跳过（键未变）不记。
         self.emit(
@@ -159,7 +165,26 @@ class PluginKernel:
         # 下次 ensure_loaded 完整重试，不留半载状态。
         self._load_key = key
 
-    def _load_one(self, spec: loader.PluginSpec, disabled: set) -> None:
+    def _retired_of(self) -> dict[str, dict[str, Any]]:
+        """退场登记表（E4）：首次从全局账本折叠，此后就地增删（单一真源）。
+
+        惰性推导让内核构造不触发 IO；跨进程"摘除可恢复"由账本续接保证——
+        新进程首次重组即从 ``~/.openx/ledger.jsonl`` 折出退场集合。
+        """
+        if self._retired is None:
+            self._retired = retired_scaffolds(GlobalLedgerStore().read_all())
+        return self._retired
+
+    def _force_reload(self) -> None:
+        """强制重组（retire/restore 后让组合反映新状态）。未装载过则留给首次
+        ``ensure_loaded``——退场集合已在内存，重组自会应用。"""
+        self._load_key = None
+        if self.workspace:
+            self.ensure_loaded(self.workspace)
+
+    def _load_one(
+        self, spec: loader.PluginSpec, disabled: set, retired: dict[str, dict]
+    ) -> None:
         if spec.id in self._plugins:  # 重复 id（含撞内置）：先见者赢
             _log.warning("duplicate plugin id %r; first wins", spec.id)
             return
@@ -169,6 +194,18 @@ class PluginKernel:
         self._plugins[spec.id] = info
         if spec.id in disabled and not spec.builtin:
             info.phase = PHASE_DISABLED
+            return
+        # E4 退场脚手架：组合跳过（不导入、不贡献），代码与注册仍在——摘除
+        # 不是删除。声明从账本条目回填，故 /plugins 与 plugin_help 仍能展示
+        # 其 compensates/exit_when（插件本体未被导入）。
+        if spec.id in retired and not spec.builtin:
+            info.phase = PHASE_RETIRED
+            payload = retired[spec.id]
+            info.scaffold = {
+                key: payload[key]
+                for key in ("compensates", "exit_when", "eval_set", "fallback")
+                if payload.get(key)
+            }
             return
         if not self._load_apply(spec, info):
             return
@@ -652,7 +689,9 @@ class PluginKernel:
                 "mount": p.manifest.get("mount", ""),
                 "trust": p.manifest.get("trust", "user"),
                 # E1：是否带脚手架演进声明（轻量标记；详情经 plugin_help 展开）
-                "scaffold": bool(p.scaffold),
+                # E4：退场脚手架未被导入，标记改由账本登记表回填
+                "scaffold": bool(p.scaffold) or p.id in self._retired_of(),
+                "retired": p.phase == PHASE_RETIRED,
             }
             for p in self._plugins.values()
         ]
@@ -760,7 +799,9 @@ class PluginKernel:
             "manifest": dict(info.manifest),
             "manifest_warnings": list(info.manifest_warnings),
             # E1：脚手架演进声明（compensates/exit_when/eval_set/fallback）
+            # E4：退场脚手架未被导入，声明已在 _load_one 从账本条目回填
             "scaffold": dict(info.scaffold),
+            "retired": info.phase == PHASE_RETIRED,
         }
 
     def _purge_plugin_entries(self, plugin_id: str) -> None:
@@ -803,6 +844,65 @@ class PluginKernel:
         info.manifest["trust"] = "user"
         self._promoted.add(name)
         return (True, f"plugin promoted: {name} (trust=user)")
+
+    # ── 退场（E4）：脚手架消融线的组合层动作 ──────────────────
+
+    def retire_scaffold(
+        self,
+        name: str,
+        evidence: Optional[dict[str, Any]] = None,
+        origin: str = "user",
+    ) -> tuple[bool, str]:
+        """用户确认退场（E4）：``scaffold_retired`` 上全局账本 + 组合跳过。
+
+        仅对**已装载且带 scaffold 声明**（E1）的插件合法——退场是脚手架
+        专属的消融动作，普通能力插件无资格。决策（``scaffold_retired``）落
+        **全局账本**（跨会话事实），payload 带声明与可选 ``evidence``（退场
+        评测门的对照结论，见 ``services/retirement_gate``）——"为什么这个模块
+        没了"的答案在账本里。记账先于动作（守"记账先于动作"）。摘除不是删除：
+        只是重组时跳过（PHASE_RETIRED），代码与注册仍在，``restore_scaffold``
+        一键回挂。
+        """
+        info = self._plugins.get(name)
+        if name in self._retired_of():
+            return (False, f"scaffold already retired: {name}")
+        if info is None or info.phase != PHASE_ACTIVE:
+            return (False, f"plugin not active: {name}")
+        if not info.scaffold:
+            return (False, f"{name} is not a scaffold (no scaffold declaration)")
+        payload: dict[str, Any] = {
+            "type": "scaffold_retired",
+            "plugin": name,
+            "compensates": info.scaffold.get("compensates", ""),
+            "exit_when": info.scaffold.get("exit_when", ""),
+            "eval_set": info.scaffold.get("eval_set", ""),
+            "fallback": info.scaffold.get("fallback", ""),
+        }
+        if evidence:
+            payload["evidence"] = dict(evidence)
+        self.emit_decision("scaffold_retired", payload, origin=origin)
+        self._retired_of()[name] = payload
+        self._force_reload()
+        return (True, f"scaffold retired: {name} (composition now skips it)")
+
+    def restore_scaffold(
+        self, name: str, reason: str = "", origin: str = "user"
+    ) -> tuple[bool, str]:
+        """回挂一个已退场脚手架（E4）：``scaffold_restored`` 上全局账本 + 重新装载。
+
+        摘除可恢复（§5.2）：回挂 = 后续一条 ``scaffold_restored``——账本折叠
+        因此丢弃该名，重组时脚手架重新进入应载清单。模型降级自动回挂（档案
+        联动）待 P6；本动作是它的人工出口。
+        """
+        if name not in self._retired_of():
+            return (False, f"scaffold not retired: {name}")
+        payload: dict[str, Any] = {"type": "scaffold_restored", "plugin": name}
+        if reason:
+            payload["reason"] = reason
+        self.emit_decision("scaffold_restored", payload, origin=origin)
+        self._retired_of().pop(name, None)
+        self._force_reload()
+        return (True, f"scaffold restored: {name} (composition re-includes it)")
 
     def unregister_tool(self, name: str) -> None:
         """按名摘除一个工具（P-C 熔断触发的自动卸载）；未注册 no-op。"""

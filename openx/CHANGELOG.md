@@ -4,6 +4,30 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.6 — Scaffold retirement
+
+### Scaffolds can now retire, and the decision is recorded
+
+- Added scaffold **retirement**: `/scaffolds retire <name>` records a
+  `scaffold_retired` decision on the global ledger (with the declaration and the
+  eval evidence) and the next composition **skips** the scaffold — it is not
+  imported, so it no longer contributes, but its code and registration remain.
+  Removal is not deletion: `/scaffolds restore <name>` records
+  `scaffold_restored` and puts it back
+- `/scaffolds` lists every declared scaffold (compensates / exit_when / eval_set)
+  with its retirement status. Only plugins that declare a `scaffold` block (E1)
+  can be retired, and retirement is **user-confirmed** — it is never taken
+  silently by the model
+- The retired set is **derived from the global ledger** (single source of truth),
+  so a retirement survives a restart — a new process folds the same set from the
+  ledger. `/plugins` shows retired scaffolds as `retired`; their declaration stays
+  visible (backfilled from the ledger decision)
+- Added the retirement-gate **policy** (`services/retirement_gate.py`): a
+  with-vs-without success comparison yields a `retire` / `keep` verdict and the
+  evidence payload the decision carries. This release wires the decision, the
+  retired-set bookkeeping and the gate policy; **running** the tasks in an
+  `eval_set` (and the profile-linked auto-restore) is a separate slice
+
 ## 0.1.5 — Scaffold retirement declarations
 
 ### Every scaffold declares why it exists and when it should retire

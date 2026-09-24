@@ -98,7 +98,7 @@ openx 的独特立场：**别家把自演进做成"模型自己的能力"，open
 | ③ 沙箱验证 | 出证据：self_test 跑绿 | admit 管线③：daemon 线程自测 + 10s join 超时即拒；调用防护（timeout/熔断/输出上限） | 已落地（P-C/P-F） |
 | ④ 晋升门 | 审批：只读热插 / 写类用户确认 | admit()：形状校验 → 静态扫描 → 自测 → 会话热插 → 用户晋升 | 已落地；K6 以 MCP 为 pilot |
 | ⑤ 灰度激活 | 先 session 后 persistent | 注册作用域：session（不进下次 boot）→ 晋升（写回组合） | 已落地（session）；persistent 写回组合待 P6 |
-| ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **待 E4**（E1 声明已落地） |
+| ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **部分落地（E4）**：决策记账 + 组合跳过 + 门策略已落；runner 与 P6 联动待 |
 
 ### 1.2 三条演进主线
 
@@ -208,6 +208,16 @@ scaffold:
            只是不再进应载清单；模型降级（档案回退）时自动回挂
            （scaffold_restored，同样记账）
 ```
+
+**落地（E4，收窄版）**：步骤②**决策记账**与步骤③的**组合跳过**已落地——
+`/scaffolds retire <name>`（用户确认）emit `scaffold_retired` 上全局账本
+（payload 带声明与评测证据）、组合据此跳过该脚手架（`PHASE_RETIRED`，不导入、
+不贡献，代码与注册仍在）；`/scaffolds restore` emit `scaffold_restored` 并重新
+装载。退场集合由**全局账本折叠**（单一真源），跨进程存活（重启后仍退场）。
+步骤①的**评测门策略**已落地（`services/retirement_gate.compare_success`：带 vs
+摘除对比 → retire/keep + 证据），但**真正跑** eval_set 任务的执行器未落地；
+**档案联动自动回挂**（§3.3）待 P6。故"动态 base 删一行"在无档案/overlay 时
+表现为"退场登记表——组合跳过"，等 P6 接入档案后再接自动回挂。
 
 消融线的方向与安全棘轮正交：能力棘轮**双向**（跟模型实测进退），安全
 棘轮**单向**（只紧不松）——脚手架退得再多，Guard 与资源闸一寸不让。
@@ -374,7 +384,7 @@ P-F 自产插件；K1 目录 / K2 信封 / K3 Guard / K3a ToolHost。
 | **E1 演进声明进 Manifest** | manifest 增 `scaffold` 块（compensates / exit_when / eval_set / fallback）——**已落地**；无声明的脚手架逐一补声明或降级为能力插件 | P-B | §3.1 |
 | **E2 轨迹升级** | 账本补成本字段 + eval 导出（即 P-E）——**已落地**；全局账本（K5）承接决策事件族 | K2 | §6.1 |
 | **E3 缺口感知** | 离线分析器：账本聚类失败模式 → "缺口报告"（人读）；报告可作为 context 片段回喂会话 | E2 | §2.1 |
-| **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发 | E1+E2 | §3.2-§3.3 |
+| **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发——**决策记账 + 组合跳过 + 门策略已落地（收窄）**；runner 与档案联动待 | E1+E2 | §3.2-§3.3 |
 | **E5 装配策略学习** | 配对命中率 / 权限摩擦 / 上下文预算的离线报告 → overlay 建议（人终审）；auto-* 目录按使用频率排序 | E3 | §4.2-§4.3 |
 | **E6 经验沉淀闭环** | 会话收尾提炼 → 记忆写入 → context/v1 召回 → 召回质量回账 | E2，K7（prompt 收口）协同 | §4.4 |
 | **E7 晋升持久化** | promote 写回组合（overlay enable 原语），persistent 作用域完整落地 | K6 + overlay（P6） | §1.1 环⑤ |

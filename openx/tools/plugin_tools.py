@@ -82,8 +82,9 @@ class ListPluginsTool(Tool):
                 cost = f" · {tok} tok"
             group = f" [{r.get('type')}]" if r.get("type") else ""
             scaffold = " ⚑scaffold" if r.get("scaffold") else ""
+            retired = " ✖retired" if r.get("retired") else ""
             lines.append(
-                f"• {r['id']}{group}{scaffold} [{status}] {summary}{cost}"
+                f"• {r['id']}{group}{scaffold}{retired} [{status}] {summary}{cost}"
             )
         return ToolResult(output="\n".join(lines))
 
@@ -228,6 +229,12 @@ if __name__ == "__main__":
                               "exit_when": "长会话免压缩评测通过",
                               "eval_set": "evals/long-session.jsonl",
                               "fallback": "reinstall-on-regression"}},
+                # E4：已退场脚手架（组合跳过；声明由账本条目回填）
+                {"id": "router", "phase": "retired", "scope": "boot",
+                 "source": "test-dir", "summary": "意图路由", "cost": {},
+                 "tools": [], "commands": [], "retired": True,
+                 "scaffold": {"compensates": "模型不自知深浅",
+                              "exit_when": "自规划直连评测通过"}},
             ]
             self.loaded = False
             self.unloaded = False
@@ -261,6 +268,7 @@ if __name__ == "__main__":
         assert "builtin-tools" in r.output and "dataviz" in r.output
         assert "400 tok" in r.output and "(session)" in r.output
         assert "histcompact ⚑scaffold" in r.output  # E1：脚手架标记
+        assert "router ⚑scaffold ✖retired" in r.output  # E4：退场标记
         r = await ListPluginsTool(kernel).execute(filter="viz")
         assert "dataviz" in r.output and "builtin-tools" not in r.output
 

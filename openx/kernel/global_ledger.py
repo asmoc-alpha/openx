@@ -31,6 +31,7 @@ if __name__ == "__main__" and not __package__:
 
 import json
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Optional
 
@@ -41,6 +42,27 @@ _log = logging.getLogger("openx.kernel")
 
 #: 全局账本落点；测试 monkeypatch 本模块属性以隔离真实用户数据。
 GLOBAL_LEDGER_PATH = Path.home() / ".openx" / "ledger.jsonl"
+
+
+def retired_scaffolds(events: Iterable[Event]) -> dict[str, dict[str, Any]]:
+    """折叠退场决策 → ``{scaffold_id: 退场条目 payload}``（E4）。
+
+    按事件序（seq 序）消费：``scaffold_retired`` 记一名，``scaffold_restored``
+    除一名（回挂）。**账本即单一真源**——退场集合从决策历史推导，不另设配置表，
+    故"摘除不是删除、可恢复"由数据结构本身保证（回挂 = 后续一条 restored）。
+    返回的 payload 带 ``compensates`` / ``exit_when`` / ``eval_set`` 与评测
+    ``evidence``，供读面（/plugins · plugin_help）在插件**不被导入**时仍能
+    展示其演进声明。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if event.type == "scaffold_retired":
+            plugin = str(event.payload.get("plugin") or "")
+            if plugin:
+                out[plugin] = dict(event.payload)
+        elif event.type == "scaffold_restored":
+            out.pop(str(event.payload.get("plugin") or ""), None)
+    return out
 
 
 def _event_from_line(line: dict[str, Any]) -> Optional[Event]:
@@ -201,6 +223,23 @@ if __name__ == "__main__":
             "plugin_promoted", "plugin_rolled_back", "ratchet_tightened",
         ]
         assert store.recent(1)[0]["type"] == "ratchet_tightened"
+
+        # 退场折叠（E4）：retired -> restored -> retired 的历史收敛为"在册"一名
+        from .protocol import Event as _Ev
+        _mk = lambda seq, t, p: _Ev(  # noqa: E731
+            seq=seq, ts=0.0, session="", type=t, payload={"type": t, **p}, digest=""
+        )
+        _fold = retired_scaffolds([
+            _mk(1, "scaffold_retired", {"plugin": "histcompact",
+                                        "compensates": "上下文有限"}),
+            _mk(2, "scaffold_retired", {"plugin": "router"}),
+            _mk(3, "scaffold_restored", {"plugin": "histcompact"}),
+            _mk(4, "scaffold_retired", {"plugin": "histcompact",
+                                        "compensates": "上下文有限"}),
+        ])
+        assert set(_fold) == {"histcompact", "router"}
+        assert _fold["histcompact"]["compensates"] == "上下文有限"
+        assert retired_scaffolds([]) == {}
 
         # 坏行跳过，不抛
         with path.open("a", encoding="utf-8") as f:
