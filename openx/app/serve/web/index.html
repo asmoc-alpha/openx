@@ -409,7 +409,7 @@
       <section class="tab-panel" data-panel="skills">
         <div class="set-head">
           <h3 class="set-title">Skills</h3>
-          <p class="set-desc">技能正文（SKILL.md 指令部分）。可安装到用户级 <code>~/.openx/skills</code> 或项目级 <code>.openx/skills</code>。</p>
+          <p class="set-desc">SKILL.md 指令包（目录布局 <code>&lt;name&gt;/SKILL.md</code>）。系统提示只注入名称与描述，正文在调用时才加载。可安装到个人级 <code>~/.openx/skills</code> 或项目级 <code>.openx/skills</code>。</p>
         </div>
         <div class="settings-cols">
           <div class="set-list">
@@ -417,13 +417,14 @@
           </div>
           <div class="form-card set-form">
             <div class="form-title">新增 Skill</div>
-            <input id="sk-name" class="input" placeholder="名称（英文，作为文件名）" autocomplete="off">
-            <input id="sk-desc" class="input" placeholder="一句话描述" autocomplete="off">
+            <input id="sk-name" class="input" placeholder="名称（小写字母/数字/连字符，如 docker-expert）" autocomplete="off">
+            <input id="sk-desc" class="input" placeholder="一句话描述（模型据此判断何时加载）" autocomplete="off">
             <input id="sk-trigger" class="input" placeholder="触发关键词（逗号分隔，可留空）" autocomplete="off">
+            <input id="sk-tools" class="input" placeholder="预批准工具（逗号分隔，可留空）" autocomplete="off">
             <textarea id="sk-content" class="input area" rows="5" placeholder="Skill 正文（SKILL.md 的指令部分）"></textarea>
             <div class="form-actions">
               <select id="sk-level" class="input narrow">
-                <option value="global">用户级（~/.openx/skills）</option>
+                <option value="global">个人级（~/.openx/skills）</option>
                 <option value="project">项目级（.openx/skills）</option>
               </select>
               <button id="sk-save" class="btn primary small">安装</button>

@@ -20,7 +20,7 @@ openx/
 │   ├── image.py           # Image & clipboard helpers (multimodal)
 │   ├── model_groups.py    # modelGroups schema + per-role resolution (the only model/provider config)
 │   ├── coding_memory.py   # Coding memory (project conventions/decisions, project-scoped)
-│   ├── skills.py          # Skills: installable Markdown instruction packs
+│   ├── skills.py          # Skills: SKILL.md instruction packs (progressive disclosure)
 │   ├── changelog.py       # CHANGELOG.md parsing (What's-new panel, /release-notes)
 │   ├── app/
 │   │   ├── cli/           # commands.py (slash registry) / interactive.py (REPL +

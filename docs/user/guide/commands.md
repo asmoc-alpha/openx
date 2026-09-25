@@ -35,6 +35,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/assembly [json\|suggestions]` | Offline assembly report: what's loaded vs actually used (see [offline analysis](../subsystems/offline-analysis.md)) |
 | `/distill [json\|save\|recall]` | Distill candidate experiences from recent sessions into memory (see [experience distillation](../subsystems/experience.md)) |
 | `/mcp` | Show MCP server status |
+| `/skill [list\|add\|install\|show\|remove]` (alias `/skills`) | Manage `SKILL.md` instruction packs; invoke an installed one with `/<skill-name>` (see [skills](../subsystems/skills.md)) |
 | `/workflow [name]` (alias `/workflows`) | List or run saved workflows (`.openx/workflows/`) |
 | `/todos` | Show the agent's task list |
 | `/cost` | Show cumulative token usage |
@@ -49,6 +50,10 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 Type `/` in the input box to browse commands with completion: filters as you type
 (matches names and aliases), **↑↓** to navigate, **Tab** to complete, **Enter** to run
 the selected command, **Esc** to dismiss.
+
+Every installed skill is also registered as a `/<skill-name>` command (a builtin name is
+never overridden). Running one loads that skill's instructions for the task — see
+[skills](../subsystems/skills.md).
 
 ## Machine-readable output (`--output-format`)
 

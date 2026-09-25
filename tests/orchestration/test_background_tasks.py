@@ -302,7 +302,8 @@ class TestAgentWiring:
         config.model = "test-model"
         agent = OpenXAgent(config)
 
-        assert len(agent.tools) == 30  # +memory +4 元工具（P-A）+3 自产工具（P-F）
+        assert len(agent.tools) == 31  # +memory +4 元工具（P-A）+3 自产工具（P-F）
+        assert "skill" in agent.tools  # 渐进披露：按需加载 skill 正文
         assert "task_output" in agent.tools
         assert "task_stop" in agent.tools
         assert "task" in agent.tools

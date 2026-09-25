@@ -82,6 +82,7 @@ class MessagesMixin:
             ("/permissions", "Show and manage stored permission rules"),
             ("/hooks", "Show configured hooks"),
             ("/mcp", "Show MCP server status"),
+            ("/skill [add|install|show|remove]", "Manage SKILL.md instruction packs; invoke one with /<name>"),
             ("/workflow [name]", "List or run saved workflows"),
             ("/todos", "Show the agent's task list"),
             ("/cost", "Show cumulative token usage"),

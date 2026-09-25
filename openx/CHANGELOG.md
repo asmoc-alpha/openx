@@ -4,6 +4,34 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.11 — Skills as SKILL.md packs
+
+### Instruction packs that load only when they are used
+
+- Skills are now **directories** — `<name>/SKILL.md` (personal `~/.openx/skills/`, project
+  `<workspace>/.openx/skills/`) — following the open **Agent Skills** standard, with optional
+  supporting files (scripts, templates, references). Skills written in the `SKILL.md` format
+  load as-is from the Claude skill directories (read-only interop)
+- **Progressive disclosure**: the system prompt receives only a *catalog* (name, description
+  and pre-approved tools); a skill's **body is loaded on demand** — the user types
+  `/<skill-name>`, or the model calls the new **`skill` tool**. Long reference material costs
+  no context until it is actually needed
+- Frontmatter gains `allowed-tools`, `license` and `argument-hint`. Activating a skill adds
+  **session-scoped** allow rules for its `allowed-tools` — held in memory only and **never
+  written to `settings.json`**, so installing a skill can never permanently widen
+  permissions; `deny` rules still win and high-risk tools still always confirm
+- A body may request **dynamic context injection** with `` !`cmd` ``; the command runs through
+  the normal tool gate (Guard / permission / hooks / ledger) when the skill activates — never
+  bare at prompt-assembly time — and its output replaces the placeholder
+- `/skill` gains **`show`** (print a body *without* running injections); `/skill add` prompts
+  for pre-approved tools; `/skill install` now accepts a skill directory, a `SKILL.md`, or a
+  legacy flat `.md` (migrated to the directory layout, supporting files copied)
+- Loading precedence is six-way (Claude interop < legacy flat < native directory, personal <
+  project); a same-name conflict resolves to the higher source. Legacy flat `<name>.md` skills
+  are still read (tagged `legacy`) and migrated when reinstalled
+- The Web UI (Settings → Skills) shows level, pre-approved tools and supporting files, and
+  accepts pre-approved tools on create
+
 ## 0.1.10 — Composition & promotion persistence
 
 ### Resolve the load bundle from a model profile × overlays, and make promotion real

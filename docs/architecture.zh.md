@@ -18,7 +18,7 @@ openx/
 │   ├── image.py           # 图片与剪贴板辅助（多模态）
 │   ├── model_groups.py    # modelGroups schema + 逐角色解析（唯一的模型/provider 配置入口）
 │   ├── coding_memory.py   # 编程记忆（项目约定/决策，项目级隔离）
-│   ├── skills.py          # Skills：可安装的 Markdown 指令包
+│   ├── skills.py          # 技能：SKILL.md 指令包（渐进披露）
 │   ├── changelog.py       # CHANGELOG.md 解析（What's-new 面板、/release-notes）
 │   ├── app/
 │   │   ├── cli/           # commands.py（斜杠命令注册表）/ interactive.py（REPL +

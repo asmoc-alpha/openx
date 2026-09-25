@@ -11,6 +11,7 @@
 | 后台任务 | [background-tasks.zh.md](background-tasks.zh.md) | 分离式 shell 命令，可 tail 日志、可停止 |
 | Hooks | [hooks.zh.md](hooks.zh.md) | 八个生命周期事件上的 Claude-Code 兼容 shell hooks |
 | MCP | [mcp.zh.md](mcp.zh.md) | stdio 方式的 Model Context Protocol servers，零额外依赖 |
+| 技能 | [skills.zh.md](skills.zh.md) | `SKILL.md` 指令包：渐进披露、会话级 `allowed-tools`、按需加载 |
 | 脚手架 | [scaffolds.zh.md](scaffolds.zh.md) | 声明补偿型模块为何存在、何时退场；退场/回挂全程账本留痕 |
 | 组合输入 | [composition.zh.md](composition.zh.md) | 由模型档案 × 用户/项目 overlay 解析应载清单；晋升写回组合 |
 | 离线分析 | [offline-analysis.zh.md](offline-analysis.zh.md) | 把会话账本聚类成人读报告（缺口报告 `/gaps`、装配报告 `/assembly`） |

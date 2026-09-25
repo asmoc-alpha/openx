@@ -121,12 +121,19 @@ from .tools.write_plugin_tools import (
 )
 from .tools.subagent_tool import TaskTool
 from .tools.workflow_tool import WorkflowTool
+from .tools.skill_tool import SkillTool
 from .orchestration.tasks import TaskRegistry
 from .memory import MemoryStore
 from .coding_memory import CodingMemoryStore
 from .services.exploration import explore_project as _explore_project
 from .services.tool_executor import ToolExecutor
-from .skills import Skill, load_skills, build_skills_prompt
+from .skills import (
+    Skill,
+    build_skills_prompt,
+    list_supporting_files,
+    load_skill_body,
+    load_skills,
+)
 from .tools.base import Tool
 from .tools.memory_tool import MEMORY_INSTRUCTIONS
 from .tools.structured_output import StructuredOutputTool
@@ -439,8 +446,11 @@ class OpenXAgent:
 
         self.ui_panels = assembly.UiPanelCollector(get_kernel())
 
-        # 已安装的 skills（全局 + 项目级）
+        # 已安装的 skills（目录布局 personal/project + 旧扁平 + Claude 互操作）
         self.skills: dict[str, Skill] = load_skills(self.workspace)
+        # 已激活 skill → 挂上的会话内存态 allow 模式（渐进披露的作用域，
+        # 绝不落盘；deactivate/reload 时摘下）
+        self._active_skills: dict[str, list[str]] = {}
 
         # 加载 OPENX.md 指令文件，并构建初始系统提示
         self._instructions: InstructionRegistry = load_instructions(self.workspace)
@@ -562,6 +572,103 @@ class OpenXAgent:
 
         return prompt
 
+    # ── Skills（渐进披露：目录注入 + 按需加载）────────────────────
+
+    def reload_skills(self) -> None:
+        """重新装载 skills 并重建系统提示（安装/卸载后调用）。
+
+        同时摘下已卸载 skill 残留的会话内存态 allow 模式。
+        """
+        self.skills = load_skills(self.workspace)
+        self._system_prompt = self._build_system_prompt()
+        for stale in [n for n in self._active_skills if n not in self.skills]:
+            self.deactivate_skill(stale)
+
+    def _apply_skill_tools(self, skill: Skill) -> list[str]:
+        """把 skill 的 ``allowed-tools`` 挂为**会话内存态** allow 模式。
+
+        直接 append ``rules.allow``，**绝不调用 ``save()``**——技能预批准只在
+        本次会话生效、卸载即摘，不写入 ``settings.json``（否则「装一个技能」
+        等于永久放宽权限）。返回本次新增的模式，供 :meth:`deactivate_skill` 撤销。
+
+        注意：allow 规则**不豁免**高风险工具恒弹窗的不变量（Guard 侧
+        ``is_high_risk`` 在任何模式下仍强制确认），deny 规则亦优先于 allow。
+        """
+        added: list[str] = []
+        rules = getattr(self.tool_executor, "rules", None)
+        if rules is None or not skill.allowed_tools:
+            return added
+        for tool_name in skill.allowed_tools:
+            pattern = f"{tool_name}(*)"
+            if pattern not in rules.allow:
+                rules.allow.append(pattern)
+                added.append(pattern)
+        return added
+
+    def deactivate_skill(self, name: str) -> None:
+        """摘下该 skill 挂上的 allow 模式（幂等；未激活则无操作）。"""
+        patterns = self._active_skills.pop(name, [])
+        rules = getattr(self.tool_executor, "rules", None)
+        if rules is None:
+            return
+        for pattern in patterns:
+            if pattern in rules.allow:
+                rules.allow.remove(pattern)
+
+    async def _run_skill_injection(self, command: str) -> str:
+        """执行 ``!`cmd` `` 注入命令——**经执行闸**（Guard/hooks/账本/审计）。
+
+        绝不在提示组装期裸跑子进程：与普通工具调用同一裁决路径，故 ASK
+        权限、PreToolUse 钩子、白名单预批准、账本记录全部适用。
+        """
+        tool = self.tools.get("shell")
+        if tool is None:
+            return ""
+        import json as _json
+
+        result, _approved = await self.tool_executor.execute(
+            "shell",
+            tool,
+            _json.dumps({"command": command}),
+            f"skill-inject:{command[:24]}",
+        )
+        return result.output if result.success else (result.error or "")
+
+    async def activate_skill(self, name: str, arguments: str = "") -> str:
+        """按需加载 skill 正文（渐进披露）：``/<name>`` 与 ``skill`` 工具共用。
+
+        - 命中后把该 skill 的 ``allowed-tools`` 挂为会话内存态 allow（不落盘）；
+        - 正文里的 ``!`cmd` `` 注入命令经执行闸跑，以其输出替换占位符；
+        - 未命中抛 ``KeyError``（调用方转成用户可读提示）。
+        """
+        skill, body, commands = load_skill_body(self.skills, name, arguments)
+        for command in commands:
+            try:
+                output = await self._run_skill_injection(command)
+            except Exception as e:  # 注入失败绝不拖垮 skill 加载
+                output = f"(injection failed: {e})"
+            body = body.replace(f"!`{command}`", output)
+        if skill.allowed_tools:
+            self._active_skills[skill.name] = self._apply_skill_tools(skill)
+        return body
+
+    def skill_summary(self, name: str) -> str:
+        """``/<name>`` 与 ``/skill show`` 的元信息头（目录/级别/附带文件）。"""
+        skill = self.skills.get(name)
+        if skill is None:
+            raise KeyError(name)
+        parts = [f"{skill.name} [{skill.level}]"]
+        if skill.description:
+            parts.append(skill.description)
+        if skill.allowed_tools:
+            parts.append(f"pre-approved: {', '.join(skill.allowed_tools)}")
+        supporting = list_supporting_files(skill)
+        if supporting:
+            parts.append(f"files: {', '.join(supporting)}")
+        if skill.legacy:
+            parts.append("legacy flat layout")
+        return "\n".join(parts)
+
     def reload_instructions(self) -> InstructionRegistry:
         """从磁盘重新加载 OPENX.md。
 
@@ -656,6 +763,8 @@ class OpenXAgent:
                 WritePluginTool(kernel, self),
                 TestPluginTool(kernel),
                 PromotePluginTool(kernel),
+                # 渐进披露的模型侧入口（skill）：按需加载 skill 正文。
+                SkillTool(self),
             ):
                 registry[tool.name] = tool
                 reserved[tool.name] = "builtin-structural"

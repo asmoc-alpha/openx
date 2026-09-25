@@ -727,7 +727,12 @@ async def skills_get(request: web.Request) -> web.Response:
             "name": s.name,
             "description": s.description,
             "trigger": list(s.trigger),
+            "allowed_tools": list(s.allowed_tools),
+            "license": s.license,
             "level": s.level,
+            "legacy": s.legacy,
+            "directory": s.directory,
+            "supporting_files": _skills.list_supporting_files(s),
             "source": s.source,
             "content": s.content,          # 编辑用（前端按需展示）
         }
@@ -755,6 +760,12 @@ async def skills_save(request: web.Request) -> web.Response:
     if not isinstance(trigger, list):
         trigger = []
 
+    allowed_tools = body.get("allowed_tools")
+    if isinstance(allowed_tools, str):
+        allowed_tools = [t.strip() for t in allowed_tools.replace(",", " ").split()]
+    if not isinstance(allowed_tools, list):
+        allowed_tools = []
+
     try:
         _skills.install_skill_from_content(
             name=name,
@@ -763,6 +774,8 @@ async def skills_save(request: web.Request) -> web.Response:
             trigger=trigger,
             workspace=workspace,
             global_install=global_install,
+            allowed_tools=allowed_tools,
+            license=str(body.get("license") or "").strip(),
         )
     except (OSError, ValueError) as exc:
         return _fail(f"cannot install skill: {exc}", status=500)

@@ -535,6 +535,12 @@ const Settings = {
       const lvl = el("span", "pill");
       lvl.textContent = s.level || "global";
       head.appendChild(lvl);
+      if (s.legacy) {
+        const legacy = el("span", "pill");
+        legacy.textContent = "legacy";
+        legacy.title = "旧扁平布局（<name>.md）——重新安装即迁移到 <name>/SKILL.md";
+        head.appendChild(legacy);
+      }
 
       const desc = el("span", "card-sub");
       desc.textContent = s.description || "";
@@ -555,6 +561,18 @@ const Settings = {
         }
         card.appendChild(tags);
       }
+      // 预批准工具与附带文件（渐进披露的元信息；正文不在列表里展开）
+      if ((s.allowed_tools || []).length || (s.supporting_files || []).length) {
+        const meta = el("div", "hint");
+        if ((s.allowed_tools || []).length) {
+          meta.textContent = "预批准工具：" + s.allowed_tools.join(", ");
+        }
+        if ((s.supporting_files || []).length) {
+          meta.textContent +=
+            (meta.textContent ? "　" : "") + "附带文件：" + s.supporting_files.join(", ");
+        }
+        card.appendChild(meta);
+      }
       host.appendChild(card);
     }
   },
@@ -570,12 +588,14 @@ const Settings = {
         description: ($("sk-desc").value || "").trim(),
         content,
         trigger: ($("sk-trigger").value || "").trim(),
+        allowed_tools: ($("sk-tools") ? ($("sk-tools").value || "").trim() : ""),
         level: $("sk-level").value || "global",
       });
       OX.toast(`Skill「${name}」已安装`, "ok");
       $("sk-name").value = "";
       $("sk-desc").value = "";
       $("sk-trigger").value = "";
+      if ($("sk-tools")) $("sk-tools").value = "";
       $("sk-content").value = "";
       await Settings.loadSkills();
     } catch (err) {

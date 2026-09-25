@@ -45,6 +45,30 @@ _commands: dict[str, Callable[..., Awaitable[bool]]] = {}
 _aliases: dict[str, str] = {}  # alias → canonical name
 _descriptions: dict[str, str] = {}
 
+# 动态 skill 命令（`/<skill-name>`）：skill 装载/安装/移除时同步填充。
+# 单列一张表而非直接写 _commands——内置命令恒优先，用户/模型产出的 skill
+# 名绝不能覆盖内置（如名为 help 的 skill 不得劫持 /help）。
+_skill_commands: dict[str, Callable[..., Awaitable[bool]]] = {}
+_skill_descriptions: dict[str, str] = {}
+
+
+def register_skill_command(name: str, description: str, handler) -> None:
+    """注册一个 ``/<name>`` 动态 skill 命令（已存在则覆盖）。"""
+    _skill_commands[name] = handler
+    _skill_descriptions[name] = description
+
+
+def unregister_skill_command(name: str) -> None:
+    """注销一个动态 skill 命令（幂等）。"""
+    _skill_commands.pop(name, None)
+    _skill_descriptions.pop(name, None)
+
+
+def clear_skill_commands() -> None:
+    """清空所有动态 skill 命令（skills 全量重载前调用）。"""
+    _skill_commands.clear()
+    _skill_descriptions.clear()
+
 
 def register(
     name: str,
@@ -87,6 +111,8 @@ def find_handler(name: str) -> Optional[Callable[..., Awaitable[bool]]]:
     canonical = _aliases.get(name)
     if canonical:
         return _commands.get(canonical)
+    if name in _skill_commands:
+        return _skill_commands[name]
     registry = _plugin_commands()
     if registry is None:
         return None
@@ -102,6 +128,9 @@ def find_handler(name: str) -> Optional[Callable[..., Awaitable[bool]]]:
 def all_descriptions() -> dict[str, str]:
     """Return ``{name: description}`` for every registered command."""
     desc = dict(_descriptions)
+    for name, text in _skill_descriptions.items():
+        if name not in _commands and name not in _aliases:
+            desc[name] = text  # 内置优先；skill 次于内置、先于插件
     registry = _plugin_commands()
     if registry is not None:
         # 插件命令并入帮助；内置名优先（setdefault 不覆盖）。
@@ -124,6 +153,11 @@ def menu_entries() -> list[tuple[str, str, list[str]]]:
         (name, _descriptions.get(name, ""), sorted(by_canonical.get(name, [])))
         for name in sorted(_commands)
     ]
+    # 动态 skill 命令（`/<skill-name>`）并入补全菜单；内置/别名同名跳过。
+    for name in sorted(_skill_commands):
+        if name in _commands or name in _aliases:
+            continue
+        entries.append((name, _skill_descriptions.get(name, ""), []))
     registry = _plugin_commands()
     if registry is not None:
         for e in registry.entries():
@@ -1489,24 +1523,87 @@ async def _cmd_mcp(agent, console, args):
     return True
 
 
+def _sync_skill_commands(agent) -> list[str]:
+    """把已装载 skills 同步为 ``/<skill-name>`` 动态命令；返回注册的命令名。
+
+    内置命令同名者**不注册**——``/help`` 之类绝不被 skill 覆盖（这类 skill
+    仍可用 ``/skill show <name>`` 与 ``skill`` 工具访问）。
+    """
+    from rich.markup import escape
+
+    clear_skill_commands()
+    registered: list[str] = []
+    for name, skill in agent.skills.items():
+        if name in _commands or name in _aliases:
+            continue
+
+        def _make(skill_name: str):
+            async def _handler(agent_ref, console_ref, args_ref):
+                try:
+                    body = await agent_ref.activate_skill(
+                        skill_name, " ".join(args_ref)
+                    )
+                except KeyError:
+                    console_ref.print_error(f"Skill not found: {skill_name}")
+                    return True
+                console_ref.raw.print(f"\n[bold cyan]{skill_name}[/bold cyan]")
+                if body.strip():
+                    # 正文可能含 ``[`` 等字符——转义后再交给 Rich，避免被
+                    # 当成 markup 解析（技能文本不是我们的渲染指令）。
+                    console_ref.raw.print(escape(body))
+                return True
+
+            return _handler
+
+        register_skill_command(
+            name,
+            (skill.description or f"Run skill {name}")[:70],
+            _make(name),
+        )
+        registered.append(name)
+    return registered
+
+
 @register(
     "skill",
-    description="Manage skills (list / add / install / remove)",
+    description="Manage skills (list / add / install / show / remove)",
     aliases=["skills"],
 )
 async def _cmd_skill(agent, console, args):
     from ...skills import (
-        load_skills, install_skill, install_skill_from_content,
-        uninstall_skill, GLOBAL_SKILLS_DIR,
+        GLOBAL_SKILLS_DIR,
+        install_skill,
+        install_skill_from_content,
+        list_supporting_files,
+        uninstall_skill,
     )
     from ...ui._style import PROMPT_STYLE
 
     subcmd = args[0].lower() if args else ""
 
-    # ── /skill install <path> — 从本地文件安装 ────────────────
+    # ── /skill show <name> — 查看正文（不执行注入命令）─────────
+    if subcmd in ("show", "cat", "info"):
+        target = args[1] if len(args) > 1 else ""
+        if not target:
+            console.print_warning("Usage: /skill show <name>")
+            return True
+        skill = agent.skills.get(target)
+        if skill is None:
+            console.print_error(f"Skill not found: {target}")
+            return True
+        console.raw.print(f"\n[bold cyan]{target}[/bold cyan]")
+        console.raw.print(agent.skill_summary(target))
+        supporting = list_supporting_files(skill)
+        if supporting:
+            console.raw.print(f"[dim]supporting files: {', '.join(supporting)}[/dim]")
+        console.raw.print("")
+        console.raw.print(skill.body or "[dim](no body)[/dim]")
+        return True
+
+    # ── /skill install <path> — 从本地文件/目录安装 ──────────────
     if subcmd == "install":
         if len(args) < 2:
-            console.print_warning("Usage: /skill install <path-to-skill.md>")
+            console.print_warning("Usage: /skill install <path-to-SKILL.md|dir>")
             return True
         source = args[1]
         # 可选 --project 标志：安装到项目级而非全局
@@ -1517,9 +1614,9 @@ async def _cmd_skill(agent, console, args):
                 workspace=str(agent.workspace),
                 global_install=global_install,
             )
-            # 重新加载 skills 并重建系统提示
-            agent.skills = load_skills(agent.workspace)
-            agent._system_prompt = agent._build_system_prompt()
+            # 重新装载 skills、重建系统提示、同步动态命令
+            agent.reload_skills()
+            _sync_skill_commands(agent)
             scope = "global (~/.openx/skills/)" if global_install else "project (.openx/skills/)"
             console.print_success(
                 f"Skill '{skill.name}' installed to {scope}\n"
@@ -1528,7 +1625,7 @@ async def _cmd_skill(agent, console, args):
         except FileNotFoundError as e:
             console.print_error(str(e))
         except ValueError as e:
-            console.print_error(f"Invalid skill file: {e}")
+            console.print_error(f"Invalid skill: {e}")
         return True
 
     # ── /skill add — 交互式创建新 skill ─────────────────────
@@ -1550,6 +1647,13 @@ async def _cmd_skill(agent, console, args):
             f"[dim](comma-separated, Enter to skip)[/dim]: "
         ).strip()
         triggers = [t.strip() for t in trigger_str.split(",") if t.strip()] if trigger_str else []
+        tools_str = paste_aware_input(console.raw, 
+            f"  [{PROMPT_STYLE}]Pre-approved tools[/{PROMPT_STYLE}] "
+            f"[dim](comma-separated, Enter to skip)[/dim]: "
+        ).strip()
+        allowed_tools = (
+            [t.strip() for t in tools_str.split(",") if t.strip()] if tools_str else []
+        )
         console.raw.print(
             f"  [{PROMPT_STYLE}]Instructions[/{PROMPT_STYLE}] "
             f"[dim](multi-line; end with an empty line)[/dim]:\n"
@@ -1570,7 +1674,7 @@ async def _cmd_skill(agent, console, args):
 
         # 选择安装范围
         scope_options = [
-            ("Global (~/.openx/skills/)", "global"),
+            ("Personal (~/.openx/skills/)", "global"),
             ("Project (.openx/skills/)", "project"),
         ]
         console.raw.print()
@@ -1589,9 +1693,10 @@ async def _cmd_skill(agent, console, args):
             trigger=triggers,
             workspace=str(agent.workspace),
             global_install=global_install,
+            allowed_tools=allowed_tools,
         )
-        agent.skills = load_skills(agent.workspace)
-        agent._system_prompt = agent._build_system_prompt()
+        agent.reload_skills()
+        _sync_skill_commands(agent)
         console.print_success(f"Skill '{skill.name}' created and installed.")
         return True
 
@@ -1617,16 +1722,16 @@ async def _cmd_skill(agent, console, args):
                 return True
             if choice:
                 if uninstall_skill(choice, workspace=str(agent.workspace)):
-                    agent.skills = load_skills(agent.workspace)
-                    agent._system_prompt = agent._build_system_prompt()
+                    agent.reload_skills()
+                    _sync_skill_commands(agent)
                     console.print_success(f"Removed skill: {choice}")
                 else:
                     console.print_error(f"Failed to remove skill: {choice}")
             return True
         target = args[1]
         if uninstall_skill(target, workspace=str(agent.workspace)):
-            agent.skills = load_skills(agent.workspace)
-            agent._system_prompt = agent._build_system_prompt()
+            agent.reload_skills()
+            _sync_skill_commands(agent)
             console.print_success(f"Removed skill: {target}")
         else:
             console.print_error(f"Skill not found: {target}")
@@ -1637,32 +1742,42 @@ async def _cmd_skill(agent, console, args):
     if not skills:
         console.print_info(
             "No skills installed.\n\n"
-            "Skills are markdown instruction packs that teach the agent "
-            "specialized capabilities.\n\n"
+            "Skills are SKILL.md instruction packs that teach the agent "
+            "specialized capabilities. Only their name + description goes into "
+            "the system prompt; the body loads when the skill is used "
+            "(type /<skill-name>, or the model calls the `skill` tool).\n\n"
             "Manage skills:\n"
-            "  /skill add              Create a new skill interactively\n"
-            "  /skill install <file>   Install from a .md file\n"
-            "  /skill remove <name>    Uninstall a skill\n\n"
+            "  /skill add               Create a new skill interactively\n"
+            "  /skill install <path>    Install from a SKILL.md, skill dir, or .md\n"
+            "  /skill show <name>       Print a skill's body\n"
+            "  /skill remove <name>     Uninstall a skill\n\n"
             f"Skill directories:\n"
-            f"  Global:  {GLOBAL_SKILLS_DIR}\n"
-            f"  Project: {agent.workspace}/.openx/skills/"
+            f"  Personal: {GLOBAL_SKILLS_DIR}/<name>/SKILL.md\n"
+            f"  Project:  {agent.workspace}/.openx/skills/<name>/SKILL.md"
         )
         return True
     console.raw.print(
         "\n[bold]Installed Skills[/bold]  "
-        f"[dim](global: {GLOBAL_SKILLS_DIR} | project: .openx/skills/)[/dim]\n"
+        f"[dim](personal: {GLOBAL_SKILLS_DIR} | project: .openx/skills/)[/dim]\n"
     )
     for name, skill in skills.items():
         level_tag = f"[dim][{skill.level}][/dim]"
-        trigger_str = f"  [dim]trigger: {', '.join(skill.trigger)}[/dim]" if skill.trigger else ""
-        console.raw.print(f"  [bold cyan]{name}[/bold cyan] {level_tag}")
+        legacy_tag = " [yellow](legacy flat)[/yellow]" if skill.legacy else ""
+        console.raw.print(
+            f"  [bold cyan]{name}[/bold cyan] {level_tag}{legacy_tag}"
+        )
         if skill.description:
             console.raw.print(f"    {skill.description}")
-        if trigger_str:
-            console.raw.print(f"   {trigger_str}")
+        if skill.allowed_tools:
+            console.raw.print(
+                f"    [dim]pre-approved: {', '.join(skill.allowed_tools)}[/dim]"
+            )
+        if skill.trigger:
+            console.raw.print(f"    [dim]trigger: {', '.join(skill.trigger)}[/dim]")
     console.raw.print(
-        f"\n[dim]{len(skills)} skills loaded. "
-        f"Manage: /skill add | /skill install <file> | /skill remove <name>[/dim]"
+        f"\n[dim]{len(skills)} skills loaded. Invoke with /<name>; "
+        f"manage: /skill add | /skill install <path> | /skill show <name> | "
+        f"/skill remove <name>[/dim]"
     )
     return True
 

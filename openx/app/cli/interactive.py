@@ -33,7 +33,7 @@ from ...image import (
 from ...instructions import ProjectInfo
 from ...services.streaming import StreamingService
 from ...ui.console import Console
-from .commands import handle_slash_command
+from .commands import handle_slash_command, _sync_skill_commands
 
 
 class _StreamInterrupted(Exception):
@@ -54,6 +54,10 @@ async def run_interactive(agent: OpenXAgent, console: Console) -> None:
         # 远程工具（失败只警告、不阻塞）；无论 REPL 如何退出，finally
         # 里幂等关闭连接。
         await agent.startup()
+
+        # 渐进披露（skills）：把已装载 skills 注册为 `/<skill-name>` 动态
+        # 命令（内置同名者跳过），使补全菜单与直接调用可用。
+        _sync_skill_commands(agent)
 
         # Explore project and show structured startup
         try:

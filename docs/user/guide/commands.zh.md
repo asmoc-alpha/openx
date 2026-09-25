@@ -34,6 +34,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/assembly [json\|suggestions]` | 装配报告（离线）：装了什么 vs 实际用了什么（见 [离线分析](../subsystems/offline-analysis.zh.md)） |
 | `/distill [json\|save\|recall]` | 从最近会话提炼候选经验写入记忆（见 [经验沉淀](../subsystems/experience.zh.md)） |
 | `/mcp` | 显示 MCP server 状态 |
+| `/skill [list\|add\|install\|show\|remove]`（别名 `/skills`） | 管理 `SKILL.md` 指令包；用 `/<skill-name>` 调用已安装的技能（见 [技能](../subsystems/skills.zh.md)） |
 | `/workflow [name]`（别名 `/workflows`） | 列出或运行已保存的 workflows（`.openx/workflows/`） |
 | `/todos` | 显示 agent 的任务清单 |
 | `/cost` | 显示累计 token 用量 |
@@ -46,6 +47,8 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/release-notes`（别名 `/release`） | 浏览 release notes——选择版本查看，或 `/release <version>` |
 
 在输入框里键入 `/` 可带补全地浏览命令：边输入边过滤（匹配名称与别名），**↑↓** 导航，**Tab** 补全，**Enter** 执行选中命令，**Esc** 关闭。
+
+每个已安装的技能同时注册为一条 `/<skill-name>` 命令（内置命令名绝不被覆盖）。执行即把该技能的指令加载进当前任务——见 [技能](../subsystems/skills.zh.md)。
 
 ## 机器可读输出（`--output-format`）
 
