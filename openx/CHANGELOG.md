@@ -32,6 +32,11 @@ and `/release-notes`.
   and the plugin emit it byte-for-byte identically. The assembled prompt is
   content-identical to before; note the instruction block now follows the memory
   blocks (priority-driven) while the remaining fragments keep their relative order
+- **`/clear` now really starts over**: `agent.clear_history()` clears the plan
+  (`todos`, in place — the list is shared with `TodoWriteTool`/deck) and rebuilds
+  the cached system prompt, so the stale `## Current Task List` block no longer
+  survives into the fresh context. Serve's new-session/workspace-switch paths get
+  the same behavior for free (they already call `clear_history`)
 
 ## 0.1.12 — Kernel gates: resource gate & promotion gate
 

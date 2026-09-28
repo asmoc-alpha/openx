@@ -1098,8 +1098,20 @@ class OpenXAgent:
     # ── 历史管理（委托给 ConversationHistory）───────────────────
 
     def clear_history(self) -> None:
-        """清空对话历史（``/clear`` 调用）。"""
+        """清空对话历史（``/clear`` / serve 新建会话 / 切工作区调用）。
+
+        历史之外，会话级派生状态一并重置：
+
+        - ``todos`` **原地清空**（``self.todos.clear()``，绝不重绑定）——
+          ``TodoWriteTool`` / ``ToolHost`` 以引用共享同一 list 对象，重绑定
+          会让工具写入的新清单对 agent 不可见；deck 计划面板与 ``/todos``
+          读的也是这个列表。
+        - 重建缓存系统提示——否则 ``## Current Task List`` 注入块残留，
+          ``/clear`` 后模型仍看得到已清空的旧计划。
+        """
         self.history.clear()
+        self.todos.clear()
+        self._system_prompt = self._build_system_prompt()
 
     def history_token_estimate(self) -> int:
         """当前历史的近似 token 数。"""

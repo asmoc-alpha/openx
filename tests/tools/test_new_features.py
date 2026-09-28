@@ -96,6 +96,35 @@ class TestConversationMemory:
         assert agent.history.messages == []
 
     @pytest.mark.asyncio
+    async def test_clear_history_clears_todos_and_prompt(self, tmp_path, monkeypatch):
+        """/clear 语义：计划（todos）随历史一并清空，系统提示不再注入旧计划。"""
+        agent = _make_agent(tmp_path, monkeypatch, [("resp", None)])
+        async for _ in agent.stream_run("hi"):
+            pass
+
+        # 经 TodoWriteTool 写入计划——工具持有的是 agent.todos 的同一引用
+        tool = agent.tools["todo_write"]
+        await tool.execute(todos=[
+            {"content": "步骤一", "activeForm": "执行步骤一", "status": "completed"},
+            {"content": "步骤二", "activeForm": "执行步骤二", "status": "in_progress"},
+        ])
+        assert len(agent.todos) == 2
+
+        # 缓存提示在此后某次重建点（set_mode / reload_instructions …）把计划
+        # 注入进去——/clear 之前它就是模型的现状
+        agent._system_prompt = agent._build_system_prompt()
+        assert "## Current Task List" in agent._system_prompt
+
+        agent.clear_history()
+
+        # 原地清空：仍是同一 list 对象（TodoWriteTool/deck 共享引用）
+        assert agent.todos == []
+        assert agent.todos is tool._store
+        # 系统提示重建：旧计划注入块消失
+        assert "## Current Task List" not in agent._system_prompt
+        assert "步骤一" not in agent._system_prompt
+
+    @pytest.mark.asyncio
     async def test_token_accumulation(self, tmp_path, monkeypatch):
         agent = _make_agent(tmp_path, monkeypatch, [("resp one", None)])
         async for _ in agent.stream_run("hi"):
