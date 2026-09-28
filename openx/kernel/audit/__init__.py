@@ -4,4 +4,6 @@
   UI（弹窗）留在 executor，内核只裁决不弹窗
 - hooks.py  用户 hooks 链（Claude Code 兼容 schema；Pre/Post 工具、
   UserPromptSubmit、Stop；exit 2 阻断）——五件套定义里 Hook 链属安全审计
+- resource_gate.py  资源闸（K4）：轮次 / 停止 / 预算底线的判定与记账。
+  管的是信任的底线而非模型能力，且**不属任何 loop 实现**——换 loop 不换闸
 """

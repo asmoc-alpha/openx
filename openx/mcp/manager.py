@@ -150,6 +150,14 @@ class MCPManager:
         """已登记的远程工具（工具全名 → MCPTool）。"""
         return self._tools
 
+    def connected_servers(self) -> list[str]:
+        """已成功握手连接（登记了工具）的 server 名（配置序）。
+
+        消费方据此把 MCP 工具作为会话内贡献插入内核、并在卸载时按 server
+        撤销（K6 pilot）；与 ``status()`` 的展示面分工：这是给代码用的取用面。
+        """
+        return list(self._connected)
+
     def status(self) -> list[str]:
         """人类可读状态行：``"name: connected (N tools)"`` / ``"name: not connected"``。"""
         lines: list[str] = []
@@ -203,6 +211,7 @@ if __name__ == "__main__":
         assert mgr._servers_config["two"]["command"] == "false"
         assert mgr.tools == {}
         assert mgr.status() == ["one: not connected", "two: not connected"]
+        assert mgr.connected_servers() == []   # 未连接 → 空（K6 取用面）
         asyncio.run(mgr.shutdown())   # 无连接 → no-op
         asyncio.run(mgr.shutdown())   # 幂等
 
@@ -220,5 +229,6 @@ if __name__ == "__main__":
         assert asyncio.run(bad_mgr.connect_all()) == 0
         assert bad_mgr.tools == {}
         assert bad_mgr.status() == ["nope: not connected"]
+        assert bad_mgr.connected_servers() == []   # 拉不起进程 → 不算已连接
 
     print("openx/mcp/manager.py OK ✓")

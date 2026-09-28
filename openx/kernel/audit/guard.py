@@ -8,7 +8,8 @@
     ③ 高危强制    is_high_risk -> 抬到至少 ASK（后续各站不得降宽）
     ④ 策略贡献    PreToolUse hooks，按 §2.2 映射表折叠：
                   exit 2 / decision:block -> DENY；exit 0 -> 无意见；
-                  故障非零/超时 -> 无意见 + warning 入决策 payload
+                  故障非零/超时 -> 无意见 + warning 入决策 payload；
+                  放宽企图 -> 丢弃 + ratchet_tightened（只紧不松，§2.1）
     ⑤ force_prompt  manual 模式 ASK 级 -> 抬到 ASK
     ⑥ 存储裁决    已存 allow -> 可放宽至 ALLOW_SESSION，**不得越过 ③⑤
                   的抬严**（已存规则永不放宽危险，序保证）
@@ -68,6 +69,11 @@ class Adjudication:
 # prompter 签名：async (call, permission) -> (approved, remember)
 Prompter = Callable[[GateCall, Any], Awaitable[tuple]]
 
+# ratchet 签名：payload -> None。安全棘轮收紧的唯一出口由调用方接线
+# （executor 接 ``kernel.emit_decision``）——决策落**全局账本**，与晋升/
+# 退场/回滚同族（§3.2）。与 prompter 同款 DI：内核只裁决，不碰 UI/存储。
+Ratchet = Callable[[dict], None]
+
 
 class Guard:
     """裁决管线：每一工具调用必经（执行闸的 K3 形态）。"""
@@ -81,6 +87,7 @@ class Guard:
         prompter: Optional[Prompter] = None,
         mode: Callable[[], str] = lambda: "auto",
         auto_approve: Callable[[], bool] = lambda: False,
+        ratchet: Optional[Ratchet] = None,
     ) -> None:
         self._emit = emit
         self._rules = rules
@@ -88,6 +95,10 @@ class Guard:
         self._prompter = prompter
         self._mode = mode
         self._auto_approve = auto_approve
+        self._ratchet = ratchet
+        # 已记账的棘轮收紧（``(工具, 被丢弃贡献)``）：同一份降宽贡献只记一次
+        # ——决策事件是跨会话事实，不该被每次工具调用刷屏。
+        self._ratcheted: set[tuple[str, str]] = set()
 
     async def gate(self, call: GateCall) -> Adjudication:
         """七站裁决；任何路径只返回一次，且每次裁决都记账。"""
@@ -173,6 +184,8 @@ class Guard:
                 ),
             )
             hook_warnings = list(outcome.warnings)
+            if outcome.widen_discarded:
+                self._note_widen(call, mode, outcome.widen_discarded)
             if outcome.blocked:
                 return self._final(
                     call, Verdict.DENY, trace, mode, station="policy_hooks",
@@ -236,6 +249,33 @@ class Guard:
                            hook_warnings=hook_warnings)
 
     # ── internals ───────────────────────────────────────────────
+
+    def _note_widen(self, call: GateCall, mode: str, discarded: list) -> None:
+        """记一次安全棘轮收紧（§2.1 "只紧不松"）。
+
+        钩子的降宽贡献被丢弃（见 ``hooks.HookOutcome.widen_discarded``）——
+        裁决结果不受影响（本就没有放宽的路径），但**这件事要留痕**：收紧是
+        跨会话事实，记 ``ratchet_tightened`` 决策（落全局账本）。同一份贡献
+        只记一次：否则每个工具调用都会刷一条。
+        """
+        if self._ratchet is None:
+            return
+        for item in discarded:
+            key = (call.tool_name, str(item))
+            if key in self._ratcheted:
+                continue
+            self._ratcheted.add(key)
+            try:
+                self._ratchet({
+                    "type": "ratchet_tightened",
+                    "where": "hooks",
+                    "tool": call.tool_name,
+                    "mode": mode,
+                    "discarded": str(item),
+                })
+            except Exception:
+                # 棘轮记账是证据系统，不该成为单点（与 emit 同纪律）
+                pass
 
     def _final(
         self,

@@ -441,19 +441,38 @@ def build_system_prompt(
     prompt = base_prompt.rstrip()
 
     # Append instructions if any
-    instructions = registry.all_instructions
-    if instructions:
-        prompt += "\n\n## Project Instructions\n\n"
-        prompt += "The following instructions come from OPENX.md files and "
-        prompt += "provide additional context about this project.\n\n"
-
-        for iset in instructions:
-            level_label = _level_label(iset.level)
-            prompt += f"<!-- BEGIN {level_label}: {iset.path} -->\n"
-            prompt += iset.content.strip() + "\n"
-            prompt += f"<!-- END {level_label} -->\n\n"
+    section = format_instructions(registry)
+    if section:
+        prompt += "\n\n" + section
 
     return prompt
+
+
+def format_instructions(registry: Optional[InstructionRegistry]) -> str:
+    """把已加载的 OPENX.md 指令渲染成系统提示**片段**（无指令返回空串）。
+
+    片段不含前导分隔符--这是 context/v1 贡献契约（分隔由消费方统一施加），
+    ``builtin-context`` 插件据此返回本片段。与 ``build_system_prompt`` 共用
+    本函数，两条路径产出的指令块逐字节一致。``registry is None`` 视为无指令
+    （**不触发磁盘读取**--自动加载是 :func:`build_system_prompt` 的职责）。
+    """
+    if registry is None:
+        return ""
+    instructions = registry.all_instructions
+    if not instructions:
+        return ""
+
+    parts: list[str] = ["## Project Instructions\n\n"]
+    parts.append(
+        "The following instructions come from OPENX.md files and "
+        "provide additional context about this project.\n\n"
+    )
+    for iset in instructions:
+        level_label = _level_label(iset.level)
+        parts.append(f"<!-- BEGIN {level_label}: {iset.path} -->\n")
+        parts.append(iset.content.strip() + "\n")
+        parts.append(f"<!-- END {level_label} -->\n\n")
+    return "".join(parts)
 
 
 def scaffold_openx_md(

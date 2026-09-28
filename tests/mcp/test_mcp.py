@@ -371,6 +371,8 @@ class TestAgentWiring:
     async def test_startup_registers_tools_and_shutdown_idempotent(
         self, tmp_path, monkeypatch
     ):
+        from openx.kernel import get_kernel, reset_kernel
+
         script = _write_server(tmp_path)
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({
@@ -382,10 +384,13 @@ class TestAgentWiring:
         )
         monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
 
+        reset_kernel()  # K6：MCP 贡献走内核注册表，测试须隔离内核
         agent = _make_agent(tmp_path)
         assert "mcp__fake__echo" not in agent.tools  # 连接前：只有本地工具
         try:
             await agent.startup()
+            # K6 pilot：remote 工具注册为**会话内贡献**（provenance = mcp:<server>）
+            assert "mcp:fake" in get_kernel().session_inserts()
             assert "mcp__fake__echo" in agent.tools
             names = [s["function"]["name"] for s in agent.tool_schemas]
             assert "mcp__fake__echo" in names
@@ -394,10 +399,15 @@ class TestAgentWiring:
             assert agent._started is True
 
             await agent.shutdown()
+            # 回滚 = 卸载：会话贡献被摘净，注册表不留指向已关客户端的条目
+            assert get_kernel().session_inserts() == ()
+            reg = get_kernel().registry("tools")
+            assert reg is None or reg.get("mcp:fake") is None
             await agent.shutdown()  # 幂等：不抛
             assert agent._started is False
         finally:
             await agent.shutdown()
+            reset_kernel()
 
     async def test_child_inherits_parent_mcp_tools(self, tmp_path, monkeypatch):
         """子代理复用父已连接的 MCP 工具（共享实例），且不自己建连。"""
@@ -413,7 +423,9 @@ class TestAgentWiring:
         monkeypatch.setattr("openx.orchestration.tasks.TASKS_DIR", tmp_path / "tasks")
 
         from openx.agent import OpenXAgent
+        from openx.kernel import reset_kernel
 
+        reset_kernel()  # 内核隔离
         parent = _make_agent(tmp_path)
         try:
             await parent.startup()
@@ -429,6 +441,7 @@ class TestAgentWiring:
             assert "mcp__fake__echo" not in restricted.tools
         finally:
             await parent.shutdown()
+            reset_kernel()
 
 
 # ── 9. status ───────────────────────────────────────────────────

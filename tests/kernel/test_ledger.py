@@ -63,7 +63,7 @@ class TestEmit:
         k = get_kernel()
         k.attach_ledger(bad_sink)
         k.ensure_loaded(str(ws))  # 记账降级为丢弃，加载照常完成
-        assert len(k.inventory()) == 2  # 两个内置插件
+        assert len(k.inventory()) == 3  # 三个内置插件
 
     def test_no_sink_still_counts(self, kernel_env):
         ws, _ = kernel_env
@@ -88,15 +88,16 @@ class TestMutationEvents:
         # 首条事件是内置工厂的 registered，紧随其后的才是 plugin_loaded
         assert types[0] == "registered"
         assert sink.events[0].payload["name"] == "core-tools"
-        assert types.count("plugin_loaded") == 3  # 两个内置 + hello
+        assert types.count("plugin_loaded") == 4  # 三个内置 + hello
         assert sink.events[1].payload["plugin"] == "builtin-tools"
-        # 工具工厂 + 各 provider 工厂（openai-compat 恒在、anthropic 视 SDK）+ hello 工具 + hi 命令
+        # 工具工厂 + 各 provider 工厂（openai-compat 恒在、anthropic 视 SDK）
+        # + 三个内置上下文片段 + hello 工具 + hi 命令
         n_providers = len(get_kernel().registry("providers"))
-        assert types.count("registered") == 3 + n_providers
+        assert types.count("registered") == 6 + n_providers
         comp = sink.of("composition_resolved")
         assert len(comp) == 1
         assert comp[0].payload["plugins"] == [
-            "builtin-tools", "builtin-providers", "hello",
+            "builtin-tools", "builtin-providers", "builtin-context", "hello",
         ]
         assert comp[0].payload["disabled"] == []
 

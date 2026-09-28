@@ -56,7 +56,7 @@ boot 组合退化为"出厂默认组合"，运行时装配在其之上增量。
 | ⑤ 沙箱执行器 | `kernel/sandbox/`（host / protect） | protect = 调用防护；进程隔离随 D9 |
 | ④b 容灾 | `kernel/recovery/`（model / store / resume）+ `services/checkpoint.py`、`services/interrupt.py` | v0.1.2 落地：回合级 checkpoint、恢复裁决、信号/取消接线；机制住内核、策略住 services |
 | 装配层（各协议 Registry） | `registrations.py` 目录：`tools` / `commands` / `contexts` / `lifecycle` / `providers` | P-D 新增 `contexts` / `lifecycle` |
-| 上下文组装管线（context/v1） | `services/assembly.py::collect_context_fragments` + `agent._build_system_prompt` | pre-inference 征集（注册序 + 字符预算 + 崩溃隔离） |
+| 上下文组装管线（context/v1） | `services/assembly.py::collect_context_fragments` + `agent._build_system_prompt` | pre-inference 征集（**priority 升序** + 字符预算 + 崩溃隔离）；**内置 prompt 源已收口（K7，builtin-context）**；payload 按形参容量传只读 `PromptHost` |
 | 会话生命周期（lifecycle/v1） | `kernel.trigger_lifecycle` + `agent.startup`（session_start）+ `services/checkpoint.py`（checkpoint / resume） | 四个钩子全部接线（v0.1.2） |
 | UI 面板管线（ui/v1） | `services/assembly.py::UiPanelCollector` + `streaming.py::_plugin_deck_renderable`（CLI）/ `app/serve/session.py` ticker（web） | deck 每帧征集（崩溃跳过/熔断/行数限额/节流）；web 经 `panels` 协议事件广播（变化才发） |
 | 元工具（模型驱动装配） | `tools/plugin_tools.py` + `tools/write_plugin_tools.py` | 结构性工具恒先占位，子代理不继承 |
@@ -270,7 +270,7 @@ load_plugin("dataquery")
 | 协议 | 状态 | 落点 |
 |---|---|---|
 | `tool/v1`（capability.tool） | 已落地 | `tools` 注册表（P1 起就有）；多例 |
-| `context/v1`（context.memory） | 已落地 | `contexts` 注册表；`ctx.register_context`，消费 = `collect_context_fragments`（注册序 + 字符预算 + 单插件崩溃隔离），片段并入系统提示（pre-inference） |
+| `context/v1`（context.memory） | 已落地 | `contexts` 注册表；`ctx.register_context(name, contribute, priority=)`，消费 = `collect_context_fragments`（**priority 升序** + 字符预算 + 单插件崩溃隔离），片段并入系统提示（pre-inference）；`contribute` 可零参，也可收一个只读 `PromptHost`（按形参容量传）。**K7 起内置 prompt 源（OPENX.md 指令 / skills 目录 / 记忆提示常量）也走本注册项**（内置插件 builtin-context，10/40/50） |
 | `lifecycle/v1`（lifecycle） | 已落地 | `lifecycle` 注册表；`ctx.register_lifecycle`（on_session_start / on_checkpoint / on_resume / on_unload），消费 = `kernel.trigger_lifecycle`（故障隔离 + `plugin_error` 记账） |
 | `ui/v1`（ui.panel，2026-09-01 增补） | 已落地 | `ui_slots` 注册表；`ctx.register_ui_slot(name, render, refresh_hz)`，`render() -> deck 行`（str/list，Rich markup）；消费 = `UiPanelCollector`（崩溃跳过 + 连续 3 次失败熔断 unregister + 单面板 8 行限额 + 节流），双客户端消费：CLI deck（输入框之下）每帧征集；web 经 `panels` 协议事件（`serve_panels`）由 ServeSession 常驻 ticker ~4Hz 广播（变化才发，行剥 rich 标签，端哑渲染纯文本）。**渲染路径强制故障隔离：渲染帧绝不能被插件拖死**。同一插件两个客户端零改动生效（协议即契约，客户端只是消费方） |
 | Planner / Orchestrator / Ingress / EventListener | 占位 | `cardinality`（multi / singleton）结构已进 ProtocolSpec；单例协议"装配即替换"的仲裁待落地 |
@@ -294,7 +294,9 @@ load_plugin("dataquery")
 | 加载器 | `kernel/assembly/loader.py` | 发现/解析/apply 完整；无依赖拓扑、无运行时装配 |
 | 校验 | `kernel/assembly/validate.py` | tools / commands 形状校验 |
 | 执行闸 | `kernel/audit/guard.py` | 七站裁决管线（K3，2026-08-28） |
-| 装配策略 | `services/assembly.py` | 工具实例化仲裁 + provider 解析（K3a） |
+| 资源闸 | `kernel/audit/resource_gate.py` | 轮次/停止/预算底线的判定 + 记账（K4，2026-09-27）：内核持有，loop 读 `.limit`、触顶 `.trip()`；`register_check` 扩展位 |
+| 晋升门 | `kernel/audit/admission.py` | 动态插入的准入裁决（K6，2026-09-27）：`PromotionGate`（observe 放行 / act 须审批 / 无通道 fail-closed）+ 内核 `admit`/`insert_contribution`/`remove_contribution`；**MCP 为 pilot** |
+| 装配策略 | `services/assembly.py` | 工具实例化仲裁 + provider 解析（K3a）；admitter 桥 `admitter_from_console`（K6） |
 | 协议 | `openx/kernel/protocol.py` | P1 事件信封（seq/ts/cause/origin/digest）+ serve 扩展 |
 | 重试/形状 | `kernel/reasoning/retry.py` / `kernel/reasoning/provider.py` | 推理核心的先声：重试归内核、形状进内核（M1） |
 | 记账 | `kernel.emit` / `sessions/*.jsonl` | 事件账本（K2）；**轨迹跟踪的底座** |
@@ -312,7 +314,7 @@ load_plugin("dataquery")
 |---|---|---|
 | boot 静态组合（`ensure_loaded`） | 模型驱动运行时装配（元工具） | **核心机制变化**：装配权从 boot 交给模型；boot 组合退化为出厂默认组合 |
 | 装配器内嵌于 kernel `__init__.py` | ② 插件装配器显式模块：Manifest 解析、生命周期、依赖解析、目录索引 | 结构析出 |
-| `guard.py` 裁决管线 | ③ 安全审计：装配请求 + 插件调用的闸门、Hook 链、审计日志、injection 防护 | 扩展：闸门从工具调用延伸到装配请求 |
+| `guard.py` 裁决管线 | ③ 安全审计：装配请求 + 插件调用的闸门、Hook 链、审计日志、injection 防护 | 扩展：闸门从工具调用延伸到装配请求——**已落地（K6）**：`admission.py` 晋升门 + 内核 `admit`/`insert_contribution`（装配必经准入） |
 | 事件账本（K2） | ④ 轨迹跟踪：推理/插件调用/装配事件/成本全量 + Trace 回放 + eval 导出 | 记账升级为轨迹 |
 | 工具运行期 L1（同进程） | 执行隔离按 trust 分级（builtin in-proc / third-party 进程 / user 沙箱强制） | 与 D9 进程隔离决断对接 |
 | 插件无自描述 | Manifest（type/mount/trust/summary/permissions/cost/isolation/timeout/dependencies） | **新增** |
@@ -325,7 +327,7 @@ load_plugin("dataquery")
 | N1 | 模型驱动装配的落地形态：元工具先以"会话内注册/卸载"实现（K6 晋升门的运行时面），还是等 boot 组合稳定后并行 | 先做会话内热插（复用五阶段校验），boot 组合退化为默认组合；元工具是薄壳包注册 API |
 | N2 | 推理核心的边界：`kernel/reasoning/provider.py` + `kernel/reasoning/retry.py` 已落地，路由/fallback/限流何时入核 | 随多 provider 多实例成熟度；现状 `resolve_provider` 装配策略在消费方（K3a 已迁） |
 | N3 | 轨迹跟踪与记账的关系：事件账本（K2）作为轨迹底座，成本与 eval 导出是增量——Tracer 是否独立模块 | 记账接口不动，Tracer 以消费者身份订阅事件流 + 补成本字段（协议扩展） |
-| N4 | 插件协议分类是否一步到位：7 类全建，还是先 Tool/Context/Lifecycle 三类 | 先 Tool（现状工具注册表）/ Context（instructions/memory/skills 收口）/ Lifecycle（调度/持久化），其余占位。**已落地**（2026-08-31，§4.5）；Context 现为插件片段并入系统提示，instructions/memory/skills 整体收口列后续 |
+| N4 | 插件协议分类是否一步到位：7 类全建，还是先 Tool/Context/Lifecycle 三类 | 先 Tool（现状工具注册表）/ Context（instructions/memory/skills 收口）/ Lifecycle（调度/持久化），其余占位。**已落地**（2026-08-31，§4.5）；**Context 的 prompt 源收口已落地（K7）**：内置片段（instructions/skills/记忆提示）经 builtin-context 注册项并入系统提示，agent 零引用；记忆**内容**后端（memory_backends）仍列后续 |
 | N5 | 执行隔离的推进节奏 | 延续 D9 分层定价：用户插件加载期先上进程隔离，工具运行期维持 L1 |
 | N6 | 生成插件的自测是否强制（不自测的提交直接拒绝？） | **强制**：`self_test` 是沙箱放行的前提（§6.4 ③），宁缺勿滥 |
 | N7 | 声明式插件是否进 P-F | 占位不做（代码插件优先），避免分心 |

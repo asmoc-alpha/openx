@@ -74,7 +74,7 @@ from .kernel.audit.hooks import (
     build_stop_payload,
 )
 from .instructions import (
-    build_system_prompt,
+    BASE_SYSTEM_PROMPT,
     load_instructions,
     reload_instructions,
     InstructionRegistry,
@@ -101,7 +101,10 @@ from .kernel.recovery import (
 from .orchestration.sessions import SessionMeta, SessionStore
 from .orchestration.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
 from .kernel.sandbox.host import ToolHost
+from .kernel.assembly.context import PromptHost
 from .kernel.assembly.plugin_spec import PLUGIN_SPEC
+from .kernel.audit.admission import Contribution
+from .kernel.audit.guard import Verdict
 from .services import assembly
 from .services.checkpoint import CheckpointManager
 from .services.interrupt import InterruptController
@@ -129,13 +132,11 @@ from .services.exploration import explore_project as _explore_project
 from .services.tool_executor import ToolExecutor
 from .skills import (
     Skill,
-    build_skills_prompt,
     list_supporting_files,
     load_skill_body,
     load_skills,
 )
 from .tools.base import Tool
-from .tools.memory_tool import MEMORY_INSTRUCTIONS
 from .tools.structured_output import StructuredOutputTool
 # 注：具体工具类（file/shell/git/…）已迁至 openx/builtin/tools.py——
 # 内置工具集是 base bundle 内置插件，agent 经内核消费注册表（"一切能力皆插件"）。
@@ -483,8 +484,15 @@ class OpenXAgent:
     # ── 系统提示与指令 ───────────────────────────────────────────
 
     def _build_system_prompt(self) -> str:
-        """构建系统提示：基础提示 + 记忆 + OPENX.md 指令 + 当前 todo 进度。"""
-        prompt = build_system_prompt(self.workspace, self._instructions)
+        """构建系统提示：基础提示 + 记忆内容 + 注册项片段 + 当前 todo 进度。
+
+        K7 收口后，OPENX.md 指令 / skills 目录 / 记忆系统说明**不再由本方法
+        直连 import**--它们是 context/v1 注册项（``builtin-context``），经
+        ``collect_context_fragments`` 按 priority 升序并入。这里只留 loop 的
+        常驻身份（base 提示）与**记忆内容**（``memory`` / ``coding_memory``
+        后端属 ``memory_backends``，未收口）。
+        """
+        prompt = BASE_SYSTEM_PROMPT.rstrip()
 
         # 注入持久化记忆
         memory_context = self.memory.build_context_prompt()
@@ -498,17 +506,12 @@ class OpenXAgent:
             prompt += coding_mem_prompt
         self._emit_memory_recall(recalled)
 
-        # 注入记忆系统使用指令（告诉 agent 何时自主记忆/召回）
-        prompt += MEMORY_INSTRUCTIONS
-
-        # 注入已安装的 skills 指令
-        skills_prompt = build_skills_prompt(self.skills)
-        if skills_prompt:
-            prompt += skills_prompt
-
-        # P-D 上下文协议（context/v1）：征集插件上下文片段（pre-inference
-        # 组装点）。子代理不继承用户插件贡献（能力继承 = 父集的子集，
-        # 与工具实例化同款口径）；单插件崩溃由征集侧隔离，不炸提示组装。
+        # 上下文协议（context/v1，K7 收口）：按 priority 升序征集片段--
+        # 内置片段在前（OPENX.md 指令 10 / 记忆说明 40 / skills 目录 50），
+        # 用户插件片段走默认 100，恒在内置之后。子代理不继承用户插件贡献
+        # （能力继承 = 父集的子集，与工具实例化同款口径）；单插件崩溃由
+        # 征集侧隔离，不炸提示组装。host 是只读投影（PromptHost）--片段
+        # 生产者拿不到 agent 本体，且按**形参容量**接收。
         try:
             from .kernel import get_kernel
 
@@ -516,6 +519,12 @@ class OpenXAgent:
                 get_kernel(),
                 assembly.CONTEXT_BUDGET,
                 include_plugins=self._parent is None,
+                payload=PromptHost(
+                    workspace=self.workspace,
+                    instructions=self._instructions,
+                    skills=self.skills,
+                    budget=assembly.CONTEXT_BUDGET,
+                ),
             )
         except Exception:
             fragments = []
@@ -794,12 +803,10 @@ class OpenXAgent:
             )
         )
 
-        # 已连接的 MCP 工具并入注册表（Phase 9）：__init__ 时尚未连接
-        # （self.mcp.tools 为空）；startup() 之后的注册表重建（/workspace）
-        # 借此不丢失 MCP 工具。
-        mcp = getattr(self, "mcp", None)
-        if mcp is not None:
-            registry.update(mcp.tools)
+        # 已连接的 MCP 工具**不再直并**：remote 工具经晋升门注册进内核
+        # （`mcp:<server>` 注册项，K6 pilot，见 startup/_register_mcp_contributions），
+        # 由上面 `instantiate_tools` 一视同仁产出——provenance/校验/记账同门。
+        # 子代理（include_plugins=False）不走内核，仍靠下面的父拷贝继承。
 
         # 子代理工具裁剪（Phase 8）：先结构性排除（task/ask_user/
         # exit_plan_mode），再按规格白名单取交集（None → 保留全部剩余）。
@@ -952,8 +959,10 @@ class OpenXAgent:
             return
         self._started = True
         await self.mcp.connect_all(self.console)
-        self.tools.update(self.mcp.tools)
-        self.tool_schemas = self._compute_tool_schemas()
+        # K6 pilot：已连接的 MCP 工具经晋升门注册进内核（session 作用域），
+        # 再由注册表统一实例化——不再直并 self.tools。
+        await self._register_mcp_contributions()
+        self._rebuild_tools()
         # 用户阶段钩子（SessionStart / source=startup）：CLI 与 serve 都经
         # 此入口，一次接线两端生效。通知型——失败/阻断绝不炸启动。
         await self._fire_hook("SessionStart", build_sessionstart_payload(
@@ -970,6 +979,58 @@ class OpenXAgent:
         except Exception:
             pass
 
+    async def _register_mcp_contributions(self) -> None:
+        """把已连接的 MCP 工具经晋升门作为**会话内贡献**插入内核（K6 pilot）。
+
+        设计要点：
+
+        - **一 server 一条贡献**：``insert_contribution`` 按 ``plugin_id`` 幂等
+          重插（清旧注册），故每条贡献必须独占一个 id。一个 server 注册**一个
+          工厂**（``factory(host) -> list[Tool]`` 本就返回列表）产出它的全部
+          工具——同 server 的工具才不会互相清掉，重连时净替换；
+        - **``observe=True``（只读档）**：MCP server 由用户写在 ``settings.json``
+          （安装即授权，非模型自产），注册是纯加法（回滚 = 移除），且每次远程
+          调用仍由 ``Guard`` 的 ASK 独立把守——故无需审批弹窗；
+        - **provenance = ``mcp:<server>``**：inventory / ``/plugins`` 一眼可辨来源。
+        """
+        from .kernel import get_kernel
+
+        kernel = get_kernel()
+        by_server: dict[str, list] = {}
+        for tool in self.mcp.tools.values():
+            by_server.setdefault(tool.server_name, []).append(tool)
+        for server, tools in by_server.items():
+            pid = f"mcp:{server}"
+            summary = f"MCP server '{server}' ({len(tools)} tool{'' if len(tools) == 1 else 's'})"
+            verdict = await kernel.admit(
+                Contribution(
+                    kind="tools", name=pid, plugin=pid,
+                    summary=summary, observe=True,
+                )
+            )
+            if verdict is not Verdict.ALLOW:
+                continue
+            bound = tuple(tools)
+            # value 是工厂：每次实例化返回同一批 MCPTool 实例（父子共享同一
+            # 对象，子代理继承的同一性由此成立）。
+            kernel.insert_contribution(
+                plugin_id=pid,
+                registry_kind="tools",
+                name=pid,
+                value=lambda host, _ts=bound: list(_ts),
+                source="mcp",
+                scope="session",
+                summary=summary,
+            )
+
+    def _unregister_mcp_contributions(self) -> None:
+        """撤销已注册的 MCP 会话贡献（回滚 = 卸载；K6）。卸载即从内核摘净。"""
+        from .kernel import get_kernel
+
+        kernel = get_kernel()
+        for server in self.mcp.connected_servers():
+            kernel.remove_contribution(f"mcp:{server}")
+
     async def shutdown(self) -> None:
         """关闭所有 MCP 连接。幂等、绝不抛出。
 
@@ -985,6 +1046,12 @@ class OpenXAgent:
             workspace=self.hooks.workspace,
             session_id=self.hooks.session_id,
         ))
+        # K6：先撤销会话内 MCP 贡献（回滚 = 卸载），再关连接——卸载契约先于
+        # 进程回收，内核注册表不残留指向已关客户端的条目。
+        try:
+            self._unregister_mcp_contributions()
+        except Exception:
+            pass
         try:
             await self.mcp.shutdown()
         except Exception:
@@ -1677,22 +1744,32 @@ class OpenXAgent:
         价值落点：触顶后的收尾本身**还要再调一次模型**，那次请求同样可能
         崩溃。有了这份 checkpoint，崩在收尾期间也能 ``--recover`` 回来，
         而不是丢掉整个回合。
+
+        K4：判定与记账归内核资源闸（``kernel/audit/resource_gate.py``）；
+        本方法只留**触顶之后怎么办**——落 checkpoint 是消费方策略（机制住
+        内核、策略住消费方，与 Guard / recovery 同款分工）。
         """
         try:
             from .kernel import get_kernel
-            from .kernel.protocol import resource_gate_tripped
 
             rounds = int(getattr(state, "tool_rounds", 0) or 0)
-            get_kernel().emit(
-                "resource_gate_tripped",
-                resource_gate_tripped(
-                    "max_tool_rounds", int(self.config.max_tool_rounds), rounds
-                ),
-                origin="kernel",
-            )
+            get_kernel().resource_gate().trip(rounds)
             self._checkpoint.commit(reason=REASON_GATE_TRIPPED, gate="max_tool_rounds")
         except Exception:
             pass
+
+    def _sync_resource_gate(self) -> int:
+        """把本轮轮次底线推入内核资源闸并返回该底线（K4）。
+
+        loop 换不换、怎么换，闸不动——loop 每轮来看闸。故循环条件读闸的
+        ``limit`` 而不是直接读 ``config``：底线的来源（settings/env）仍住
+        消费方，闸只管判定与记账。
+        """
+        from .kernel import get_kernel
+
+        limit = int(self.config.max_tool_rounds)
+        get_kernel().set_resource_limits(max_tool_rounds=limit)
+        return limit
 
     def flush_checkpoint(self, kind: str = "signal") -> int:
         """中断兜底落盘（**端层 API**，在取消/退出分支里调用）。
@@ -1785,8 +1862,10 @@ class OpenXAgent:
             state, new_turn, engine="run", modal=modal,
             resumed=resume is not None,
         )
+        # K4：轮次底线来自内核资源闸（loop 每轮必过执行闸）
+        round_limit = self._sync_resource_gate()
 
-        while state.tool_rounds < self.config.max_tool_rounds:
+        while state.tool_rounds < round_limit:
             self._sync_system_message(state)
             response = await turn_llm.chat(
                 messages=state.messages,
@@ -2056,7 +2135,10 @@ class OpenXAgent:
         ``state`` / ``new_turn`` 与 checkpoint 持有的是**同一批对象**：
         这里就地追加，旁挂快照、历史、会话文件三处看到的是同一份进展。
         """
-        while state.tool_rounds < self.config.max_tool_rounds:
+        # K4：轮次底线来自内核资源闸（loop 每轮必过执行闸）
+        round_limit = self._sync_resource_gate()
+
+        while state.tool_rounds < round_limit:
             done: StreamDone | None = None
             self._sync_system_message(state)
 

@@ -96,7 +96,7 @@ openx 的独特立场：**别家把自演进做成"模型自己的能力"，open
 | ① 感知缺口 | 识别"缺什么能力 / 什么在拖后腿" | 账本+轨迹中的失败模式；任务失败；用户显式要求 | **部分落地（E3）**：`/gaps` 离线聚类失败模式（工具错误/权限摩擦/被拒/绕路）→ 缺口报告 + 可回喂片段；在线自知仍为隐式 |
 | ② 生成候选 | 产出插件 / 补丁 / 退场建议 | PluginSpec 契约 + write_plugin 结构化输出；模型配对产"候选+建议位置" | 已落地（P-F） |
 | ③ 沙箱验证 | 出证据：self_test 跑绿 | admit 管线③：daemon 线程自测 + 10s join 超时即拒；调用防护（timeout/熔断/输出上限） | 已落地（P-C/P-F） |
-| ④ 晋升门 | 审批：只读热插 / 写类用户确认 | admit()：形状校验 → 静态扫描 → 自测 → 会话热插 → 用户晋升 | 已落地；K6 以 MCP 为 pilot |
+| ④ 晋升门 | 审批：只读热插 / 写类用户确认 | `admit()`：形状校验 → 静态扫描 → 自测 → 会话热插 → 用户晋升 | **已落地（K6）**：`kernel/audit/admission.py`（observe 放行 / act 须审批 / 无通道 fail-closed）+ 内核 `insert_contribution`/`remove_contribution`；审批通道由消费方挂接（CLI/serve），**MCP 为 pilot**（只读档热插，卸载即回滚） |
 | ⑤ 灰度激活 | 先 session 后 persistent | 注册作用域：session（不进下次 boot）→ 晋升（写回组合） | **已落地（P6/E7）**：`promote_plugin` 写回用户 overlay `enable`（`scope=persistent`），下次 boot 进应载清单；`auto-*` 出厂默认不进 boot |
 | ⑥ 评测与退场 | 证据决定去留：退场评测门 | 脚手架声明 compensates/exit_when + 评测回归 + 决策记账 | **部分落地（E4）**：决策记账 + 组合跳过 + 门策略已落；runner 待；**档案联动自动回挂已落地（P6）** |
 
@@ -293,7 +293,7 @@ exit_when 条件命中 → 发起退场评测。换模型 / 模型升级 = 改 P
 会话账本（事件流）
   → 会话收尾：提炼经验（成功的路径、失败的教训、项目约定）
   → 写入记忆（memory / coding_memory，将来收口为 memory_backends 注册项）
-  → 未来会话：context/v1 征集片段并入系统提示（注册序 + 字符预算）
+  → 未来会话：context/v1 征集片段并入系统提示（**priority 升序** + 字符预算）
   → 召回质量回流轨迹（被召回的记忆是否被实际使用）
 ```
 
@@ -365,7 +365,8 @@ auto 列的两条铁律：**自测是放行的前提，不是放行的替代**�
 3. **演进事件族补全**：plugin_created / tested / promoted / rejected /
    scaffold_retired / restored / ratchet_tightened 全落全局账本——
    **演进系统自己的历史也在账本里**（kernel 详设 §3.5 决策留痕覆盖
-   自身）。
+   自身）。**`ratchet_tightened` 已接线（K6 批次）**：钩子的放宽企图被
+   丢弃即记一条收紧（只紧不松，`Guard` 第④站）。
 
 ### 6.2 演进健康度 KPI
 
@@ -418,7 +419,7 @@ P-F 自产插件；K1 目录 / K2 信封 / K3 Guard / K3a ToolHost。
 | **E3 缺口感知** | 离线分析器：账本聚类失败模式 → "缺口报告"（人读）；报告可作为 context 片段回喂会话——**已落地**（`/gaps`，四类信号 + 回喂片段；在线自知仍隐式） | E2 | §2.1 |
 | **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发——**决策记账 + 组合跳过 + 门策略 + 档案联动已落地**；runner（真正跑 eval_set）待 | E1+E2 | §3.2-§3.3 |
 | **E5 装配策略学习** | 配对命中率 / 权限摩擦 / 上下文预算的离线报告 → overlay 建议（人终审）；auto-* 目录按使用频率排序——**装配命中率报告已落地**（`/assembly`：调用序/未使用者/建议文本，权限摩擦归 E3 `/gaps`）；overlay 编辑原语已落地（P6，人写回） | E3 | §4.2-§4.3 |
-| **E6 经验沉淀闭环** | 会话收尾提炼 → 记忆写入 → context/v1 召回 → 召回质量回账——**已落地（离线版）**（`/distill`：三候选提炼 + `save` 人审写入 + `memory_recall` 回账；后端注册项/使用判定待） | E2，K7（prompt 收口）协同 | §4.4 |
+| **E6 经验沉淀闭环** | 会话收尾提炼 → 记忆写入 → context/v1 召回 → 召回质量回账——**已落地（离线版）**（`/distill`：三候选提炼 + `save` 人审写入 + `memory_recall` 回账；后端注册项/使用判定待） | E2；**K7（prompt 收口）已落地**：内置片段走 context/v1 注册项（priority + payload），召回片段与其同门 | §4.4 |
 | **E7 晋升持久化** | promote 写回组合（overlay enable 原语），persistent 作用域完整落地——**已落地（P6/E7）**：`promote_plugin` 写回用户 overlay `enable` + `scope=persistent`；回滚 `unload_plugin` 摘除 | K6 + overlay（P6） | §1.1 环⑤ |
 
 切片间只有数据依赖没有机制依赖：E2 是底座，E1/E3 可并行，E4-E6

@@ -57,11 +57,13 @@ PLUGIN_SPEC = """\
    [Tool,...]；Tool 必须声明 name / description / parameters / permission。
 
 2. context.memory（上下文类，多例）--往系统提示贡献上下文片段：
-     def contribute():
+     def contribute():                # 零参即可；想读只读投影就收一个形参
          return "一段注入系统提示的上下文（如召回的记忆/检索结果）"
      def apply(ctx):
          ctx.register_context("my_context", contribute, priority=100)
-   priority 小者先征集；contribute 每次提示重建都会调用，只做纯读取。
+   priority 小者先征集（同 priority 保注册序；内置片段恒在前）；contribute
+   每次提示重建都会调用，只做纯读取。收形参时它是只读 PromptHost
+   （host.workspace / host.skills / host.budget），拿不到 agent 本体。
 
 3. lifecycle（生命周期类，多例）--挂会话生命周期钩子（至少一个）：
      def apply(ctx):

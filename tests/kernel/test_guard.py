@@ -38,6 +38,7 @@ def make_guard(
     auto_approve=False,
     hooks=None,
     prompt_answer=(True, False),
+    ratchet=None,
 ):
     """Guard + 事件收集器 + 弹窗记录器。prompter 缺省直接批准。"""
     events: list[dict] = []
@@ -55,6 +56,7 @@ def make_guard(
         prompter=prompter,
         mode=lambda: mode,
         auto_approve=lambda: auto_approve,
+        ratchet=ratchet,
     )
     return guard, events, prompts, rules_obj
 
@@ -247,6 +249,64 @@ class TestHookMapping:
         g, _, _, _ = make_guard(rules=rules, hooks=self._runner("exit 2"))
         adj = await g.gate(call(FakeTool(PermissionLevel.ASK)))
         assert not adj.approved
+
+    async def test_widen_attempt_is_discarded_and_recorded(self):
+        """§2.1：钩子的降宽贡献被丢弃，裁决不变（只紧不松），但收紧留痕。"""
+        cmd = "cat > /dev/null; echo '{\"permissionDecision\": \"allow\"}'"
+        seen: list[dict] = []
+        g, events, prompts, _ = make_guard(
+            hooks=self._runner(cmd), ratchet=seen.append,
+        )
+        adj = await g.gate(call(FakeTool(PermissionLevel.ASK)))
+
+        # 裁决 ≡ 现状：allow 企图既没放行也没跳过弹窗——ASK 仍走用户裁决
+        assert prompts == [{"tool": "fake", "summary": ""}]
+        assert adj.verdict is Verdict.ALLOW_ONCE
+        assert events[-1]["verdict"] == "ALLOW_ONCE"
+        assert "discarded" in adj.hook_warnings[-1]
+        assert seen == [{
+            "type": "ratchet_tightened", "where": "hooks", "tool": "fake",
+            "mode": "auto", "discarded": adj.hook_warnings[-1],
+        }]
+
+    async def test_repeated_widen_attempt_recorded_once(self):
+        """同一份降宽贡献只记一次：否则每个工具调用都刷一条决策事件。"""
+        cmd = "cat > /dev/null; echo '{\"permissionDecision\": \"allow\"}'"
+        seen: list[dict] = []
+        g, _, _, _ = make_guard(hooks=self._runner(cmd), ratchet=seen.append)
+        for _ in range(3):
+            await g.gate(call(FakeTool()))
+        assert len(seen) == 1
+
+    async def test_nested_hook_specific_output_widen_discarded(self):
+        """Claude Code 的 hookSpecificOutput 内层 permissionDecision 同样丢弃。"""
+        cmd = (
+            "cat > /dev/null; echo '{\"hookSpecificOutput\": "
+            "{\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"approve\"}}'"
+        )
+        seen: list[dict] = []
+        g, _, prompts, _ = make_guard(hooks=self._runner(cmd), ratchet=seen.append)
+        adj = await g.gate(call(FakeTool(PermissionLevel.ASK)))
+        assert prompts and adj.verdict is Verdict.ALLOW_ONCE and len(seen) == 1
+
+    async def test_ratchet_failure_never_breaks_gate(self):
+        """棘轮记账是证据系统，不该成为单点（与 emit 同纪律）。"""
+        cmd = "cat > /dev/null; echo '{\"permissionDecision\": \"allow\"}'"
+
+        def boom(payload):
+            raise RuntimeError("ledger down")
+
+        g, _, _, _ = make_guard(hooks=self._runner(cmd), ratchet=boom)
+        adj = await g.gate(call(FakeTool()))
+        assert adj.approved  # 裁决照常
+
+    async def test_deny_declaration_is_not_a_widen_attempt(self):
+        """``permissionDecision: deny`` 不是降宽：不记 ratchet（行为 ≡ 现状）。"""
+        cmd = "cat > /dev/null; echo '{\"permissionDecision\": \"deny\"}'"
+        seen: list[dict] = []
+        g, _, _, _ = make_guard(hooks=self._runner(cmd), ratchet=seen.append)
+        adj = await g.gate(call(FakeTool()))
+        assert adj.approved and seen == []
 
 
 # ── 决策记账 ─────────────────────────────────────────────────────

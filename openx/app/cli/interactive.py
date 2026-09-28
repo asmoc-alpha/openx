@@ -50,6 +50,14 @@ class _StreamInterrupted(Exception):
 async def run_interactive(agent: OpenXAgent, console: Console) -> None:
     """Run the interactive REPL."""
     try:
+        # K6（§2.4）：有人可问时挂晋升门审批通道——变更档（act）动态插入
+        # 走这里的弹窗；只读档（observe，如 MCP 注册）无需审批。无通道 =
+        # fail-closed（插不进来）。
+        from ...kernel import get_kernel
+        from ...services import assembly
+
+        get_kernel().set_admitter(assembly.admitter_from_console(console))
+
         # MCP（Phase 9）：进入 REPL 前连接配置的 MCP servers 并登记
         # 远程工具（失败只警告、不阻塞）；无论 REPL 如何退出，finally
         # 里幂等关闭连接。

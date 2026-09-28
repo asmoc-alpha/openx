@@ -60,6 +60,12 @@ audit scripts.
 - **exit 2** → block; the reason is taken from stderr (consumed per the tiers).
 - Timeouts kill the hook (warning only); other non-zero exits warn without
   blocking.
+- **Hooks can only tighten, never loosen.** A hook that asks to *allow* — a
+  top-level `permissionDecision: "allow"`/`"approve"`, or the same field nested in
+  Claude Code's `hookSpecificOutput` — is **discarded**: the decision is unchanged
+  (only exit 2 / `decision: block` can block), a warning is shown, and one
+  `ratchet_tightened` decision is written to the global ledger (safety ratchet,
+  tighten-only). Each distinct widening attempt is recorded once.
 - Entries for the same event run in "global first, project second" order; once a
   hook blocks, the remaining hooks do not run.
 

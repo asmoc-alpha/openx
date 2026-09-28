@@ -146,13 +146,14 @@ def test_context_plugin_registers_and_collects(kernel_env):
     assert cat["contexts"] == ["glossary"]
     help_ = k.plugin_help("glossary")
     assert help_["contexts"] == ["glossary"]
-    # 征集：展平为片段列表
+    # 征集：展平为片段列表（内置 memory_hints 与 host 无关，恒在）
     fragments = collect_context_fragments(k)
     assert "## Project Glossary" in fragments and "foo = bar" in fragments
-    # 卸载：注册清掉、片段消失
+    assert any(f.startswith("## Memory System") for f in fragments)
+    # 卸载：注册清掉、片段消失（内置片段不受影响）
     # （boot 插件不能 session unload，这里直接验证注册表 purge 语义）
     k._purge_plugin_entries("glossary")
-    assert collect_context_fragments(k) == []
+    assert not any("Project Glossary" in f for f in collect_context_fragments(k))
 
 
 def test_collect_context_fault_isolation_and_budget(kernel_env):
@@ -175,11 +176,13 @@ def test_collect_context_fault_isolation_and_budget(kernel_env):
     entry = k.registry("contexts").get("badctx")
     assert entry is not None and any("contribute failed" in w for w in entry.warnings)
 
-    # 预算：5 字符装不下第一个片段 -> 空 + 警告
+    # 预算按 priority 升序消耗：内置 memory_hints(40) 先于 glossary(50)，
+    # 5 字符装不下第一个片段 -> 空 + 警告记在受限条目上
     fragments = collect_context_fragments(k, budget=5)
     assert fragments == []
     assert any(
-        "budget exhausted" in w for w in k.registry("contexts").get("glossary").warnings
+        "budget exhausted" in w
+        for w in k.registry("contexts").get("memory_hints").warnings
     )
 
 
@@ -191,8 +194,9 @@ def test_collect_excludes_plugin_contexts_for_subagents(kernel_env):
     k.ensure_loaded(str(ws))
 
     assert collect_context_fragments(k, include_plugins=True)
-    # 内置插件当前不贡献上下文 -> 子代理视角为空
-    assert collect_context_fragments(k, include_plugins=False) == []
+    # 子代理视角：内置片段（memory_hints 与 host 无关）恒在，用户插件片段被排除
+    sub = collect_context_fragments(k, include_plugins=False)
+    assert sub and all("Project Glossary" not in f for f in sub)
 
 
 def test_context_registration_validates_shape(kernel_env):

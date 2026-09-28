@@ -54,6 +54,11 @@ payload 一律以 JSON 写入 hook 进程的 stdin，并附 `workspace` 与
   则按上文分级阻断或告警。
 - **exit 2** → 阻断，理由取自 stderr（同样按分级消费）。
 - 超时会杀掉 hook（仅警告）；其他非零退出只警告、不拦截。
+- **hook 只能收紧、不能放宽。** 要求 *放行* 的 hook——顶层 `permissionDecision:
+  "allow"`/`"approve"`，或 Claude Code `hookSpecificOutput` 内层同名字段——一律
+  **丢弃**：裁决不变（只有 exit 2 / `decision: block` 能阻断），仅弹一条警告，并
+  向全局账本记一条 `ratchet_tightened` 决策（安全棘轮，只紧不松）。同一份放宽
+  企图只记一次。
 - 同一事件的条目按「全局在前、项目在后」的顺序执行；某个 hook 阻断后，
   剩余 hook 不再运行。
 

@@ -54,6 +54,16 @@ def _kernel_emit(*args, **kwargs):
     return get_kernel().emit(*args, **kwargs)
 
 
+def _kernel_ratchet(payload: dict) -> None:
+    """晚绑定内核决策出口：安全棘轮收紧（``ratchet_tightened``）落全局账本。
+
+    与 ``_kernel_emit`` 同款晚绑定——测试 reset_kernel 后仍指向当下内核。
+    """
+    from ..kernel import get_kernel
+
+    return get_kernel().emit_decision(payload.get("type", "ratchet_tightened"), payload)
+
+
 @dataclass
 class PreparedCall:
     """一次工具调用的"准备完成"快照。
@@ -117,6 +127,8 @@ class ToolExecutor:
         # K3 执行闸：裁决管线析出入 kernel/guard.py。mode/auto_approve/
         # rules 以闭包晚绑定（运行期可变：set_mode、plan 批准开
         # auto_approve、测试重挂 _rules）；prompter 留在本层——UI 不进内核。
+        # ratchet（K4）：钩子的降宽贡献被丢弃时记 ``ratchet_tightened`` 决策
+        # ——收紧是跨会话事实，落全局账本（§2.1/§3.2）。
         self._guard = Guard(
             emit=_kernel_emit,
             rules=lambda: self._rules,
@@ -124,6 +136,7 @@ class ToolExecutor:
             prompter=self._prompt_user,
             mode=lambda: self.mode,
             auto_approve=lambda: self.auto_approve,
+            ratchet=_kernel_ratchet,
         )
 
     # ── public API ──────────────────────────────────────────────

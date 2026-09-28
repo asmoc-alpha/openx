@@ -14,6 +14,7 @@ import time
 from typing import Any, Mapping, Optional
 
 from ..kernel.sandbox.protect import DEFAULT_TIMEOUT, ProtectPluginTool
+from ..kernel.assembly.context import call_with_payload
 from ..kernel.assembly.validate import validate_tool
 
 # 插件上下文片段的默认字符预算（manifest cost 消费前的护栏：上下文类
@@ -154,19 +155,26 @@ def collect_context_fragments(
     budget: Optional[int] = None,
     *,
     include_plugins: bool = True,
+    payload: Optional[Any] = None,
 ) -> list[str]:
     """征集插件上下文片段（context/v1 的消费面，P-D）。
 
-    pre-inference 阶段（系统提示组装）由 agent 调用：按注册序遍历
-    ``contexts`` 注册表（内置恒首），逐个 ``contribute()``；结果展平
-    为片段列表。消费方装配策略住消费方--内核只存注册，不管提示怎么拼。
+    pre-inference 阶段（系统提示组装）由 agent 调用：按 **priority 升序**
+    （小者先；同 priority 保注册序，内置恒首挂载）遍历 ``contexts`` 注册表，
+    逐个 ``contribute()``；结果展平为片段列表。消费方装配策略住消费方--
+    内核只存注册，不管提示怎么拼。
     ``include_plugins=False`` 供子代理使用（能力继承 = 父集的子集，
     与 instantiate_tools 同款口径：只征集内置插件的贡献）。
 
+    ``payload``：可选只读 :class:`~openx.kernel.assembly.context.PromptHost`
+    （workspace / instructions / skills / budget）。**零参贡献照常工作**--
+    只有形参容纳时才传（见 :func:`~openx.kernel.assembly.context.call_with_payload`），
+    故既有插件零改动；想收 host 的贡献声明一个形参即可。
+
     故障隔离（与插件调用防护同构）：单个 contribute 崩溃 -> 跳过 +
     注册表 warning，绝不炸主流程--对提示组装而言，插件异常与"没有
-    这条贡献"同构。``budget`` 为字符预算（可选）：超预算即停止征集，
-    防止上下文类插件把提示撑爆。
+    这条贡献"同构。``budget`` 为字符预算（可选）：**按 priority 顺序消耗**
+    （高优先片段先占额度），超预算即停止征集，防止上下文类插件把提示撑爆。
     """
     fragments: list[str] = []
     used = 0
@@ -174,11 +182,14 @@ def collect_context_fragments(
     if reg is None:
         return fragments
     builtin_ids = _builtin_ids(kernel) if not include_plugins else frozenset()
-    for entry in reg.entries():
-        if not include_plugins and entry.plugin not in builtin_ids:
-            continue
+    entries = [
+        e for e in reg.entries() if include_plugins or e.plugin in builtin_ids
+    ]
+    # priority 升序（小者先）；sorted 稳定 -> 同 priority 按注册序（内置恒首）
+    entries.sort(key=lambda e: getattr(e.value, "priority", 100))
+    for entry in entries:
         try:
-            out = entry.value.contribute()
+            out = call_with_payload(entry.value.contribute, payload)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             reg.add_warning(entry.name, f"contribute failed: {error}")
@@ -198,6 +209,32 @@ def collect_context_fragments(
             fragments.append(text)
             used += len(text)
     return fragments
+
+
+def admitter_from_console(console: Any) -> Any:
+    """把 UI console 的审批对话包成晋升门的 admitter（K6，§2.4）。
+
+    消费方在"有人可问"时把这枚回调挂到内核（``set_admitter``）：交互式
+    CLI 启动即挂；serve 交由 Web 权限桥承接（无客户端时 ``ask_permission``
+    已 fail-closed 返回拒绝）。**UI 不进内核**——本函数是端层与内核之间
+    的那座桥，内核只认 ``async (Contribution) -> bool`` 的签名。
+
+    只读档（observe）贡献不经审批即可热插，故不需要有人可问；本桥只服务
+    变更档（act）贡献。MCP 工具当前走 observe（用户写在 settings.json =
+    已授权），此桥为后续 act 档生产者就位。
+    """
+
+    async def _admit(contribution: Any) -> bool:
+        approved, _remember = await console.ask_permission(
+            f"{contribution.kind}/{contribution.name}",
+            contribution.summary
+            or f"dynamic plugin contribution from {contribution.plugin}",
+            # 准入批准不是可持久化的放行规则（不存在"以后都同意"语义）
+            can_remember=False,
+        )
+        return bool(approved)
+
+    return _admit
 
 
 class UiPanelCollector:

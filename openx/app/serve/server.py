@@ -397,6 +397,15 @@ async def run_serve(
     必须在 ``asyncio.run`` 内调用（main.py 的 serve 分支）。Ctrl-C /
     SIGTERM 触发干净收尾；所有清理失败只记日志，绝不抛出。
     """
+    # K6（§2.4）：serve 的审批通道经 Web 权限桥（无客户端时 fail-closed
+    # 拒绝）；只读档（observe）插入无需有人可问。
+    try:
+        from ...kernel import get_kernel
+        from ...services import assembly
+
+        get_kernel().set_admitter(assembly.admitter_from_console(console))
+    except Exception:
+        pass  # 通道挂接失败不阻断启动：无通道 = fail-closed，仍安全
     # MCP（Phase 9）：连接配置的 MCP servers（失败只警告、不阻塞）
     await agent.startup()
     session = ServeSession(agent, console)

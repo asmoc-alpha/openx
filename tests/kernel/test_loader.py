@@ -87,8 +87,9 @@ class TestReload:
         ws, _ = kernel_env
         k = get_kernel()
         k.ensure_loaded(str(ws))
-        # 无用户插件时仅剩 base bundle 内置插件（builtin-tools/builtin-providers）
-        assert [i.source for i in k.inventory()] == ["base-bundle", "base-bundle"]
+        # 无用户插件时仅剩 base bundle 内置插件
+        # （builtin-tools / builtin-providers / builtin-context）
+        assert [i.source for i in k.inventory()] == ["base-bundle"] * 3
         assert len(k.registry("tools")) == 1       # core-tools 工厂
         # providers：openai-compat 恒在；anthropic-compat（+旧别名 anthropic）
         # 视 SDK 可选注册

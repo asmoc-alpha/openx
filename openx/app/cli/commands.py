@@ -1517,6 +1517,21 @@ async def _cmd_mcp(agent, console, args):
         if name not in connected_names:
             cmd = cfg.get("command", "?")
             console.raw.print(f"  [dim]{name}: configured ({cmd}) — not connected[/dim]")
+    # K6：已作为**会话内贡献**注册进内核的 server（provenance = mcp:<server>）
+    try:
+        from ...kernel import get_kernel
+
+        inserts = set(get_kernel().session_inserts())
+        registered = [
+            s for s in agent.mcp.connected_servers() if f"mcp:{s}" in inserts
+        ]
+    except Exception:
+        registered = []
+    if registered:
+        console.raw.print(
+            f"\n  [dim]registered as session contributions: "
+            f"{', '.join(registered)}[/dim]"
+        )
     console.raw.print(
         "\n[dim]Manage: /mcp add  |  /mcp remove [name][/dim]"
     )

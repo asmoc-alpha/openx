@@ -11,16 +11,19 @@ openx 顶层；内核加载处遍历 ``BUILTIN_PLUGINS`` 装配（列表序即�
 当前内置插件：
 - ``tools``（builtin-tools）：内置工具工厂（core-tools）；
 - ``providers``（builtin-providers）：openai-compat 恒在，anthropic 视
-  可选 SDK（``pip install openx[anthropic]``）而定。
+  可选 SDK（``pip install openx[anthropic]``）而定；
+- ``context``（builtin-context）：内置 prompt 片段（OPENX.md 指令 / skills
+  目录 / 记忆系统说明），context/v1 注册项（K7 收口）。
 """
 
 from __future__ import annotations
 
-from . import providers, tools
+from . import context, providers, tools
 from ..kernel.assembly.loader import PluginSpec
 
 BUILTIN_TOOLS_ID = "builtin-tools"
 BUILTIN_PROVIDERS_ID = "builtin-providers"
+BUILTIN_CONTEXT_ID = "builtin-context"
 
 # base bundle 内置插件列表（加载序即优先级）：builtin-tools 在前，组合决议
 # /首条注册事件的既有次序不变。``loaded`` 为已导入的模块（不经文件解析）。
@@ -37,12 +40,20 @@ BUILTIN_PLUGINS: tuple[PluginSpec, ...] = (
         loaded=providers,
         builtin=True,
     ),
+    PluginSpec(
+        id=BUILTIN_CONTEXT_ID,
+        source="base-bundle",
+        loaded=context,
+        builtin=True,
+    ),
 )
 
 __all__ = [
     "BUILTIN_PLUGINS",
     "BUILTIN_TOOLS_ID",
     "BUILTIN_PROVIDERS_ID",
+    "BUILTIN_CONTEXT_ID",
+    "context",
     "providers",
     "tools",
 ]

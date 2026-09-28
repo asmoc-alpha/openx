@@ -109,12 +109,17 @@ class HookOutcome:
     - ``blocked`` + ``reason``：某钩子明确要求阻断（exit 2 或 stdout
       ``decision: block``）——调用方据此拦截工具/提问；
     - ``warnings``：非阻塞问题（超时、非零退出、启动失败）——只提示，
-      绝不改变模型行为。
+      绝不改变模型行为；
+    - ``widen_discarded``：钩子试图**放宽**裁决（``permissionDecision:
+      allow/approve``）而被丢弃的记录——安全棘轮"只紧不松"（§2.1）：钩子
+      贡献删不掉严、也加不上宽。裁决结果不受影响（今日本就忽略），消费方
+      据此提示 + 记 ``ratchet_tightened`` 决策。
     """
 
     blocked: bool = False
     reason: str = ""
     warnings: list[str] = field(default_factory=list)
+    widen_discarded: list[str] = field(default_factory=list)
 
 
 # ── payload builders（模块级函数，纯静态、便于测试）───────────────
@@ -445,11 +450,39 @@ class HookRunner:
                 parsed = json.loads(stdout_text)
             except json.JSONDecodeError:
                 parsed = None
-            if isinstance(parsed, dict) and parsed.get("decision") == "block":
-                outcome.blocked = True
-                outcome.reason = str(parsed.get("reason") or stdout_text)
-                return "stop"
+            if isinstance(parsed, dict):
+                if parsed.get("decision") == "block":
+                    outcome.blocked = True
+                    outcome.reason = str(parsed.get("reason") or stdout_text)
+                    return "stop"
+                self._note_widen_attempt(cmd, parsed, outcome)
         return "continue"
+
+    @staticmethod
+    def _note_widen_attempt(cmd: str, parsed: dict, outcome: HookOutcome) -> None:
+        """记一次被丢弃的**放宽企图**（安全棘轮，§2.1）。
+
+        钩子若要求 ``permissionDecision: allow/approve``（顶层或 Claude Code
+        的 ``hookSpecificOutput`` 内层），该贡献被丢弃并记警告——策略只能
+        收紧，不能放宽；半格折叠里"降宽意见"不是意见。**不改裁决**（今日
+        也只有 exit 2 / ``decision: block`` 才阻断），故行为 ≡ 现状：多出来的
+        只是一条可审计的痕迹。
+        """
+        wanted = parsed.get("permissionDecision")
+        if wanted is None:
+            inner = parsed.get("hookSpecificOutput")
+            if isinstance(inner, dict):
+                wanted = inner.get("permissionDecision")
+        if not isinstance(wanted, str) or wanted.strip().lower() not in (
+            "allow", "approve",
+        ):
+            return
+        outcome.widen_discarded.append(
+            f"hook '{cmd}' requested permissionDecision={wanted.strip()!r}; "
+            "discarded (safety ratchet is tighten-only)"
+        )
+        outcome.warnings.append(outcome.widen_discarded[-1])
+
 
     # ── introspection ───────────────────────────────────────
 

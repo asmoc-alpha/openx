@@ -9,6 +9,7 @@ from openx.instructions import (
     InstructionRegistry,
     load_instructions,
     build_system_prompt,
+    format_instructions,
     scaffold_openx_md,
     reload_instructions,
     BASE_SYSTEM_PROMPT,
@@ -217,6 +218,42 @@ class TestBuildSystemPrompt:
         (tmp_path / "OPENX.md").write_text("Auto-loaded instructions")
         prompt = build_system_prompt(str(tmp_path), None)
         assert "Auto-loaded instructions" in prompt
+
+
+class TestFormatInstructions:
+    """format_instructions()：指令块片段（K7 收口，context/v1 贡献契约）。"""
+
+    def test_none_registry_is_empty(self):
+        assert format_instructions(None) == ""
+
+    def test_empty_registry_is_empty(self):
+        assert format_instructions(InstructionRegistry()) == ""
+
+    def test_bare_section_has_no_leading_separator(self, tmp_path):
+        reg = InstructionRegistry(
+            project_instructions=InstructionSet(
+                level=InstructionLevel.PROJECT,
+                path=Path(tmp_path) / "OPENX.md",
+                content="Always use pytest.",
+            ),
+        )
+        section = format_instructions(reg)
+        assert section.startswith("## Project Instructions")  # 无前导空行
+        assert "Always use pytest." in section
+        assert "<!-- BEGIN PROJECT:" in section and "<!-- END PROJECT -->" in section
+
+    def test_is_the_tail_of_build_system_prompt(self, tmp_path):
+        reg = InstructionRegistry(
+            project_instructions=InstructionSet(
+                level=InstructionLevel.PROJECT,
+                path=Path(tmp_path) / "OPENX.md",
+                content="Shared body.",
+            ),
+        )
+        section = format_instructions(reg)
+        prompt = build_system_prompt(str(tmp_path), reg)
+        assert prompt.endswith(section)          # 同一份块（逐字节）
+        assert prompt == BASE_SYSTEM_PROMPT.rstrip() + "\n\n" + section
 
 
 class TestScaffoldOpenxMd:

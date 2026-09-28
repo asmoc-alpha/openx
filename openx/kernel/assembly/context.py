@@ -7,15 +7,41 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Mapping, Optional, Union
 
 # 命令 handler 签名与内置一致：async (agent, console, args) -> bool
 CommandHandler = Callable[..., Awaitable[bool]]
 
-# context/v1：contribute() -> str | list[str]（上下文片段；pre-inference
-# 阶段由消费方 collect_context_fragments 按注册序 + 预算征集）
-ContextContribute = Callable[[], Union[str, list[str]]]
+# context/v1：contribute() 或 contribute(host) -> str | list[str]（上下文
+# 片段；pre-inference 阶段由消费方 collect_context_fragments 按 priority
+# 升序 + 预算征集）。收得下 host 的贡献按**形参容量**收到一个只读
+# :class:`PromptHost`（见 call_with_payload）。
+ContextContribute = Callable[..., Union[str, list[str]]]
+
+
+def call_with_payload(fn: Callable[..., Any], payload: Optional[Any] = None) -> Any:
+    """按**形参容量**调用一个回调：收得下 payload 才传，收不下就零参调。
+
+    向后兼容的单一真源（生命周期钩子 ``_call_hook`` 与上下文征集共用）：
+    历史回调都是零参，不能因为多了个 payload 就要求既有回调改签名。
+    ``payload is None`` 或签名不可内省（C 实现、``functools.partial`` 等）
+    时一律零参调用——回调想收 payload 就声明一个形参；带默认值
+    （``def contribute(host=None)``）则两种调用都安全。
+    """
+    if payload is None:
+        return fn()
+    accepts = 0
+    try:
+        params = inspect.signature(fn).parameters.values()
+        accepts = sum(
+            1 for p in params
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+    except (TypeError, ValueError):
+        accepts = 0
+    return fn(payload) if accepts >= 1 else fn()
 
 # lifecycle/v1：会话状态迁移钩子；异常由内核捕获（插件异常 = observation）
 LifecycleHook = Callable[..., Any]
@@ -36,10 +62,35 @@ class UISlot:
 
 @dataclass
 class ContextContribution:
-    """一条上下文贡献：contribute + 征集优先级（小者先，默认 100）。"""
+    """一条上下文贡献：contribute + 征集优先级（小者先，默认 100）。
+
+    ``contribute`` 可为零参，也可声明一个形参接收只读 :class:`PromptHost`
+    （按形参容量传，见 :func:`call_with_payload`）；返回片段文本
+    （str 或 list[str]，空片段丢弃）。
+    """
 
     contribute: ContextContribute
     priority: int = 100
+
+
+@dataclass(frozen=True)
+class PromptHost:
+    """context/v1 的征集期给予面：agent 的只读 prompt 投影（pre-inference）。
+
+    与 ``ToolHost``（工具实例化期的给予面，``kernel/sandbox/host.py``）同款
+    哲学——片段生产者在**征集期**拿到的一份只读数据投影，拿不到 loop /
+    闸门 / console。面上字段按"首个真实消费方才加入"最小化：当前内置
+    prompt 源（OPENX.md 指令 / skills 目录 / 记忆提示常量，见
+    ``openx/builtin/context.py``）恰好只需这些。
+
+    仅承载 prompt **源**；记忆内容后端（``memory`` / ``coding_memory``）
+    属设计中的 ``memory_backends`` 注册项，不在本面（P2+ 再收口）。
+    """
+
+    workspace: str
+    instructions: Optional[Any] = None            # InstructionRegistry
+    skills: Mapping[str, Any] = field(default_factory=dict)  # {name: Skill}
+    budget: Optional[int] = None                  # 本次征集字符预算
 
 
 @dataclass
@@ -125,9 +176,11 @@ class PluginContext:
     ) -> None:
         """注册一条上下文贡献（context/v1）：``contribute() -> 片段``。
 
-        片段在 pre-inference 阶段（系统提示组装）由消费方按注册序 +
-        预算征集--插件不知道、也不需要知道提示怎么拼。contribute 建议
-        纯读取无副作用（每次提示重建都会调用）。
+        片段在 pre-inference 阶段（系统提示组装）由消费方按 **priority
+        升序**（小者先，同 priority 保注册序）+ 预算征集--插件不知道、
+        也不需要知道提示怎么拼。``contribute`` 可声明一个形参接收只读
+        :class:`PromptHost`（按形参容量传，见 :func:`call_with_payload`）；
+        建议纯读取无副作用（每次提示重建都会调用）。
         """
         self._kernel.register_context(
             name, ContextContribution(contribute, priority), self.plugin_id

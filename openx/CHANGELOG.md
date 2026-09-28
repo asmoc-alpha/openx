@@ -4,6 +4,61 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.13 — Prompt fragments unified behind the context protocol
+
+### The loop stops importing prompt sources; everything enters by priority
+
+- **Prompt sources unified (K7)**: the system prompt's hard-wired sources —
+  OPENX.md instructions, the skills catalog and the memory-usage instructions —
+  are now **`context/v1` registrations** from the new built-in plugin
+  `builtin-context`, instead of direct imports inside `agent.py`. The loop no
+  longer imports concrete prompt sources (`MEMORY_INSTRUCTIONS` and
+  `build_skills_prompt` are gone from `agent.py`; the constant moved into the
+  plugin). Memory *content* (`memory` / `coding_memory`) stays in the agent — it
+  belongs to `memory_backends`, which is not yet registry-backed
+- **Priority ordering**: `collect_context_fragments` now collects in **ascending
+  `priority`** (ties keep registration order, so built-ins stay first). The
+  built-in fragments use 10 (instructions) / 40 (memory hints) / 50 (skills); a
+  user context plugin keeps the default 100 and therefore always lands *after*
+  them. The character budget is consumed in the same order, so an exhausted
+  budget starves the lowest-priority fragments first
+- **Payload by arity**: a contribution may declare **one parameter** to receive
+  a read-only `PromptHost` (`workspace` / `instructions` / `skills` / `budget`).
+  Zero-argument contributions are untouched — the payload is passed **only when
+  the callable accepts it**, the same rule lifecycle hooks already used. The
+  arity check now lives in one place (`assembly.context.call_with_payload`) and
+  is shared by both
+- `format_instructions()` extracts the OPENX.md block so `build_system_prompt`
+  and the plugin emit it byte-for-byte identically. The assembled prompt is
+  content-identical to before; note the instruction block now follows the memory
+  blocks (priority-driven) while the remaining fragments keep their relative order
+
+## 0.1.12 — Kernel gates: resource gate & promotion gate
+
+### Runtime limits owned by the kernel, and dynamic insertion through one gate
+
+- **Resource gate (K4)**: turn/stop/budget limits moved out of the loop invariant
+  into `kernel/audit/resource_gate.py`. The kernel holds the gate
+  (`resource_gate()` / `set_resource_limits`); each loop pushes the round limit at
+  the top of a turn, reads `.limit`, and records `resource_gate_tripped` via
+  `.trip()`. New limits (tokens/time/cost) plug in with `register_check` — **swap
+  the loop, not the gate**
+- **Promotion gate (K6)**: `kernel/audit/admission.py` (`PromotionGate`) is the
+  single admission path for dynamic insertion. Read-only (`observe`) contributions
+  hot-plug after validation; change (`act`) contributions need an approver; **no
+  approver = fail-closed**. `insert_contribution` reuses the existing `register_*`
+  surface (same gate as boot plugins, provenance intact) and `remove_contribution`
+  rolls back (fires `on_unload`)
+- **MCP as the pilot**: each connected server's tools are registered at startup as
+  a **session-scoped** contribution (`plugin_id = mcp:<server>`, one factory for
+  all of its tools) and removed on shutdown; a composition reload replays them, so
+  they never silently vanish mid-session. Every remote call still asks (ASK)
+- **Safety ratchet wired**: a hook that tries to *loosen* a decision
+  (`permissionDecision: allow`/`approve`, top-level or nested) is discarded and
+  recorded once as `ratchet_tightened` in the global ledger (tighten-only)
+- The interactive CLI attaches an approver at startup; `serve` wires it through the
+  web permission bridge (`fail-closed` until a client attaches)
+
 ## 0.1.11 — Skills as SKILL.md packs
 
 ### Instruction packs that load only when they are used

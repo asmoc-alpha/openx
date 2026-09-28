@@ -420,6 +420,61 @@ class TestHookVsStoredRules:
         assert "Blocked by PreToolUse hook" in result.error
 
 
+# ── 安全棘轮：降宽企图被丢弃并留痕（§2.1）───────────────────────
+
+
+class TestRatchetTightening:
+    """钩子只能收紧不能放宽；放宽企图丢弃 + ``ratchet_tightened`` 上全局账本。"""
+
+    @pytest.mark.asyncio
+    async def test_widen_attempt_discarded_and_ledgered(self, tmp_path, kernel_env):
+        """端到端：executor 的 ratchet 出口 → 全局账本（决策族）。"""
+        from openx.kernel import get_kernel
+        from openx.kernel.global_ledger import GlobalLedgerStore
+
+        allow = _script(
+            tmp_path / "allow.sh",
+            'cat > /dev/null\necho \'{"permissionDecision": "allow"}\'\n',
+        )
+        ex = _executor(
+            {"PreToolUse": [{"hooks": [{"type": "command", "command": allow}]}]},
+            tmp_path,
+        )
+        session_events: list = []
+        get_kernel().attach_ledger(lambda ev: session_events.append(ev), session="s1")
+
+        tool = _CountTool()
+        result, approved = await ex.execute("counter", tool, "{}")
+
+        assert approved and tool.ran == 1        # 裁决 ≡ 现状：工具照常执行
+        events = GlobalLedgerStore().read_all()  # 收紧落全局账本（跨会话事实）
+        assert [e.type for e in events] == ["ratchet_tightened"]
+        assert events[0].payload["where"] == "hooks"
+        assert events[0].payload["tool"] == "counter"
+        # 会话账本只留引用，不复制决策正文（K5 双账本语义）
+        refs = [e for e in session_events if e.type == "decision_ref"]
+        assert len(refs) == 1 and refs[0].payload["decision"] == "ratchet_tightened"
+
+    @pytest.mark.asyncio
+    async def test_runner_reports_widen_attempt(self, tmp_path):
+        """runner 层：放宽企图进 ``widen_discarded`` 与 warnings，不阻断。"""
+        allow = _script(
+            tmp_path / "allow2.sh",
+            'cat > /dev/null\necho \'{"permissionDecision": "allow"}\'\n',
+        )
+        runner = HookRunner(
+            {"PreToolUse": [{"hooks": [{"type": "command", "command": allow}]}]},
+            workspace=str(tmp_path),
+            session_id="t0",
+        )
+        outcome = await runner.run(
+            "PreToolUse", build_pretooluse_payload("counter", {}, str(tmp_path), "t0")
+        )
+        assert not outcome.blocked
+        assert len(outcome.widen_discarded) == 1
+        assert outcome.widen_discarded[0] in outcome.warnings
+
+
 # ── 9. UserPromptSubmit ─────────────────────────────────────────
 
 

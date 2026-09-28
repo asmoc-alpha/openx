@@ -171,32 +171,9 @@ class MemoryTool(Tool):
         return ToolResult(error=f"Memory not found: {mem_id}")
 
 
-# ── 系统提示中的记忆指令 ─────────────────────────────────────────
-
-MEMORY_INSTRUCTIONS = """
-## Memory System
-
-You have a persistent coding memory (tool: `memory`). Use it autonomously:
-
-**Auto-remember when:**
-- User corrects you ("no, we use X not Y") → remember the correct approach
-- You discover project conventions by reading code → remember for next session
-- A design/architecture decision is made → remember the rationale
-- You solve a non-obvious bug → remember the pattern
-- User expresses a preference → remember it
-
-**Auto-recall when:**
-- Starting work on a file/module → recall related conventions
-- About to make a design choice → recall prior decisions
-- Encountering an error → recall past debug patterns
-
-**Rules:**
-- Be concise: one memory = one atomic fact
-- Always include keywords for future retrieval
-- Link related_paths when the memory is file-specific
-- Don't store what's obvious from reading the code
-- Don't store temporary task details
-"""
+# 系统提示中的记忆指令（``MEMORY_INSTRUCTIONS``）已随 K7 收口迁至
+# ``openx/builtin/context.py``（builtin-context 插件，context/v1 注册项）--
+# 本模块只留能力工具本身，agent 不再直连 import 提示常量。
 
 
 if __name__ == "__main__":

@@ -4,7 +4,8 @@
 - ``assembly/``  ② 插件装配器（loader/registry/registrations/context/
   validate/manifest/protocols/plugin_spec）
 - ``reasoning/`` ① 推理核心（provider/retry）
-- ``audit/``     ③ 安全审计（guard 裁决管线 / hooks 用户钩子链）
+- ``audit/``     ③ 安全审计（guard 裁决管线 / hooks 用户钩子链 /
+  resource_gate 资源闸）
 - ``sandbox/``   ⑤ 沙箱执行（host/protect）
 - ``ledger.py``  ④ 轨迹跟踪（事件账本，emit/attach_ledger 委托）
 - ``global_ledger.py`` ④ 全局账本（决策事件族的跨会话留痕，emit_decision 委托）
@@ -34,12 +35,15 @@ import logging
 from typing import Any, Callable, Optional
 
 from .assembly import composition, loader
-from .assembly.context import PluginCommand, PluginContext
+from .assembly.context import PluginCommand, PluginContext, call_with_payload
 from .assembly.manifest import scaffold_of, validate_manifest
 from .assembly.protocols import PROTOCOLS, route
-from .assembly.registrations import REGISTRATIONS
+from .assembly.registrations import HOTPLUG_SESSION, REGISTRATIONS
 from .assembly.registry import PluginRegistry
 from .assembly.validate import validate_tool
+from .audit.admission import Admitter, Contribution, PromotionGate
+from .audit.guard import Verdict
+from .audit.resource_gate import ResourceGate
 from .inventory import (
     PHASE_ACTIVE,
     PHASE_DISABLED,
@@ -60,12 +64,21 @@ __all__ = [
     "PluginCommand",
     "get_kernel",
     "reset_kernel",
+    # ② 把关（K3/K4/K6）：裁决半格 Verdict · 晋升门 Contribution/Admitter
+    "Verdict",
+    "Contribution",
+    "Admitter",
     # base bundle 内置插件 id：失败=致命，禁用表对其无效，用户插件不得占用
     "BUILTIN_TOOLS_ID",
     "BUILTIN_PROVIDERS_ID",
 ]
 
 _log = logging.getLogger("openx.kernel")
+
+# 注册目录元数据索引（K6 动态插入按它判"能不能会话内插"）。
+# **热插档即准入面**：目录里声明 hotplug=session 的类型才可被 insert_contribution
+# 接受（providers 是 boundary 档 = 仅 boot）——"模型不能发明位置"由目录强制。
+_REGISTRATION_BY_KIND = {r.kind: r for r in REGISTRATIONS}
 
 
 def _log_hook_task_failure(task: "asyncio.Task[Any]") -> None:
@@ -118,10 +131,34 @@ class PluginKernel:
         self._retired: Optional[dict[str, dict[str, Any]]] = None
         # P6 组合决议（最近一次 _reload 的结果；未装载过为 None）。
         self._composition: composition.Composition | None = None
+        # ③ 安全审计（K4）：资源闸住内核——轮次/停止/预算底线不属任何 loop
+        # 实现（换 loop 不换闸）。emit 走内核唯一出口，"记账先于动作"由此
+        # 与既有事件同序。底线值由消费方每轮起点推入（见 set_resource_limits）。
+        self._resource_gate = ResourceGate(emit=self.emit)
+        # ② 插件装配器（K6）：晋升门——动态插入的唯一准入裁决（§2.4）。审批
+        # 通道由消费方在"有人可问"时挂上（见 set_admitter）；无通道 = fail-closed。
+        self._promotion = PromotionGate(emit=self.emit)
+        # K6 会话内动态插入登记表：``{plugin_id: insert_contribution 参数}``。
+        # 组合重组（overlay/profile 变更 → _reload 重建注册表）后据此**重放**——
+        # session 作用域的意思是"不进下次 boot 组合"，不是"本次会话中途消失"。
+        self._session_inserts: dict[str, dict[str, Any]] = {}
 
     def registry(self, kind: str) -> Optional[PluginRegistry]:
         """取某类注册项的注册表（消费方唯一取用通道）。"""
         return self.registries.get(kind)
+
+    def resource_gate(self) -> ResourceGate:
+        """资源闸（K4）：loop 每轮必过的执行闸底线（消费方只读面）。
+
+        消费方每轮起点推底线（``set_resource_limits``），循环条件读
+        ``.limit``，触顶经 ``.trip(rounds)`` 记账。停止之后的事（checkpoint、
+        收尾请求）是消费方策略，闸不管。
+        """
+        return self._resource_gate
+
+    def set_resource_limits(self, *, max_tool_rounds: Optional[int] = None) -> None:
+        """推入本轮资源底线（消费方调用；缺省不动）。"""
+        self._resource_gate.set_limits(max_tool_rounds=max_tool_rounds)
 
     # ── 装配 / 生命周期 ─────────────────────────────────────
 
@@ -210,6 +247,17 @@ class PluginKernel:
         # 全部插件处理完成才提交加载键：中途异常（含内置致命）保持旧键，
         # 下次 ensure_loaded 完整重试，不留半载状态。
         self._load_key = key
+        # 会话内动态插入（K6）在重组后重放：注册表刚被重建，中途插进来的
+        # 贡献（MCP 远程工具…）必须回来——session 作用域 ≠ 本次会话被抹掉。
+        self._replay_session_inserts()
+
+    def _replay_session_inserts(self) -> None:
+        """重放会话内插入（走 insert_contribution 同一条路径，同源同门）。"""
+        for plugin_id, params in list(self._session_inserts.items()):
+            try:
+                self.insert_contribution(**params)
+            except Exception:
+                _log.exception("session re-insert failed: %s", plugin_id)
 
     def composition_summary(self) -> dict[str, Any]:
         """当前组合决议摘要（P6）：应载/跳过/档案/overlay 操作（只读投影）。
@@ -565,22 +613,15 @@ class PluginKernel:
 
         向后兼容的落点：``on_session_start`` / ``on_unload`` 历史上都是零参，
         不能因为多了个 payload 就要求既有插件改签名。有 payload 且钩子收得下
-        才传；签名不可内省（C 实现、functools.partial 等）时退回零参。
+        才传（判据 ``assembly.context.call_with_payload``，与上下文片段征集
+        共用同一份逻辑）；签名不可内省（C 实现、functools.partial 等）时
+        退回零参。
 
         异步钩子是**即发即忘**：本方法是同步的（信号路径上不能 await）。
         过去这类钩子被静默跳过，现在至少会被调度--但没有事件循环时只能
         丢弃并告警（诚实失败胜过静默吞掉）。
         """
-        accepts = 0
-        try:
-            params = inspect.signature(hook).parameters.values()
-            accepts = sum(
-                1 for p in params
-                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-            )
-        except (TypeError, ValueError):
-            accepts = 0
-        result = hook(payload) if (payload is not None and accepts >= 1) else hook()
+        result = call_with_payload(hook, payload)
         if not inspect.isawaitable(result):
             return
         try:
@@ -738,6 +779,141 @@ class PluginKernel:
                         info.warnings.append(w)
         return [copy.copy(p) for p in self._plugins.values()]
 
+    # ── 晋升门（K6）：动态插入 ────────────────────────────────
+
+    def set_admitter(self, admitter: Optional[Admitter]) -> None:
+        """挂接晋升门的审批通道（无通道 = fail-closed，见 §2.4）。
+
+        消费方在"有人可问"时挂上：交互式 CLI 启动即挂；serve 要等首个客户端
+        attach（此前无人可问，插不进来——宁可少一个能力，不可多一条后门）。
+        传 None 撤下通道。
+        """
+        self._promotion.set_admitter(admitter)
+
+    @property
+    def has_admitter(self) -> bool:
+        """当前是否有人可问（消费方据此决定"现在确认"还是"挂起"）。"""
+        return self._promotion.has_admitter
+
+    async def admit(self, contribution: Contribution) -> Verdict:
+        """晋升门：裁决一份待插入的贡献（``ALLOW`` 准入 / ``DENY`` 拒绝）。
+
+        只读贡献直接放行；变更级须审批通道点头；无通道 = 拒绝。每条裁决
+        记一条 ``admission_decision`` 会话事件（记账先于动作）。
+        """
+        return await self._promotion.admit(contribution)
+
+    def insert_contribution(
+        self,
+        *,
+        plugin_id: str,
+        registry_kind: str,
+        name: str,
+        value: Any,
+        source: str = "",
+        scope: str = "session",
+        trust: str = "third-party",
+        summary: str = "",
+        manifest: Optional[dict[str, Any]] = None,
+    ) -> list[str]:
+        """会话内动态插入一份贡献（§1.6）——``admit()`` 之后的注册动作。
+
+        与 boot 装配**唯一**的差异：入口多一道晋升门、注册带 session 作用域；
+        注册面复用既有的 ``register_*``——**无第二条注册路径**（同源同门，
+        生成的文件/插入的贡献与 boot 插件同权、可被 list/unload/回滚一视同仁）。
+
+        - ``plugin_id`` 即 provenance：插入的贡献在 inventory / ``/plugins``
+          里一眼可辨来源（如 ``mcp:filesystem``）；
+        - **热插档即准入面**：只有目录里声明 ``hotplug=session`` 的注册项类型
+          可被会话内插入（providers 是 boundary 档，拒），"模型不能发明位置"
+          由注册目录强制（标准六）；
+        - **幂等重插**：同 id 的旧注册先按 provenance 清干净——重连（MCP 重连、
+          重建）撞上"先见者赢"才是 bug；
+        - **跨重组存活**：登记在 ``_session_inserts``，组合重组后自动重放。
+
+        返回注册问题列表（空 = 就位）。
+        """
+        meta = _REGISTRATION_BY_KIND.get(registry_kind)
+        if meta is None:
+            return [f"{registry_kind}: unknown registration kind"]
+        if meta.hotplug != HOTPLUG_SESSION:
+            return [
+                f"{registry_kind}: hotplug={meta.hotplug}; "
+                "session insert is refused (register at boot via composition)"
+            ]
+        problems = meta.validator(name, value)
+        if problems:
+            self._note_registered(registry_kind, name, plugin_id, problems)
+            return problems
+
+        # 幂等重插：先清同 provenance 的旧注册（贡献者自身 = 合法撤销来源）
+        self._purge_plugin_entries(plugin_id)
+        info = self._plugins.get(plugin_id)
+        if info is None:
+            info = PluginInfo(id=plugin_id, source=source or registry_kind, phase=PHASE_LOADING)
+            self._plugins[plugin_id] = info
+        info.phase = PHASE_LOADING
+        info.error = ""
+        info.source = source or info.source
+        info.builtin = False
+        info.scope = scope
+        info.summary = summary
+        info.manifest = dict(manifest or {})
+        info.tools, info.commands, info.providers = [], [], []
+        info.contexts, info.lifecycle, info.ui_slots = [], [], []
+
+        self._session_inserts[plugin_id] = {
+            "plugin_id": plugin_id, "registry_kind": registry_kind, "name": name,
+            "value": value, "source": info.source, "scope": scope, "trust": trust,
+            "summary": summary, "manifest": dict(manifest or {}),
+        }
+        self._dispatch_contribution(registry_kind, name, value, plugin_id)
+        info.phase = PHASE_ACTIVE
+        self.emit(
+            "plugin_loaded",
+            {"type": "plugin_loaded", "plugin": plugin_id, "source": info.source},
+        )
+        return []
+
+    def _dispatch_contribution(
+        self, kind: str, name: str, value: Any, plugin_id: str
+    ) -> None:
+        """把一份贡献交给对应的 ``register_*``（注册面的唯一分派点）。"""
+        if kind == "tools":
+            self.register_tool_factory(name, value, plugin_id)
+        elif kind == "commands":
+            self.register_command(name, value, plugin_id)
+        elif kind == "contexts":
+            self.register_context(name, value, plugin_id)
+        elif kind == "lifecycle":
+            self.register_lifecycle(name, value, plugin_id)
+        elif kind == "ui_slots":
+            self.register_ui_slot(name, value, plugin_id)
+
+    def remove_contribution(self, plugin_id: str) -> tuple[bool, str]:
+        """撤回一次会话内动态插入（回滚 = 卸载；非会话插入 no-op）。
+
+        摘除不是删除的相反面：这里真摘（会话内的插入本就没有 boot 组合位），
+        并从 ``_session_inserts`` 注销——重组不再把它放回来。
+        """
+        if plugin_id not in self._session_inserts:
+            return (False, f"not a session contribution: {plugin_id}")
+        # 状态落盘契约（§1.2）：先给插件一次 on_unload 收尾，再清注册
+        self.trigger_lifecycle("unload", plugin_id=plugin_id)
+        self._purge_plugin_entries(plugin_id)
+        info = self._plugins.pop(plugin_id, None)
+        self._session_inserts.pop(plugin_id, None)
+        self.emit(
+            "plugin_unloaded",
+            {"type": "plugin_unloaded", "plugin": plugin_id,
+             "source": info.source if info else ""},
+        )
+        return (True, f"contribution removed: {plugin_id}")
+
+    def session_inserts(self) -> tuple[str, ...]:
+        """当前会话内插入的贡献者 id（注册序；只读投影）。"""
+        return tuple(self._session_inserts)
+
     # ── 模型驱动装配（P-A）：元工具面的内核管理 API ───────────
 
     def list_plugins(self) -> list[dict]:
@@ -843,6 +1019,9 @@ class PluginKernel:
         self.trigger_lifecycle("unload", plugin_id=name)
         self._purge_plugin_entries(name)
         del self._plugins[name]
+        # K6：会话内插进来的贡献（mcp:* 等）卸载后从重放表注销——
+        # "卸载 = 回滚"必须彻底，否则下次组合重组又冒出来。
+        self._session_inserts.pop(name, None)
         self.emit(
             "plugin_unloaded",
             {"type": "plugin_unloaded", "plugin": name, "source": info.source},
