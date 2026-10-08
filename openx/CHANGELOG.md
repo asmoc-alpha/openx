@@ -37,6 +37,16 @@ and `/release-notes`.
   the cached system prompt, so the stale `## Current Task List` block no longer
   survives into the fresh context. Serve's new-session/workspace-switch paths get
   the same behavior for free (they already call `clear_history`)
+- **Code in an answer no longer lands in scrollback as fragments**: the commit
+  watermark kept only the *last rendered line* volatile, assuming it is the line
+  still growing. A fenced code block is rendered by Rich's `CodeBlock` →
+  `Syntax(padding=1)`, which appends a blank padding line — so the growing code
+  line was second-to-last, judged stable, and its half-typed state was frozen
+  into scrollback on every frame (5 Hz tick + forced feed refresh). Transcripts
+  showed `acc_0`, `acc_`, `ac`… instead of the code. The watermark now skips
+  trailing rendered blank lines before choosing the volatile line, so each code
+  line commits once, complete. Plain-text answers were unaffected (their last
+  line really is the growing one), which is why it only ever bit code
 
 ## 0.1.12 — Kernel gates: resource gate & promotion gate
 

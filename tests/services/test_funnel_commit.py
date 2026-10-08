@@ -6,6 +6,8 @@
 - done 帧唯一性：done 后 frame 是唯一末元素，已完成工具块不重渲成"副本"。
 - 热键提示生命周期：Ctrl+T 的 "… +N lines (ctrl+t to expand)" 只在未固化
   易变块出现，固化进 scrollback 后消失（已打印内容不可改、提示即谎言）。
+- 代码块不落半截：代码块尾的 padding 空行让"末行 volatile"记账误判增长行
+  → 每帧把半截代码固化（用户报告"代码内容为空/不全"）；现每行完整固化一次。
 
 Harness 手法沿用 test_terminal_interaction.py（pyte LNM + deterministic_live）。
 pyte 无 scrollback：固化断言统一走"累计输出字节 + 屏态 + committed_count"三件套。
@@ -353,3 +355,67 @@ class TestRenderFailOpen:
         h.flush()
         screen = "\n".join(h.rows())
         assert "grep -o" in screen, f"参数摘要应照常显示：{screen!r}"
+
+
+# ── ⑧ 代码块流式固化：半截代码行绝不落 scrollback（用户报告）─────
+
+
+class TestCodeBlockCommit:
+    """用户报告：回答里展示代码时"内容为空/不全"——转录里代码只剩
+    ``acc_0 / acc_ / ac`` 这类半截碎片。
+
+    根因：Markdown 围栏代码块经 Rich ``CodeBlock`` → ``Syntax(padding=1)``
+    渲染，尾部恒多一条空白 padding 行。水印按"**渲染末行** volatile"记账
+    时，真正在增长的代码行变成倒数第二行 → 被误判为稳定，于是每帧
+    （5Hz 自动节拍 + feed 强制刷新）把它当时的半截状态固化进 scrollback。
+    纯文字回答的末行恒是真增长行，故只在展示代码时发作。
+    """
+
+    _CODE = [f"    step_{i:02d} = compute({i})" for i in range(1, 13)]
+    _ANSWER = ("先看实现：\n\n```python\n"
+               + "\n".join(_CODE) + "\n```\n\n结论：它只是累加。\n")
+
+    def _stream_and_collect_commits(self, h) -> list[str]:
+        """逐字符喂（模拟 token 流）+ 每帧刷新，回报每次固化的行文本。"""
+        committed: list[str] = []
+
+        def _wrap(fn):
+            def _go():
+                before = h.svc._committed_count
+                r = fn()
+                if h.svc._committed_count > before:
+                    lines = h.svc._body_lines()
+                    committed.extend(
+                        h.svc._copy_line(l).plain.strip()
+                        for l in lines[before:h.svc._committed_count]
+                    )
+                return r
+            return _go
+
+        h.svc._maybe_commit = _wrap(h.svc._maybe_commit)
+        h.svc._flush_commit = _wrap(h.svc._flush_commit)
+        h.svc.start()
+        for ch in self._ANSWER:
+            h.svc.feed(ch)
+            h.svc._live.refresh()   # 每帧都试固化：半截行最容易在这一步落地
+        h.svc.done()
+        return committed
+
+    def test_code_line_never_committed_half_typed(self, deterministic_live):
+        """任何一个已固化行都不该是某代码行的真前缀（半截）。"""
+        h = Harness()
+        committed = [s for s in self._stream_and_collect_commits(h) if s]
+        code = {c.strip() for c in self._CODE}
+        half = [
+            s for s in committed
+            if any(c.startswith(s) and c != s for c in code)
+        ]
+        assert not half, f"半截代码行被固化进 scrollback：{half[:6]}"
+
+    def test_every_code_line_committed_exactly_once(self, deterministic_live):
+        """每行代码完整固化且只固化一次（既无碎片也无重复打印）。"""
+        h = Harness()
+        committed = [s for s in self._stream_and_collect_commits(h) if s]
+        for line in self._CODE:
+            n = committed.count(line.strip())
+            assert n == 1, f"{line.strip()!r} 固化 {n} 次（期望 1）"

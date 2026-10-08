@@ -1364,9 +1364,10 @@ class StreamingService:
         夹取三处（实测的非前缀稳定源）：① 首个 running 工具记录首行
         （并行工具：状态点 dim→绿、Running…→输出 会变，固化留 stale
         scrollback）；② 尾部已完成工具连跑保持 volatile（Ctrl+T 作用
-        窗，直到后续段到达并入稳定前缀）；③ 末 text 段仅最后一行
-        volatile，且尾部未闭合表格夹到表格首行（表格列宽随后到的行
-        重排）。done 态 = 全部可固化（flush）。
+        窗，直到后续段到达并入稳定前缀）；③ 末 text 段仅**末可见行**
+        volatile（尾部渲染空行是代码块 padding，不参与判定——见下），
+        且尾部未闭合表格夹到表格首行（表格列宽随后到的行重排）。
+        done 态 = 全部可固化（flush）。
         """
         if self._done:
             return len(lines)
@@ -1388,14 +1389,37 @@ class StreamingService:
             i -= 1
         if i < len(bounds):
             wm = min(wm, bounds[i][2])
-        # ③ 末 text 段：末行 volatile + 未闭合表格夹取
+        # ③ 末 text 段：末可见行 volatile + 未闭合表格夹取
         if bounds and bounds[-1][0] == "text":
             s = bounds[-1][2]
-            wm = min(wm, max(s, len(lines) - 1))
+            # "还在长的那一行"**不是渲染末行**：Markdown 围栏代码块经 Rich
+            # 的 CodeBlock → Syntax(padding=1) 渲染，尾部恒多一条空白
+            # padding 行。按 len(lines)-1 记账，真正增长中的代码行就被当成
+            # 稳定行、每帧（5Hz 自动节拍 + feed 强制刷新）把它的半截状态
+            # 固化进 scrollback——转录里代码变成 "acc_0 / acc_ / ac" 这类
+            # 碎片（用户报告：回答里的代码内容为空/不全；纯文字回答末行
+            # 恒是真增长行，故只在展示代码时发作）。故先从尾部跳过渲染
+            # 空行，再退一行才是要保 volatile 的增长行。
+            e = len(lines)
+            while e > s and self._render_line_blank(lines[e - 1]):
+                e -= 1
+            wm = min(wm, max(s, e - 1))
             clamp = self._open_table_clamp()
             if clamp is not None:
                 wm = min(wm, s + clamp)
         return wm
+
+    @staticmethod
+    def _render_line_blank(line) -> bool:
+        """渲染行是否只有空白（代码块外围的 padding 空行、段落空行等）。
+
+        只读文本、不看样式：Syntax 的 padding 行带代码块底色，样式非默认
+        但内容为空——按样式判会漏掉它。
+        """
+        for seg in line:
+            if seg.text and not seg.is_control and seg.text.strip():
+                return False
+        return True
 
     def _open_table_clamp(self) -> Optional[int]:
         """尾部未闭合表格的行夹取（相对末 text 块首行）；无需夹取返 None。
