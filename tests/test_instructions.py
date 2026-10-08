@@ -1,4 +1,4 @@
-"""Tests for the instruction loading system (OPENX.md)."""
+"""Tests for the instruction loading system (OPENX.md / AGENT.md / AGENTS.md)."""
 
 import pytest
 from pathlib import Path
@@ -166,6 +166,172 @@ class TestLoadInstructions:
 
         reg = load_instructions(str(tmp_path))
         assert not reg.has_any
+
+
+class TestAgentMd:
+    """项目级 AGENT.md / AGENTS.md（跨工具标准名）加载。
+
+    语义：与 OPENX.md **并存**（非替代），注入序 OPENX.md → AGENT.md →
+    AGENTS.md；仅项目级识别，全局目录下的 AGENT.md 不加载。
+    """
+
+    def test_agent_md_alone_is_loaded(self, tmp_path):
+        """Only AGENT.md present — still yields instructions."""
+        (tmp_path / "AGENT.md").write_text("AGENT rule: run linters.")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        assert reg.has_any
+        assert reg.project_instructions is None          # 不是 OPENX.md
+        assert len(reg.project_extra) == 1
+        extra = reg.project_extra[0]
+        assert extra.path.name == "AGENT.md"
+        assert extra.level == InstructionLevel.PROJECT
+        assert "run linters" in extra.content
+        assert reg.all_instructions[0] is extra
+
+    def test_agents_md_alone_is_loaded(self, tmp_path):
+        """Only AGENTS.md present — still yields instructions."""
+        (tmp_path / "AGENTS.md").write_text("AGENTS rule: keep it typed.")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        assert reg.has_any
+        assert len(reg.project_extra) == 1
+        assert reg.project_extra[0].path.name == "AGENTS.md"
+
+    def test_openx_first_then_agent_then_agents(self, tmp_path):
+        """All three coexist — injection order is OPENX.md → AGENT.md → AGENTS.md."""
+        (tmp_path / "OPENX.md").write_text("FROM-OPENX")
+        (tmp_path / "AGENTS.md").write_text("FROM-AGENTS")
+        (tmp_path / "AGENT.md").write_text("FROM-AGENT")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        names = [s.path.name for s in reg.all_instructions]
+        assert names == ["OPENX.md", "AGENT.md", "AGENTS.md"]
+        # OPENX.md 仍占 project_instructions（向后兼容）
+        assert reg.project_instructions.path.name == "OPENX.md"
+        assert [s.path.name for s in reg.project_extra] == ["AGENT.md", "AGENTS.md"]
+
+    def test_global_ordering_with_extras(self, tmp_path):
+        """Global OPENX.md stays first, before any project-level extra."""
+        global_md = tmp_path / "global_OPENX.md"
+        global_md.write_text("FROM-GLOBAL")
+        (tmp_path / "AGENT.md").write_text("FROM-AGENT")
+
+        reg = load_instructions(str(tmp_path), global_path=global_md)
+        names = [s.path.name for s in reg.all_instructions]
+        assert names == ["global_OPENX.md", "AGENT.md"]
+        levels = [s.level for s in reg.all_instructions]
+        assert levels == [InstructionLevel.GLOBAL, InstructionLevel.PROJECT]
+
+    def test_global_agent_md_not_loaded(self, tmp_path):
+        """AGENT.md is project-level only — a global one is ignored."""
+        global_dir = tmp_path / "home"
+        global_dir.mkdir()
+        (global_dir / "AGENT.md").write_text("GLOBAL-AGENT-RULE")
+        (global_dir / "AGENTS.md").write_text("GLOBAL-AGENTS-RULE")
+        # workspace 是 global_dir 的兄弟目录，本身无任何指令文件
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        reg = load_instructions(str(ws), global_path=global_dir / "OPENX.md")
+        assert not reg.has_any
+        assert reg.project_extra == []
+
+    def test_empty_and_whitespace_extras_skipped(self, tmp_path):
+        """Empty / whitespace-only AGENT*.md contribute nothing."""
+        (tmp_path / "OPENX.md").write_text("FROM-OPENX")
+        (tmp_path / "AGENT.md").write_text("")
+        (tmp_path / "AGENTS.md").write_text("   \n\n  \n")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        assert reg.has_any
+        # 文件存在 → 建了 InstructionSet，但空内容被 all_instructions 过滤
+        assert [s.path.name for s in reg.all_instructions] == ["OPENX.md"]
+
+    def test_subdirectory_agent_md_not_loaded(self, tmp_path):
+        """Only the workspace root counts (subdir scoping is reserved)."""
+        sub = tmp_path / "packages" / "api"
+        sub.mkdir(parents=True)
+        (sub / "AGENT.md").write_text("NESTED-AGENT-RULE")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        assert not reg.has_any
+
+    def test_custom_project_filename_does_not_duplicate(self, tmp_path):
+        """project_filename 覆写成 AGENT.md 时，同一文件只注入一次。"""
+        (tmp_path / "AGENT.md").write_text("FROM-AGENT")
+
+        reg = load_instructions(
+            str(tmp_path),
+            global_path=tmp_path / "nonexistent.md",
+            project_filename="AGENT.md",
+        )
+        assert len(reg.all_instructions) == 1
+        assert reg.project_instructions.path.name == "AGENT.md"
+        assert reg.project_extra == []
+
+    def test_format_instructions_lists_extras(self, tmp_path):
+        """Each source is wrapped in its own BEGIN/END comment naming the path."""
+        (tmp_path / "OPENX.md").write_text("FROM-OPENX")
+        (tmp_path / "AGENT.md").write_text("FROM-AGENT")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        section = format_instructions(reg)
+        assert "FROM-OPENX" in section and "FROM-AGENT" in section
+        assert section.count("<!-- BEGIN PROJECT:") == 2
+        assert section.count("<!-- END PROJECT -->") == 2
+        assert "AGENT.md" in section          # 来源路径可辨识
+        # 注入顺序与 all_instructions 一致
+        assert section.index("FROM-OPENX") < section.index("FROM-AGENT")
+
+    def test_format_instructions_mentions_all_names(self, tmp_path):
+        """描述句泛化：不再只提 OPENX.md。"""
+        (tmp_path / "AGENTS.md").write_text("FROM-AGENTS")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        section = format_instructions(reg)
+        assert "OPENX.md" in section and "AGENT.md" in section
+        assert "AGENTS.md" in section
+
+    def test_build_system_prompt_includes_extras(self, tmp_path):
+        """AGENT.md content reaches the assembled system prompt."""
+        (tmp_path / "AGENT.md").write_text("AGENT rule: run linters.")
+
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        prompt = build_system_prompt(str(tmp_path), reg)
+        assert "## Project Instructions" in prompt
+        assert "AGENT rule: run linters." in prompt
+        assert BASE_SYSTEM_PROMPT.strip() in prompt
+
+    def test_reload_picks_up_new_agent_md(self, tmp_path):
+        """Runtime-created AGENT.md is found by reload (as after /init)."""
+        reg = load_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        assert not reg.has_any
+
+        (tmp_path / "AGENT.md").write_text("Added later.")
+        reg2 = reload_instructions(
+            str(tmp_path), global_path=tmp_path / "nonexistent.md"
+        )
+        assert reg2.has_any
+        assert "Added later." in reg2.project_extra[0].content
 
 
 class TestBuildSystemPrompt:

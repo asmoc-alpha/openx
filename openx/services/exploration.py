@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from ..instructions import (
+    PROJECT_AGENT_MD_NAMES,
+    PROJECT_OPENX_MD_NAME,
     ProjectInfo,
     detect_project_type,
     _CONFIG_FILES,
@@ -34,7 +36,8 @@ async def explore_project(
     """Scan *workspace* and return structured project information.
 
     Detects project type, counts files by extension, lists top-level
-    directories, queries git status/log, and reports OPENX.md presence.
+    directories, queries git status/log, and reports instruction file
+    presence (OPENX.md / AGENT.md / AGENTS.md).
     """
     info = ProjectInfo()
 
@@ -49,8 +52,8 @@ async def explore_project(
     # 3. Git information
     await _collect_git_info(info, git_status_tool, git_log_tool)
 
-    # 4. OPENX.md status
-    _check_openx_md(workspace, info)
+    # 4. Instruction files (OPENX.md / AGENT.md / AGENTS.md) status
+    _check_instruction_files(workspace, info)
 
     return info
 
@@ -123,19 +126,30 @@ async def _collect_git_info(
         pass  # git unavailable
 
 
-def _check_openx_md(workspace: Path, info: ProjectInfo) -> None:
-    """Check for OPENX.md and populate its metadata on *info*."""
-    openx_md = workspace / "OPENX.md"
-    if not openx_md.exists():
-        return
-    info.openx_md_loaded = True
-    try:
-        content = openx_md.read_text(encoding="utf-8", errors="replace")
-        info.openx_md_sections = content.count("\n## ")
-        if content.startswith("## "):
-            info.openx_md_sections += 1
-    except Exception:
-        pass
+def _check_instruction_files(workspace: Path, info: ProjectInfo) -> None:
+    """Check project instruction files and populate *info*.
+
+    ``openx_md_loaded`` / ``openx_md_sections`` keep describing OPENX.md alone
+    (the UI row for it); ``instruction_files`` lists every project-level file
+    that actually contributes instructions, in injection order.
+    """
+    names = (PROJECT_OPENX_MD_NAME,) + tuple(PROJECT_AGENT_MD_NAMES)
+    for name in names:
+        path = workspace / name
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if not content.strip():
+            continue  # 空文件不注入指令，也就不算"已加载"
+        if name == PROJECT_OPENX_MD_NAME:
+            info.openx_md_loaded = True
+            info.openx_md_sections = content.count("\n## ")
+            if content.startswith("## "):
+                info.openx_md_sections += 1
+        info.instruction_files.append(name)
 
 
 def _summarize_git_status(lines: list[str]) -> str:

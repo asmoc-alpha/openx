@@ -84,7 +84,7 @@ class LayoutMixin:
         bar.append("  ·  ", style=DIM)
         bar.append(ws, style="white")
         if instructions_loaded:
-            bar.append("  ·  OPENX.md ", style=DIM)
+            bar.append("  ·  instructions ", style=DIM)
             bar.append(MARK_OK, style=SUCCESS_STYLE)
         self._console.print(bar)
 
@@ -139,14 +139,26 @@ class LayoutMixin:
         if info.git_recent:
             table.add_row("recent", f"[dim]{info.git_recent[0]}[/dim]")
 
+        extras = [f for f in info.instruction_files if f != "OPENX.md"]
         if info.openx_md_loaded:
             md = (
                 f"[{SUCCESS_STYLE}]{MARK_OK}[/{SUCCESS_STYLE}]"
                 f"  [dim]loaded ({info.openx_md_sections} sections)[/dim]"
             )
+        elif extras:
+            # 项目用 AGENT.md/AGENTS.md 提供指令——不再催 /init
+            md = "[dim]not found[/dim]"
         else:
             md = "[dim]not found — /init to create[/dim]"
         table.add_row("OPENX.md", md)
+
+        # 项目级额外指令文件（AGENT.md / AGENTS.md）：加载到了才占一行，
+        # 避免"只放 AGENT.md 的项目"被上面那行误读成没有指令。
+        for extra in extras:
+            table.add_row(
+                extra,
+                f"[{SUCCESS_STYLE}]{MARK_OK}[/{SUCCESS_STYLE}]  [dim]loaded[/dim]",
+            )
 
         self._console.print(
             Panel(
@@ -275,7 +287,7 @@ class LayoutMixin:
         meta.append("  ·  ", style=DIM)
         meta.append(ws, style="white")
         if instructions_loaded:
-            meta.append("  ·  OPENX.md ", style=DIM)
+            meta.append("  ·  instructions ", style=DIM)
             meta.append(MARK_OK, style=SUCCESS_STYLE)
 
         hints = [

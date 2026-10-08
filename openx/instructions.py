@@ -1,9 +1,11 @@
 """Instruction file management for OpenX.
 
-OPENX.md files are Markdown files that inject custom instructions into the
+Instruction files are Markdown files that inject custom instructions into the
 system prompt:
 - Hierarchical loading: global (~/.openx/OPENX.md) → project (<workspace>/OPENX.md).
-- Subdirectory-level OPENX.md scoping is reserved for a future iteration.
+- Project level additionally picks up the cross-tool standard names
+  ``AGENT.md`` / ``AGENTS.md`` (alongside OPENX.md, not instead of it).
+- Subdirectory-level scoping is reserved for a future iteration.
 
 Usage:
     from openx.instructions import load_instructions, build_system_prompt
@@ -37,6 +39,10 @@ from typing import Optional
 GLOBAL_OPENX_DIR = Path.home() / ".openx"
 GLOBAL_OPENX_MD = GLOBAL_OPENX_DIR / "OPENX.md"
 PROJECT_OPENX_MD_NAME = "OPENX.md"
+
+# 项目级额外识别的跨工具标准指令文件名（与 OPENX.md 并存，非替代）。
+# 顺序即注入顺序：OPENX.md → AGENT.md → AGENTS.md。
+PROJECT_AGENT_MD_NAMES = ("AGENT.md", "AGENTS.md")
 
 BASE_SYSTEM_PROMPT = """You are OpenX, an agentic coding assistant that helps developers write,
 understand, and maintain code. You operate in a workspace — a directory on the user's
@@ -258,6 +264,9 @@ class InstructionRegistry:
 
     global_instructions: Optional[InstructionSet] = None
     project_instructions: Optional[InstructionSet] = None
+    # 项目级 OPENX.md 之外额外加载的指令文件（AGENT.md / AGENTS.md），
+    # 按发现顺序排列；级别同为 PROJECT，仅来源文件不同。
+    project_extra: list[InstructionSet] = field(default_factory=list)
     subdir_instructions: list[InstructionSet] = field(default_factory=list)
 
     @property
@@ -268,6 +277,9 @@ class InstructionRegistry:
             result.append(self.global_instructions)
         if self.project_instructions and not self.project_instructions.is_empty:
             result.append(self.project_instructions)
+        for s in self.project_extra:
+            if not s.is_empty:
+                result.append(s)
         for s in self.subdir_instructions:
             if not s.is_empty:
                 result.append(s)
@@ -297,6 +309,8 @@ class ProjectInfo:
     git_recent: list[str] = field(default_factory=list)  # last 3 commits (oneline)
     openx_md_loaded: bool = False
     openx_md_sections: int = 0                  # count of ## headings in OPENX.md
+    # 项目级实际加载到的指令文件名（按注入序，如 ["OPENX.md", "AGENT.md"]）
+    instruction_files: list[str] = field(default_factory=list)
 
 
 # ── Project type detection ──────────────────────────────────────
@@ -362,6 +376,8 @@ def load_instructions(
     Loading order (lower priority first):
     1. Global: ~/.openx/OPENX.md (always loaded if present)
     2. Project: <workspace>/OPENX.md (loaded if present)
+    3. Project extra: <workspace>/AGENT.md, then <workspace>/AGENTS.md
+       (cross-tool standard names; loaded if present, alongside OPENX.md)
 
     Missing files are silently skipped — they are not errors.
 
@@ -398,8 +414,33 @@ def load_instructions(
                 content=content,
             )
 
-    # 3. Subdirectory instructions (future iteration)
-    # Walk workspace_path for nested OPENX.md files, each scoped to its parent dir.
+    # 3. Project extra instructions (AGENT.md / AGENTS.md, alongside OPENX.md)
+    #    按 resolved path 去重：project_filename 被覆写成 AGENT.md 之类的
+    #    测试/自定义场景下，同一文件不注入两次。
+    seen: set[Path] = set()
+    if registry.project_instructions is not None:
+        seen.add(registry.project_instructions.path.resolve())
+    for extra_name in PROJECT_AGENT_MD_NAMES:
+        extra_md = workspace_path / extra_name
+        if not (extra_md.exists() and extra_md.is_file()):
+            continue
+        resolved = extra_md.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        content = _read_file_safe(extra_md)
+        if content is not None:
+            registry.project_extra.append(
+                InstructionSet(
+                    level=InstructionLevel.PROJECT,
+                    path=extra_md,
+                    content=content,
+                )
+            )
+
+    # 4. Subdirectory instructions (future iteration)
+    # Walk workspace_path for nested instruction files, each scoped to its
+    # parent dir.
 
     return registry
 
@@ -464,7 +505,8 @@ def format_instructions(registry: Optional[InstructionRegistry]) -> str:
 
     parts: list[str] = ["## Project Instructions\n\n"]
     parts.append(
-        "The following instructions come from OPENX.md files and "
+        "The following instructions come from project instruction files "
+        "(OPENX.md / AGENT.md / AGENTS.md) and "
         "provide additional context about this project.\n\n"
     )
     for iset in instructions:
@@ -560,6 +602,17 @@ if __name__ == "__main__":
         _prompt = build_system_prompt(_ws, _reg)
         assert "Always use type hints." in _prompt and "## Project Instructions" in _prompt
         print(f"system prompt: {len(_prompt)} chars, project OPENX.md injected ✓")
+
+        # AGENT.md / AGENTS.md：项目级额外来源，与 OPENX.md 并存（OPENX 在前）
+        (_ws / "AGENT.md").write_text("AGENT-RULE: run linters.\n", encoding="utf-8")
+        (_ws / "AGENTS.md").write_text("AGENTS-RULE: keep it typed.\n", encoding="utf-8")
+        _reg2 = load_instructions(_ws, global_path=_ws / "no-global.md")
+        _names = [s.path.name for s in _reg2.all_instructions]
+        assert _names == ["OPENX.md", "AGENT.md", "AGENTS.md"], _names
+        _prompt2 = build_system_prompt(_ws, _reg2)
+        assert "AGENT-RULE" in _prompt2 and "AGENTS-RULE" in _prompt2
+        assert _prompt2.index("Always use type hints.") < _prompt2.index("AGENT-RULE")
+        print(f"project extras: {_names} injected, OPENX.md first ✓")
 
         # detect_project_type：无配置文件 → Unknown；加 pyproject.toml → Python
         assert detect_project_type(_ws) == ("Unknown", "")

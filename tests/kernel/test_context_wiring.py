@@ -231,6 +231,26 @@ class TestAgentWiring:
         assert "Demo skill." in prompt
         assert "SECRET BODY" not in prompt                      # 渐进披露
 
+    def test_system_prompt_carries_agent_md(self, kernel_env):
+        """项目级 AGENT.md 与 OPENX.md 并存注入，OPENX.md 在前。"""
+        ws, _ = kernel_env
+        (ws / "OPENX.md").write_text("OPENX-RULE: always use pytest")
+        (ws / "AGENT.md").write_text("AGENT-RULE: run ruff before commit")
+
+        prompt = self._make_agent(ws)._system_prompt
+        assert "OPENX-RULE: always use pytest" in prompt
+        assert "AGENT-RULE: run ruff before commit" in prompt
+        assert prompt.index("OPENX-RULE") < prompt.index("AGENT-RULE")
+
+    def test_system_prompt_carries_agents_md_only(self, kernel_env):
+        """只放 AGENTS.md 的项目也能拿到指令（不依赖 OPENX.md）。"""
+        ws, _ = kernel_env
+        (ws / "AGENTS.md").write_text("AGENTS-RULE: keep types strict")
+
+        prompt = self._make_agent(ws)._system_prompt
+        assert "AGENTS-RULE: keep types strict" in prompt
+        assert "## Project Instructions" in prompt
+
     def test_agent_no_longer_imports_prompt_sources(self):
         """K7 零引用破洞：loop 不再直连具体提示源。"""
         import openx.agent as agent_mod

@@ -21,7 +21,7 @@ REPL 中注册的全部命令（见 `openx/cli/commands.py`）：
 | `/image <path>` | 加载并分析图片文件 |
 | `/clipboard` | 粘贴并分析剪贴板截图 |
 | `/init` | 创建 OPENX.md 指令文件 |
-| `/instructions` | 显示已加载的 OPENX.md 指令 |
+| `/instructions` | 显示已加载的指令文件（OPENX.md / AGENT.md / AGENTS.md） |
 | `/memory` | 显示全部已存记忆 |
 | `/remember <fact>` | 把一条事实存入持久记忆 |
 | `/forget <name>` | 按名称删除一条记忆 |

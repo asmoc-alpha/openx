@@ -93,6 +93,24 @@ export OPENX_SEARCH_BACKEND=auto # code search: 'auto' / 'ripgrep' / 'python'
 Provider model / key / base must be configured in a model group (optionally via
 `env:VAR`); they are never auto-read from `OPENAI_*`.
 
+## Instruction files
+
+Instruction files inject project-specific guidance into the system prompt. They are
+Markdown, loaded automatically at startup, and re-read by `/explore` or after `/init`:
+
+| File | Level | Notes |
+|---|---|---|
+| `~/.openx/OPENX.md` | global | Applies in every workspace |
+| `<workspace>/OPENX.md` | project | Created by `/init` |
+| `<workspace>/AGENT.md` | project | Cross-tool standard name |
+| `<workspace>/AGENTS.md` | project | Cross-tool standard name |
+
+All files present at the project level are loaded together — they complement rather
+than replace each other. Injection order is global → `OPENX.md` → `AGENT.md` →
+`AGENTS.md`, each wrapped in a `<!-- BEGIN PROJECT: path -->` … `<!-- END PROJECT -->`
+comment naming its source. Empty (or whitespace-only) files are skipped.
+`/instructions` lists what was loaded.
+
 ## Code search
 
 `grep` and `glob` run on a shared backend with two engines: **ripgrep** (`rg`,

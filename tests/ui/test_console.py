@@ -76,18 +76,21 @@ class TestHeader:
         output = _capture(console)
         assert "gpt-4o" in output
 
-    def test_header_shows_openx_md_loaded(self, console):
+    def test_header_shows_instructions_loaded(self, console):
         console.print_header(instructions_loaded=True)
         output = _capture(console)
-        assert "OPENX" in output
+        # 徽章标签是泛化的 "instructions"——它涵盖 OPENX.md / AGENT.md /
+        # AGENTS.md 任一来源（instructions_loaded = registry.has_any）
+        assert "instructions" in output
         assert "✓" in output
 
-    def test_header_shows_openx_md_not_loaded(self, console):
+    def test_header_shows_instructions_not_loaded(self, console):
         console.print_header(instructions_loaded=False)
         output = _capture(console)
-        # v0.5.0：未加载时不显示 OPENX.md 标记，只显示品牌/模型/路径
+        # v0.5.0：未加载时不显示指令标记，只显示品牌/模型/路径
         assert "openx" in output
         assert "gpt-4o" in output
+        assert "instructions" not in output
         assert "OPENX.md" not in output
 
 
@@ -165,6 +168,31 @@ class TestProjectOverview:
         console.print_project_overview(info)
         output = _capture(console)
         assert "/init" in output
+
+    def test_overview_shows_agent_md_row(self, console):
+        """Loaded AGENT.md/AGENTS.md get their own ✓ rows."""
+        info = ProjectInfo(
+            openx_md_loaded=True,
+            openx_md_sections=2,
+            instruction_files=["OPENX.md", "AGENT.md", "AGENTS.md"],
+        )
+        console.print_project_overview(info)
+        output = _capture(console)
+        assert "AGENT.md" in output
+        assert "AGENTS.md" in output
+        assert "OPENX.md" in output
+
+    def test_overview_agent_md_only_no_init_nag(self, console):
+        """AGENT.md-only project: no misleading '/init to create' hint."""
+        info = ProjectInfo(
+            openx_md_loaded=False,
+            instruction_files=["AGENT.md"],
+        )
+        console.print_project_overview(info)
+        output = _capture(console)
+        assert "AGENT.md" in output
+        assert "/init" not in output
+        assert "not found" in output  # OPENX.md row still honest
 
 
 class TestPathShortening:

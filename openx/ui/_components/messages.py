@@ -73,7 +73,7 @@ class MessagesMixin:
             ("/mode [mode]", "Show or switch permission mode (manual / auto / plan)"),
             ("/explore", "Show project overview"),
             ("/init", "Create an OPENX.md instruction file"),
-            ("/instructions", "Show loaded OPENX.md instructions"),
+            ("/instructions", "Show loaded instruction files (OPENX.md / AGENT.md / AGENTS.md)"),
             ("/image <path>", "Load and analyze an image file"),
             ("/clipboard", "Paste and analyze a clipboard screenshot"),
             ("/memory", "Show all stored memories"),
@@ -110,7 +110,8 @@ class MessagesMixin:
             "Esc interrupts · Ctrl+C exits",
             "Ctrl+R expands or collapses the model's thinking — during the "
             "answer and at the input frame after it ends",
-            "Place an OPENX.md file in your project for custom instructions",
+            "Place an OPENX.md (or AGENT.md / AGENTS.md) file in your project "
+            "for custom instructions",
             "Use /init to create a starter OPENX.md template",
         ]:
             tips.append(f"  {MARK_BULLET} {tip}\n", style=DIM)
@@ -151,7 +152,8 @@ class MessagesMixin:
             "the answer ends.\n"
             "[cyan]▸[/cyan] The agent works best with specific, concrete requests — "
             "tell it [italic]what[/italic] to do rather than [italic]how[/italic].\n"
-            "[cyan]▸[/cyan] Place an [bold]OPENX.md[/bold] file in your project "
+            "[cyan]▸[/cyan] Place an [bold]OPENX.md[/bold] (or [bold]AGENT.md[/bold] / "
+            "[bold]AGENTS.md[/bold]) file in your project "
             "root for custom instructions that the agent follows automatically."
         )
         self._console.print()

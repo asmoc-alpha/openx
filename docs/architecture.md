@@ -16,7 +16,7 @@ openx/
 │   ├── config.py          # Config: modelGroups (model/provider) + project non-model knobs
 │   ├── permissions.py     # Permission tiers + stored allow/deny rules
 │   ├── memory.py          # Persistent memory (~/.openx/memory/)
-│   ├── instructions.py    # OPENX.md loading (global / project / subdir)
+│   ├── instructions.py    # Instruction-file loading (OPENX.md / AGENT.md / AGENTS.md)
 │   ├── image.py           # Image & clipboard helpers (multimodal)
 │   ├── model_groups.py    # modelGroups schema + per-role resolution (the only model/provider config)
 │   ├── coding_memory.py   # Coding memory (project conventions/decisions, project-scoped)
@@ -111,7 +111,7 @@ Permission checks and hook invocations happen during serial preparation, inside
 | Kernel | `kernel/` (five-piece: assembly/reasoning/audit/trace/sandbox, incl. protocol & hooks), `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display, verdicts & ledger |
 | Model | `llm/` | Provider implementations (openai-compat / anthropic-compat), streaming; retry/backoff lives in the kernel (`kernel/reasoning/`) |
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |
-| Context & memory | `instructions.py`, `memory.py`, `orchestration/history.py` | OPENX.md instructions, persistent memory, history + compaction |
+| Context & memory | `instructions.py`, `memory.py`, `orchestration/history.py` | Instruction files (OPENX.md / AGENT.md / AGENTS.md), persistent memory, history + compaction |
 | Orchestration | `orchestration/subagent.py`, `orchestration/workflow.py`, `orchestration/tasks.py`, `orchestration/fleet.py` | Subagents, deterministic workflows, background tasks (hard-wired, P2+ plugin-ization) |
 | State | `orchestration/sessions.py`, `config.py`, `kernel/recovery/` | Session persistence/resume, layered configuration, turn-level checkpoints & interrupt recovery |
 | Collaboration | `permissions.py` | Permission tiers, stored rules, dangerous-command gate |

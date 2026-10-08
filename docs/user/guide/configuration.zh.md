@@ -88,6 +88,23 @@ export OPENX_SEARCH_BACKEND=auto # 代码搜索：'auto' / 'ripgrep' / 'python'
 provider 的模型/key/base 必须在模型组里配置（可经 `env:VAR`），绝不从 `OPENAI_*`
 自动读取。
 
+## 指令文件
+
+指令文件把项目专属约定注入系统提示。均为 Markdown，启动时自动加载，`/explore`
+或 `/init` 之后会重新读取：
+
+| 文件 | 级别 | 说明 |
+|---|---|---|
+| `~/.openx/OPENX.md` | 全局 | 所有工作区生效 |
+| `<workspace>/OPENX.md` | 项目 | 由 `/init` 创建 |
+| `<workspace>/AGENT.md` | 项目 | 跨工具标准名 |
+| `<workspace>/AGENTS.md` | 项目 | 跨工具标准名 |
+
+项目级同时存在的文件**全部加载**——互为补充而非替代。注入顺序为
+全局 → `OPENX.md` → `AGENT.md` → `AGENTS.md`，各自包在
+`<!-- BEGIN PROJECT: path -->` … `<!-- END PROJECT -->` 注释里标明来源。
+空文件（或纯空白）跳过。`/instructions` 列出实际加载结果。
+
 ## 代码搜索
 
 `grep` 与 `glob` 跑在同一个后端上，含两个引擎：可用 **ripgrep**（`rg`，并行且尊重

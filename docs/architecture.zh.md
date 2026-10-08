@@ -14,7 +14,7 @@ openx/
 │   ├── config.py          # 配置：modelGroups（模型/凭据）+ 项目非模型旋钮
 │   ├── permissions.py     # 权限分级 + 已存储的 allow/deny 规则
 │   ├── memory.py          # 持久记忆（~/.openx/memory/）
-│   ├── instructions.py    # OPENX.md 加载（全局 / 项目 / 子目录）
+│   ├── instructions.py    # 指令文件加载（OPENX.md / AGENT.md / AGENTS.md）
 │   ├── image.py           # 图片与剪贴板辅助（多模态）
 │   ├── model_groups.py    # modelGroups schema + 逐角色解析（唯一的模型/provider 配置入口）
 │   ├── coding_memory.py   # 编程记忆（项目约定/决策，项目级隔离）
@@ -107,7 +107,7 @@ openx/
 | 内核 | `kernel/`（五件套：装配/推理/审计/轨迹/沙箱，含协议与 hooks）、`agent.py`、`services/tool_executor.py`、`services/streaming.py` | turn 循环、工具分发（串行准备 → 并行执行）、流式显示、裁决与账本 |
 | 模型层 | `llm/` | provider 实现（openai-compat / anthropic-compat）、流式；重试/退避在内核（`kernel/reasoning/`） |
 | 能力层 | `tools/`、`mcp/` | 面向模型的工具（fs、shell、搜索、git、web、todo、plan、task、workflow）与外部 MCP 工具 |
-| 上下文与记忆 | `instructions.py`、`memory.py`、`orchestration/history.py` | OPENX.md 指令、持久记忆、历史 + 压缩 |
+| 上下文与记忆 | `instructions.py`、`memory.py`、`orchestration/history.py` | 指令文件（OPENX.md / AGENT.md / AGENTS.md）、持久记忆、历史 + 压缩 |
 | 编排层 | `orchestration/subagent.py`、`orchestration/workflow.py`、`orchestration/tasks.py`、`orchestration/fleet.py` | subagents、确定性 workflows、后台任务（硬连线，P2+ 插件化） |
 | 状态层 | `orchestration/sessions.py`、`config.py`、`kernel/recovery/` | 会话持久化/恢复、分层配置、回合级 checkpoint 与中断恢复 |
 | 协作层 | `permissions.py` | 权限分级、已存储规则、危险命令门控 |

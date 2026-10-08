@@ -22,7 +22,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/image <path>` | Load and analyze an image file |
 | `/clipboard` | Paste and analyze a clipboard screenshot |
 | `/init` | Create an OPENX.md instruction file |
-| `/instructions` | Show loaded OPENX.md instructions |
+| `/instructions` | Show loaded instruction files (OPENX.md / AGENT.md / AGENTS.md) |
 | `/memory` | Show all stored memories |
 | `/remember <fact>` | Save a fact to persistent memory |
 | `/forget <name>` | Delete a memory by name |

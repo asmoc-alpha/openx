@@ -925,16 +925,21 @@ async def _cmd_init(agent, console, args):
     return True
 
 
-@register("instructions", description="Show loaded OPENX.md instructions")
+@register(
+    "instructions",
+    description="Show loaded instruction files (OPENX.md / AGENT.md / AGENTS.md)",
+)
 async def _cmd_instructions(agent, console, args):
     registry = agent.instructions
     all_inst = registry.all_instructions
     if not all_inst:
         console.print_info(
-            "No OPENX.md files loaded.\n\n"
-            "Create one with /init, or manually place an OPENX.md file in:\n"
-            f"  • {agent.workspace}/OPENX.md  (project-level)\n"
-            f"  • ~/.openx/OPENX.md           (global, applies everywhere)"
+            "No instruction files loaded.\n\n"
+            "Create one with /init, or manually place an instruction file in:\n"
+            f"  • {agent.workspace}/OPENX.md   (project-level)\n"
+            f"  • {agent.workspace}/AGENT.md   (project-level, cross-tool standard)\n"
+            f"  • {agent.workspace}/AGENTS.md  (project-level, cross-tool standard)\n"
+            f"  • ~/.openx/OPENX.md            (global, applies everywhere)"
         )
     else:
         console.raw.print("\n[bold]Loaded Instructions[/bold]\n")
