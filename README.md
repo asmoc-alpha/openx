@@ -52,8 +52,9 @@ curl -fsSL https://raw.githubusercontent.com/asmoc-alpha/openx/main/install.sh |
 
 The installer picks pipx, then `uv`, then a virtualenv at `~/.openx/venv`, and
 verifies the result. Set `OPENX_EXTRAS=web` to include the web UI
-(`curl … | OPENX_EXTRAS=web bash`), or `OPENX_REF=<git-ref>` to install something
-other than the pinned release tag (`v0.1.2` by default).
+(`curl … | OPENX_EXTRAS=web bash`), or `OPENX_REF=<git-ref>` to install a
+different ref — `main` (the latest development HEAD) is the default; pin a
+release tag such as `OPENX_REF=v0.1.13 bash` for a frozen build.
 
 From a clone, instead:
 
@@ -63,11 +64,13 @@ cd openx
 pip install -e .
 ```
 
-Or pin the release straight from git — this is what the installer runs underneath:
+Or install straight from git — this is what the installer runs underneath:
 
 ```bash
-pip install "openx @ git+https://github.com/asmoc-alpha/openx.git@v0.1.2"
+pip install "openx @ git+https://github.com/asmoc-alpha/openx.git@main"
 ```
+
+Swap `main` for a release tag (e.g. `@v0.1.13`) to pin a frozen build.
 
 > **Do not `pip install openx`.** The `openx` name on PyPI belongs to an unrelated
 > project; OpenX is distributed through the git source above.

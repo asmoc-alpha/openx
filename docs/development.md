@@ -81,8 +81,9 @@ inside a section are fine, only `- ` bullets are collected. To cut a release:
    gh release create v<version> --title "v<version> — <title>" --notes-file <file>
    ```
    GitHub attaches the source tarballs automatically, which is what
-   `install.sh` installs from (`git+…@v<version>`) — so the tag must exist
-   before the installer can resolve the default `OPENX_REF`.
+   `install.sh` installs from (`git+…@v<version>`). The installer's default
+   `OPENX_REF` is `main`; the tag is what makes a version pinnable, so it has to
+   exist before users can pass `OPENX_REF=v<version>` for a frozen build.
 
 ## Documentation
 

@@ -64,8 +64,8 @@ ruff check openx tests
    gh release create v<version> --title "v<version> — <title>" --notes-file <file>
    ```
    GitHub 会自动附上源码 tarball，而 `install.sh` 正是从那里安装
-   （`git+…@v<version>`）——所以 tag 必须先存在，安装脚本的默认
-   `OPENX_REF` 才能解析到。
+   （`git+…@v<version>`）。安装脚本默认 `OPENX_REF=main`；tag 的作用是让版本
+   可钉——tag 要先存在，用户才能用 `OPENX_REF=v<version>` 装上冻结版本。
 
 ## 文档
 

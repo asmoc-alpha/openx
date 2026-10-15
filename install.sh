@@ -15,9 +15,10 @@
 # Environment overrides:
 #
 #     OPENX_REF      Git ref (tag / branch / commit) to install from.
-#                    Defaults to "v0.1.2". Set it to a branch such as "main"
-#                    to test the installer against an untagged HEAD, e.g.
-#                        OPENX_REF=main sh install.sh
+#                    Defaults to "main" (the latest development HEAD, since
+#                    releases past v0.1.2 are not tagged). Pin a release tag
+#                    when you want a frozen build, e.g.
+#                        OPENX_REF=v0.1.13 sh install.sh
 #
 #     OPENX_EXTRAS   Comma-separated list of extras to install. When set the
 #                    requirement becomes "openx[<extras>]" instead of "openx".
@@ -42,7 +43,7 @@ set -eu
 
 # --- Configuration ---------------------------------------------------------
 
-OPENX_REF="${OPENX_REF:-v0.1.2}"
+OPENX_REF="${OPENX_REF:-main}"
 OPENX_EXTRAS="${OPENX_EXTRAS:-}"
 OPENX_HOME="${HOME}/.openx"
 VENV_DIR="${OPENX_HOME}/venv"

@@ -37,7 +37,7 @@ OpenX 是一个用 Python 构建的开源终端 agent runtime，目标是一个*
 curl -fsSL https://raw.githubusercontent.com/asmoc-alpha/openx/main/install.sh | bash
 ```
 
-安装脚本按 pipx → `uv` → `~/.openx/venv` 虚拟环境的顺序选择，并在结束时自检。设 `OPENX_EXTRAS=web` 可一并装上 Web 端（`curl … | OPENX_EXTRAS=web bash`）；设 `OPENX_REF=<git-ref>` 可改装其它版本（默认钉在发布 tag `v0.1.2`）。
+安装脚本按 pipx → `uv` → `~/.openx/venv` 虚拟环境的顺序选择，并在结束时自检。设 `OPENX_EXTRAS=web` 可一并装上 Web 端（`curl … | OPENX_EXTRAS=web bash`）；设 `OPENX_REF=<git-ref>` 可改装其它 ref——默认 `main`（最新开发 HEAD），要冻结版本就钉发布 tag（如 `OPENX_REF=v0.1.13 bash`）。
 
 从 clone 安装亦可：
 
@@ -47,11 +47,13 @@ cd openx
 pip install -e .
 ```
 
-也可以直接从 git 源钉版本安装——安装脚本内部走的就是这条：
+也可以直接从 git 源安装——安装脚本内部走的就是这条：
 
 ```bash
-pip install "openx @ git+https://github.com/asmoc-alpha/openx.git@v0.1.2"
+pip install "openx @ git+https://github.com/asmoc-alpha/openx.git@main"
 ```
+
+把 `main` 换成发布 tag（如 `@v0.1.13`）即可钉住冻结版本。
 
 > **不要用 `pip install openx`。** PyPI 上的 `openx` 是另一个无关项目，OpenX 只通过上面的 git 源分发。
 

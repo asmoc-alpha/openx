@@ -47,6 +47,27 @@ and `/release-notes`.
   trailing rendered blank lines before choosing the volatile line, so each code
   line commits once, complete. Plain-text answers were unaffected (their last
   line really is the growing one), which is why it only ever bit code
+- **`curl … | bash` installs again**: `pyproject.toml` carried a redundant
+  `force-include` for `openx/app/serve/web`. `packages = ["openx"]` already
+  selects the whole package tree (skipping only VCS-ignored files), so the
+  tracked frontend assets were added to the wheel **twice**. Older hatchling
+  only warned about the duplicate path and still produced a wheel — which is
+  why the entry survived — but current hatchling fails the build outright
+  (`A second file is being added to the wheel archive at the same path`), so
+  `pip install git+…` died in metadata generation and took the whole installer
+  with it (pipx, `uv` and venv paths alike). The entry is gone; the wheel still
+  ships all 15 frontend assets, exactly once
+- **Version numbers agree again**: `openx.__version__` (0.1.11), the
+  distribution version in `pyproject.toml` (0.1.12) and this changelog's newest
+  section (0.1.13) had drifted apart, so `openx --version` — and the install
+  script's own verification line — reported a version no distribution ever had.
+  All three now read 0.1.13
+- **The installer no longer defaults to a stale tag**: `OPENX_REF` defaulted to
+  `v0.1.2` — the newest tag that exists, ten versions behind — and that tag's
+  own `pyproject.toml` carries the `force-include` bug above, so the documented
+  install command could never have worked. The default is now `main`
+  (install.sh and both READMEs); pin a release tag with `OPENX_REF=vX.Y.Z` once
+  one is cut
 
 ## 0.1.12 — Kernel gates: resource gate & promotion gate
 
