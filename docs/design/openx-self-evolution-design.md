@@ -223,8 +223,11 @@ scaffold:
 （payload 带声明与评测证据）、组合据此跳过该脚手架（`PHASE_RETIRED`，不导入、
 不贡献，代码与注册仍在）；`/scaffolds restore` emit `scaffold_restored` 并重新
 装载。退场集合由**全局账本折叠**（单一真源），跨进程存活（重启后仍退场）。
-步骤①的**评测门策略**已落地（`services/retirement_gate.compare_success`：带 vs
-摘除对比 → retire/keep + 证据），但**真正跑** eval_set 任务的执行器未落地；
+步骤①的**评测门**已落地（`services/retirement_gate.compare_success`：带 vs
+摘除对比 → retire/keep + 证据；`services/eval_runner` + `/scaffolds eval`：
+把 eval_set 任务在带/摘两侧各跑一遍的执行器——摘除侧走 `kernel.scaffold_probe`
+内存级临时摘除，不写账本；任务集为工作区相对的 JSONL，确定性判定
+`contains`/`not_contains`/`regex` 先行，模型评审型判定后续切片）；
 **档案联动自动回挂已落地（P6）**：`model_profile.retire` 声明该模型不再需要的
 脚手架（派生退场，`REASON_PROFILE_RETIRED`），`require` 撤销之——换档即重算
 应载清单（`composition.resolve`），即"模型降级时自动回挂"。档案退场是**派生
@@ -417,7 +420,7 @@ P-F 自产插件；K1 目录 / K2 信封 / K3 Guard / K3a ToolHost。
 | **E1 演进声明进 Manifest** | manifest 增 `scaffold` 块（compensates / exit_when / eval_set / fallback）——**已落地**；无声明的脚手架逐一补声明或降级为能力插件 | P-B | §3.1 |
 | **E2 轨迹升级** | 账本补成本字段 + eval 导出（即 P-E）——**已落地**；全局账本（K5）承接决策事件族 | K2 | §6.1 |
 | **E3 缺口感知** | 离线分析器：账本聚类失败模式 → "缺口报告"（人读）；报告可作为 context 片段回喂会话——**已落地**（`/gaps`，四类信号 + 回喂片段；在线自知仍隐式） | E2 | §2.1 |
-| **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发——**决策记账 + 组合跳过 + 门策略 + 档案联动已落地**；runner（真正跑 eval_set）待 | E1+E2 | §3.2-§3.3 |
+| **E4 退场评测门** | eval_set 回归对比（带/摘除）；scaffold_retired/restored 决策事件；档案联动触发——**决策记账 + 组合跳过 + 门策略 + 档案联动 + runner（`/scaffolds eval`，`scaffold_probe` 探针摘除）已落地**；模型评审型判定待（现仅确定性判定） | E1+E2 | §3.2-§3.3 |
 | **E5 装配策略学习** | 配对命中率 / 权限摩擦 / 上下文预算的离线报告 → overlay 建议（人终审）；auto-* 目录按使用频率排序——**装配命中率报告已落地**（`/assembly`：调用序/未使用者/建议文本，权限摩擦归 E3 `/gaps`）；overlay 编辑原语已落地（P6，人写回） | E3 | §4.2-§4.3 |
 | **E6 经验沉淀闭环** | 会话收尾提炼 → 记忆写入 → context/v1 召回 → 召回质量回账——**已落地（离线版）**（`/distill`：三候选提炼 + `save` 人审写入 + `memory_recall` 回账；后端注册项/使用判定待） | E2；**K7（prompt 收口）已落地**：内置片段走 context/v1 注册项（priority + payload），召回片段与其同门 | §4.4 |
 | **E7 晋升持久化** | promote 写回组合（overlay enable 原语），persistent 作用域完整落地——**已落地（P6/E7）**：`promote_plugin` 写回用户 overlay `enable` + `scope=persistent`；回滚 `unload_plugin` 摘除 | K6 + overlay（P6） | §1.1 环⑤ |

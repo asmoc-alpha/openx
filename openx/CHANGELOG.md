@@ -4,6 +4,50 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.14 — The retirement eval gate actually runs
+
+### E4 step ① closes: scaffold retirement is now evidence-backed end to end
+
+- **`/scaffolds eval <name>` runs the eval_set** (`services/eval_runner`, new):
+  until now the gate could only *judge* success rates handed to it
+  (`retirement_gate.compare_success`) — nothing executed the tasks. The runner
+  loads the scaffold's declared `eval_set` (JSONL, one task per line, resolved
+  relative to the workspace) and runs every task **twice — scaffold present vs
+  probed-away** — through headless child agents (`build_child_agent`,
+  `role="main"`, so the eval runs on the exact model the scaffold serves). A
+  per-task timeout marks the task failed; an agent crash is a failure too.
+  Invoking the command is the authorization for the real model spend (same
+  discipline as `/distill save`); the task count is printed up front
+- **Deterministic judges first** (`openx-eval-run/v1`): a task is
+  `{"task": …, "expect": {"contains" / "not_contains" / "regex"}}` —
+  case-insensitive substring checks plus a literal `re.search`; `contains`
+  must fully hit, `not_contains` fails on the first hit, any failed check
+  names the failure in the report. A malformed line rejects the whole set
+  (a regression gate that silently drops tasks is a gate with a hole).
+  Model-graded judging is left for a later slice — offline first
+- **`kernel.scaffold_probe`**: the without-side runs under an *in-memory*
+  retirement — the probe entry goes into the same folded retired map
+  `retire_scaffold` uses, so the composition skips the plugin through the
+  identical `PHASE_RETIRED` path (not imported, no contributions), then the
+  `finally` restores the previous set and reloads. It **never emits a decision
+  event**: a probe is a measurement, not a verdict — the global ledger stays
+  untouched, and the two `composition_resolved` entries the reloads write are
+  the honest trace of what happened. The plugin's scaffold declaration rides
+  along in the probe entry so `/plugins` keeps showing it via the usual
+  ledger-backfill path
+- **`--retire` closes the loop**: the eval prints a report (both sides'
+  success rates, delta, verdict, per-task failures) and stops there by
+  default; with `--retire`, a `retire` verdict retires the scaffold in the
+  same step and the `scaffold_retired` event carries this eval's payload as
+  its `evidence` — the first time retirement decisions land with real
+  measured proof instead of the bare declaration. A `keep` verdict retires
+  nothing. `--tolerance <n>` widens the allowed drop (default 0.0), `--json`
+  prints the raw evidence payload. Guards: unknown plugin, non-scaffold,
+  missing `eval_set`, or an already-retired scaffold (no contrast to run —
+  restore first) all refuse before any model call
+- **Design doc §3.2 / §8 updated**: the E4 slice's "runner 待" is now landed;
+  the only open piece left in the ablation line is model-graded judging
+
 ## 0.1.13 — Prompt fragments unified behind the context protocol
 
 ### The loop stops importing prompt sources; everything enters by priority

@@ -272,19 +272,26 @@ async def _cmd_ledger(agent, console, args):
 
 @register(
     "scaffolds",
-    description="List scaffolds; retire or restore one (E1 declarations / E4 retirement)",
+    description="List scaffolds; run the eval gate, retire or restore one (E1/E4)",
 )
 async def _cmd_scaffolds(agent, console, args):
-    """脚手架面板（E1 声明 / E4 退场）：列声明、退场、回挂。
+    """脚手架面板（E1 声明 / E4 退场）：列声明、评测门、退场、回挂。
 
     - 无参：列全部脚手架（含已退场的）及其 compensates / exit_when / eval_set；
+    - ``/scaffolds eval <name> [--retire] [--tolerance <n>] [--json]``：
+      **评测门执行器**（E4 第①步）——把 ``scaffold.eval_set`` 的每个任务在
+      带/摘两侧各跑一遍（无头子代理，真实模型调用），``compare_success``
+      出裁决。``--retire``：裁决为准许时顺手退场（``scaffold_retired`` 带
+      本次证据上全局账本）——**命令调用即授权**（真实模型开销），人终审
+      仍在这一步；裁决为保持时不摘。``--tolerance``：允许的最大掉点
+      （缺省 0.0 = 严格不掉点）；``--json``：证据 payload 原样输出；
     - ``/scaffolds retire <name>``：用户确认退场——``scaffold_retired`` 上全局
       账本 + 组合跳过（但代码与注册仍在，可回挂）；仅对带 scaffold 声明的
       插件合法；
     - ``/scaffolds restore <name>``：回挂——``scaffold_restored`` + 重新装载。
 
     摘除须用户确认（自演进详设 §5.1）：退场是组合层动作，模型不直接持有该
-    工具；模型可发起评测（future），人终审摘除。
+    工具；评测门的执行与"带证据退场"都由用户显式敲命令发起。
     """
     from rich.markup import escape
 
@@ -294,6 +301,8 @@ async def _cmd_scaffolds(agent, console, args):
     kernel.ensure_loaded(str(agent.workspace))
 
     sub = args[0].lower() if args else ""
+    if sub == "eval":
+        return await _scaffolds_eval(agent, console, kernel, args[1:])
     if sub in ("retire", "restore"):
         if len(args) < 2:
             console.print_warning(f"usage: /scaffolds {sub} <name>")
@@ -338,6 +347,85 @@ async def _cmd_scaffolds(agent, console, args):
                 console.raw.print(
                     f"      [dim]{label}: {escape(str(decl[key]))}[/dim]"
                 )
+    return True
+
+
+async def _scaffolds_eval(agent, console, kernel, args) -> bool:
+    """/scaffolds eval 的执行体：评测门（带 vs 摘两侧实测）→ 报告 / 顺手退场。"""
+    from rich.markup import escape
+
+    from ...services.eval_runner import (
+        EvalSetError,
+        evaluate_scaffold,
+        load_eval_set,
+        render_text,
+        resolve_eval_set_path,
+    )
+    from ...services.retirement_gate import DEFAULT_TOLERANCE
+
+    if not args:
+        console.print_warning(
+            "usage: /scaffolds eval <name> [--retire] [--tolerance <n>] [--json]"
+        )
+        return True
+    name = args[0]
+    do_retire = as_json = False
+    tolerance = DEFAULT_TOLERANCE
+    for flag in args[1:]:
+        if flag == "--retire":
+            do_retire = True
+        elif flag == "--json":
+            as_json = True
+        elif flag.startswith("--tolerance="):
+            try:
+                tolerance = float(flag.split("=", 1)[1])
+            except ValueError:
+                console.print_warning(f"bad tolerance: {flag}")
+                return True
+        else:
+            console.print_warning(f"unknown flag: {flag}")
+            return True
+
+    decl = (kernel.plugin_help(name) or {}).get("scaffold") or {}
+    raw = decl.get("eval_set") or ""
+    if not raw:
+        console.print_warning(
+            f"{name} declares no eval_set; add one to the scaffold block first"
+        )
+        return True
+    try:
+        tasks = load_eval_set(resolve_eval_set_path(str(agent.workspace), raw))
+        # 任务数先亮出来：评测是真实模型调用（任务数 × 2 次代理回合），
+        # 命令调用即授权——但开销要看得见。
+        console.print_info(
+            f"eval gate: {name} — {len(tasks)} task(s) x 2 sides "
+            f"(real model runs; tolerance {tolerance})"
+        )
+        report = await evaluate_scaffold(
+            agent, kernel, name, tasks, tolerance=tolerance, eval_set=raw
+        )
+    except (EvalSetError, ValueError) as exc:  # 任务集形状 / 前置守卫
+        console.print_warning(f"eval gate failed: {exc}")
+        return True
+
+    if as_json:
+        console.raw.print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        console.raw.print(escape(render_text(report)))
+
+    if do_retire:
+        if report["gate"]["verdict"] == "retire":
+            ok, message = kernel.retire_scaffold(name, evidence=report)
+            if ok:
+                if agent is not None:
+                    agent._rebuild_tools()  # 组合变更 -> 工具下一轮生效
+                console.print_success(f"✓ {message}")
+            else:
+                console.print_warning(message)
+        else:
+            console.print_warning(
+                "gate says keep (drop exceeds tolerance) — not retiring"
+            )
     return True
 
 

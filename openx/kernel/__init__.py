@@ -32,6 +32,7 @@ import asyncio
 import copy
 import inspect
 import logging
+from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 from .assembly import composition, loader
@@ -1195,6 +1196,37 @@ class PluginKernel:
         self._retired_of().pop(name, None)
         self._force_reload()
         return (True, f"scaffold restored: {name} (composition re-includes it)")
+
+    @contextmanager
+    def scaffold_probe(self, name: str, decl: Optional[dict[str, Any]] = None):
+        """会话内临时摘除一个脚手架（E4 评测探针）：只动内存退场集合，绝不写账本。
+
+        评测门执行器（``services/eval_runner``）跑"摘除侧"任务时使用：把
+        ``name`` 临时加进**内存**退场集合并重组（走与 ``retire_scaffold``
+        完全相同的 PHASE_RETIRED 组合跳过路径），退出时恢复原集合并再重组。
+        与 ``retire_scaffold`` 的差别只有一处——**不 emit_decision**：探针
+        是测量不是裁决，"谁在什么时候短暂摘过它"由两次 ``composition_resolved``
+        事件如实留痕，但退场登记表（全局账本折叠）不因此改变。
+
+        ``decl``（插件的 scaffold 声明）合入探针条目，让探针期间 ``/plugins``
+        等读面经账本回填路径仍能看到完整声明（与真实退场的回填同形）。
+
+        前置由调用方把关（active + 带 scaffold 声明 + 未退场）——已退场的
+        脚手架没有"带/摘"可对比，本方法不重复校验。
+        """
+        folded = self._retired_of()
+        saved = dict(folded)
+        entry: dict[str, Any] = {"type": "scaffold_probe", "plugin": name}
+        if decl:
+            entry.update(decl)
+        folded[name] = entry
+        self._force_reload()
+        try:
+            yield entry
+        finally:
+            folded.clear()
+            folded.update(saved)
+            self._force_reload()
 
     def unregister_tool(self, name: str) -> None:
         """按名摘除一个工具（P-C 熔断触发的自动卸载）；未注册 no-op。"""
