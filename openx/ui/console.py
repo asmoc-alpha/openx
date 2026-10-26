@@ -89,15 +89,14 @@ class Console(
         # 活动，消费方另有宽度漂移轮询兜底。同样不加类型注解（避 dataclass）。
         self._resize = ResizeWatcher()
         self._resize.install()
-        # 屏上输入框的簿记——记录"实际绘出"的布局，供 resize 重绘锚点
-        # （min(K_old, K_new)，永不越界上移）与提交清框公式使用：
-        self._frame_width = self._terminal_width  # 留屏框的绘制宽度
-        self._input_rows_on_screen = 1   # 输入区（含 ❯ 前缀换行）占的物理行数
-        self._input_cells_on_screen = 2  # 输入区格数（"❯ " 前缀；整除宽度补尾空格时 +1）
-        # print_user_prompt 暂存 token 数，供 resize 重绘渲染准确状态行
+        # 留屏框的绘制宽度：print_user_prompt 复用分支的 resize 守卫用
+        # （流式 done 后发生过 resize 则整框重绘）。
+        self._frame_width = self._terminal_width
+        # print_user_prompt 暂存 token 数，供 bottom_toolbar 渲染准确状态行
         self._input_tokens_view = 0
         self._output_tokens_view = 0
-        # ── thinking 就地重印（回答结束后 Ctrl+R 展开/收起）──────────
+        # ── thinking 就地重印（回答结束后 Alt+R 展开/收起；流式期仍是
+        # Ctrl+R 热键，属 InputCapture）──────────
         # _last_replay：{"thinking": (text, elapsed), "tail": [Text 行],
         # "gap": int}——StreamingService done()/cancel() 经 _save_replay
         # 落值、start() 清空；_replay_expanded 为当前屏上展开态，

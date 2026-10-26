@@ -87,18 +87,52 @@ class LifecycleHarness:
         )
         self.console._terminal_width = COLS
         self.console._frame_width = COLS
-        # 罐头键盘：读行返回预设文本，并模拟真实编辑器 Enter 后的光标
-        # 位置（输入行 → \r\n → 底线行）——print_user_prompt 的提交清框
-        # 公式假定光标落在底线行。
+        # 罐头键盘：读行返回预设文本，并模拟 ptk done 后的光标位置
+        # （输入行 → \r\n → 输入行下一行）与 renderer.erase（光标回
+        # region 顶 = 输入行、下擦）——print_user_prompt 的提交清框
+        # （erase + 1A 吞顶框线）依赖这两段几何。罐头行均单行，1A 精确。
         self._canned: list[str] = []
-        monkeypatch.setattr(
-            self.console, "_read_line_interactive", self._fake_read
-        )
+        import openx.ui._components.editor as editor_mod
 
-    def _fake_read(self) -> str:
-        line = self._canned.pop(0)
-        sys.stdout.write(f"{line}\r\n")  # 回显 + Enter 位移到底线行
-        return line
+        # 仿真 TTY：print_user_prompt 的 isatty 门会把 pytest 劫持的
+        # stdin（isatty=False）短路进 _read_line_fallback（真读 stdin）——
+        # 测试要走的是被 patch 的 read_input_async。fileno 给真实
+        # /dev/null：InputCapture.start 也会查 isatty，随后 termios 在
+        # /dev/null 上必抛 termios.error → 其既有容错分支 no-op（先于
+        # kitty 写与读键线程，不污染 pyte 镜像）。
+        class _FakeStdin:
+            _fd = None
+
+            @classmethod
+            def isatty(cls):
+                return True
+
+            @classmethod
+            def fileno(cls):
+                if cls._fd is None:
+                    cls._fd = os.open(os.devnull, os.O_RDWR)
+                return cls._fd
+
+        monkeypatch.setattr(sys, "stdin", _FakeStdin())
+
+        class _FakeRenderer:
+            @staticmethod
+            def erase():
+                sys.stdout.write("\033[1A\r\033[J")
+
+        class _FakeApp:
+            renderer = _FakeRenderer()
+
+        class _FakeSession:
+            app = _FakeApp()
+
+        async def _fake_read(_console):
+            line = self._canned.pop(0)
+            sys.stdout.write(f"{line}\r\n")  # 回显 + Enter 位移
+            return line, self.fake_session
+
+        self.fake_session = _FakeSession()
+        monkeypatch.setattr(editor_mod, "read_input_async", _fake_read)
 
     def queue_line(self, line: str) -> None:
         self._canned.append(line)
@@ -127,7 +161,7 @@ class LifecycleHarness:
 
 
 class TestHappyPath:
-    def test_answer_survives_done_and_next_prompt(self, monkeypatch, tmp_path):
+    async def test_answer_survives_done_and_next_prompt(self, monkeypatch, tmp_path):
         h = LifecycleHarness(monkeypatch, tmp_path)
         # 框上方的既有对话（真实 transcript 里永远存在）
         h.console._console.print(PRIOR)
@@ -143,14 +177,14 @@ class TestHappyPath:
 
         # 下一轮提示：复用留屏框 → 读入 → Enter 清框
         h.queue_line("next question")
-        result = h.console.print_user_prompt()
+        result = await h.console.print_user_prompt()
         h.flush()
         assert result == "next question"
         text = h.screen_text()
         assert ANSWER in text, "Enter 清框后答案消失"
         assert PRIOR in text, "清框越界吞掉框上方对话"
 
-    def test_answer_survives_two_full_turns(self, monkeypatch, tmp_path):
+    async def test_answer_survives_two_full_turns(self, monkeypatch, tmp_path):
         """连续两轮：第二轮的框复用/清框不得伤第一轮的答案。"""
         h = LifecycleHarness(monkeypatch, tmp_path)
         svc = h.start_stream()
@@ -159,7 +193,7 @@ class TestHappyPath:
         h.flush()
 
         h.queue_line("q2")
-        h.console.print_user_prompt()
+        await h.console.print_user_prompt()
         h.flush()
 
         svc2 = h.start_stream()
@@ -168,7 +202,7 @@ class TestHappyPath:
         h.flush()
 
         h.queue_line("q3")
-        h.console.print_user_prompt()
+        await h.console.print_user_prompt()
         h.flush()
         text = h.screen_text()
         assert "ANSWER_T2" in text
@@ -181,7 +215,7 @@ class TestHappyPath:
 
 
 class TestDialogPauseCycle:
-    def test_answer_survives_pause_resume_then_done(self, monkeypatch, tmp_path):
+    async def test_answer_survives_pause_resume_then_done(self, monkeypatch, tmp_path):
         h = LifecycleHarness(monkeypatch, tmp_path)
         svc = h.start_stream()
         svc.feed(f"{ANSWER} before tool\n\n")
@@ -201,7 +235,7 @@ class TestDialogPauseCycle:
 
         # 弹窗周期后的下一轮提示也必须安全
         h.queue_line("next")
-        h.console.print_user_prompt()
+        await h.console.print_user_prompt()
         h.flush()
         assert ANSWER in h.screen_text()
 
@@ -210,7 +244,7 @@ class TestDialogPauseCycle:
 
 
 class TestLongMode:
-    def test_long_answer_tail_survives_done(self, monkeypatch, tmp_path):
+    async def test_long_answer_tail_survives_done(self, monkeypatch, tmp_path):
         h = LifecycleHarness(monkeypatch, tmp_path)
         svc = h.start_stream()
         for i in range(1, 61):
@@ -223,7 +257,7 @@ class TestLongMode:
         assert h.console._frame_on_screen is True
 
         h.queue_line("next")
-        h.console.print_user_prompt()
+        await h.console.print_user_prompt()
         h.flush()
         assert "response line 60" in h.screen_text()
 
@@ -251,7 +285,7 @@ class TestQueuedMessage:
 
 
 class TestPauseEdgeCases:
-    def test_done_while_paused_keeps_answer(self, monkeypatch, tmp_path):
+    async def test_done_while_paused_keeps_answer(self, monkeypatch, tmp_path):
         """pause 后未 resume 即 done：答案必须重绘留屏，_frame_on_screen
         只允许在帧确实在屏时为真。"""
         h = LifecycleHarness(monkeypatch, tmp_path)
@@ -272,7 +306,7 @@ class TestPauseEdgeCases:
         if h.console._frame_on_screen:
             # 若声称框在屏，下一轮复用必须安全
             h.queue_line("next")
-            h.console.print_user_prompt()
+            await h.console.print_user_prompt()
             h.flush()
             assert ANSWER in h.screen_text()
 
@@ -367,7 +401,7 @@ class TestDialogRawExitColumn:
 
 
 class TestAutoRefreshThread:
-    def test_happy_path_with_real_refresh_thread(self, monkeypatch, tmp_path):
+    async def test_happy_path_with_real_refresh_thread(self, monkeypatch, tmp_path):
         """auto_refresh=True（5Hz 真线程）：既有测试从未覆盖的路径。"""
         h = LifecycleHarness(monkeypatch, tmp_path, auto_refresh=True)
         svc = h.start_stream()
@@ -378,7 +412,7 @@ class TestAutoRefreshThread:
         assert ANSWER in h.screen_text(), "自动刷新线程路径下 done 后答案消失"
 
         h.queue_line("next")
-        h.console.print_user_prompt()
+        await h.console.print_user_prompt()
         h.flush()
         assert ANSWER in h.screen_text()
 
@@ -387,7 +421,7 @@ class TestAutoRefreshThread:
 
 
 class TestReplayIntegration:
-    def test_long_answer_idle_toggle_then_next_round(
+    async def test_long_answer_idle_toggle_then_next_round(
         self, monkeypatch, tmp_path
     ):
         """真实流式（reasoning + 长正文）→ done → 回答后 Ctrl+R 展开/收起：
@@ -404,27 +438,30 @@ class TestReplayIntegration:
         h.flush()
         assert h.console._last_replay is not None
 
-        # Ctrl+R 发生在 _read_line_interactive 内（光标在输入行）——
-        # 罐头键盘在读行前先 toggle 两次（展开→收起），再模拟 Enter。
+        # Alt+R 发生在 read_input_async 的键位绑定内（ptk erase 后光标在
+        # 输入行）——罐头键盘在读行前先 toggle 两次（展开→收起），再模拟
+        # Enter。toggle 后须仿 run_in_terminal 收尾重绘输入行 + toolbar，
+        # 光标回输入行（生产几何）。
         toggled = {}
 
-        def _read_with_toggle() -> str:
+        async def _read_with_toggle(_console):
             c = h.console
-            c._replay_toggle([], None, 0, 0)          # 展开
+            c._replay_toggle("")                      # 展开
+            sys.stdout.write("❯ \n" + "─" * COLS + "\n  auto · 0 in · 0 out\n\033[3A\r")
             toggled["expand"] = h.buf.getvalue()
             h.flush()
             toggled["expand_text"] = h.screen_text()
-            c._replay_toggle([], None, 0, 0)          # 收起
+            c._replay_toggle("")                      # 收起
+            sys.stdout.write("❯ \n" + "─" * COLS + "\n  auto · 0 in · 0 out\n\033[3A\r")
             toggled["all"] = toggled["expand"] + h.buf.getvalue()
             h.flush()
             toggled["collapse_text"] = h.screen_text()
-            sys.stdout.write("next question\r\n")   # 回显 + Enter 到底线行
-            return "next question"
+            sys.stdout.write("next question\r\n")   # 回显 + Enter 位移
+            return "next question", h.fake_session
 
-        h.monkeypatch.setattr(
-            h.console, "_read_line_interactive", _read_with_toggle
-        )
-        h.console.print_user_prompt()
+        import openx.ui._components.editor as _editor
+        h.monkeypatch.setattr(_editor, "read_input_async", _read_with_toggle)
+        await h.console.print_user_prompt()
 
         assert "planning the approach" in toggled["expand_text"], \
             "展开必须可见思考内容"

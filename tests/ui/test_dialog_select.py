@@ -40,6 +40,7 @@ from openx.ui.console import Console
 from openx.ui._components import dialogs
 from openx.ui._components.dialogs import _wrap_by_cells, _cell_len
 from openx.ui._components.prompt import paste_aware_input
+from .test_slash_menu import PtyPrompt  # 子进程真 pty 驱动（含 CPR 应答）
 
 
 # ── 基建 ─────────────────────────────────────────────────────────
@@ -396,224 +397,120 @@ class TestPasteAwareInput:
 
 
 class TestEditorPaste:
-    def test_multiline_paste_preview_and_full_submit(
-        self, monkeypatch, tmp_path
-    ):
-        """主输入框：多行粘贴 → 框内首行+(+N)预览，Enter 提交全文。"""
-        master, slave, fout, stop_drain = _pty_pair(monkeypatch)
-        monkeypatch.setattr(
-            "openx.ui._components.prompt.get_terminal_size",
-            lambda: os.terminal_size((80, 24)),
-        )
-        console = Console(config=OpenXConfig(workspace=str(tmp_path)))
-        console._terminal_width = 80
-        box = _SelectBox()
+    """主输入框（prompt_toolkit）括号粘贴：原样收入、整体提交。"""
 
-        def run():
-            try:
-                box.result = console._read_line_interactive()
-            except BaseException as e:  # noqa: BLE001
-                box.exc = e
-            finally:
-                box.done.set()
-
-        th = threading.Thread(target=run, daemon=True)
-        th.start()
+    def test_multiline_paste_submits_whole(self):
+        p = PtyPrompt()
         try:
-            time.sleep(0.1)
-            os.write(master, b"\x1b[200~first line\nsecond line\x1b[201~")
-            time.sleep(0.1)
-            os.write(master, b"\r")
-            assert box.done.wait(5), "_read_line_interactive 挂死"
+            p.wait_for("❯")
+            p.type(b"\x1b[200~first line\nsecond line\x1b[201~", settle=0.3)
+            p.type(b"\r")
+            result = p.finish()
+            assert result["line"] == "first line\nsecond line"
+            # 粘贴内容可见（ptk 原样渲染，非首行预览）
+            assert "first line" in p.text()
+            assert "second line" in p.text()
+            assert "+1 more lines" not in p.text()
         finally:
-            raw = stop_drain()
-            fout.close()
-            os.close(master)
-            os.close(slave)
-
-        assert box.exc is None, f"异常：{box.exc!r}"
-        assert box.result == "first line\nsecond line"
-        # 多行粘贴全展开落屏（所输即所见）
-        screen = pyte.Screen(80, 24)
-        screen.set_mode(pyte.modes.LNM)
-        pyte.Stream(screen).feed(raw.decode("utf-8", "replace"))
-        text = "\n".join(
-            "".join(c.data for c in screen.buffer[y].values())
-            for y in range(24)
-        )
-        assert "first line" in text
-        assert "second line" in text
-        assert "+1 more lines" not in text
+            p.close()
 
 
 class TestEditorShiftEnter:
-    def test_shift_enter_inserts_newline_enter_submits(
-        self, monkeypatch, tmp_path
-    ):
-        """主输入框：Shift+Enter 插字面换行（预览首行+行数），Enter
-        提交含 \\n 的全文。pty 真键路（kitty 序列字节）。"""
-        master, slave, fout, stop_drain = _pty_pair(monkeypatch)
-        monkeypatch.setattr(
-            "openx.ui._components.prompt.get_terminal_size",
-            lambda: os.terminal_size((80, 24)),
-        )
-        console = Console(config=OpenXConfig(workspace=str(tmp_path)))
-        console._terminal_width = 80
-        box = _SelectBox()
-
-        def run():
-            try:
-                box.result = console._read_line_interactive()
-            except BaseException as e:  # noqa: BLE001
-                box.exc = e
-            finally:
-                box.done.set()
-
-        th = threading.Thread(target=run, daemon=True)
-        th.start()
+    def test_shift_enter_inserts_newline_enter_submits(self):
+        """主输入框：kitty Shift+Enter（表扩展后）插字面换行，Enter 提交。"""
+        p = PtyPrompt()
         try:
-            time.sleep(0.1)
-            os.write(master, b"first line")
-            time.sleep(0.05)
-            os.write(master, b"\x1b[13;2u")  # Shift+Enter（kitty 形）
-            time.sleep(0.1)
-            os.write(master, b"second line")
-            time.sleep(0.1)
-            os.write(master, b"\r")          # Enter 提交
-            assert box.done.wait(5), "_read_line_interactive 挂死"
+            p.wait_for("❯")
+            p.type(b"first line", settle=0.2)
+            p.type(b"\x1b[13;2u", settle=0.2)
+            p.type(b"second line", settle=0.2)
+            p.type(b"\r")
+            assert p.finish()["line"] == "first line\nsecond line"
+            assert "first line" in p.text()
+            assert "second line" in p.text()
+            assert "+1 more lines" not in p.text()
         finally:
-            raw = stop_drain()
-            fout.close()
-            os.close(master)
-            os.close(slave)
-
-        assert box.exc is None, f"异常：{box.exc!r}"
-        assert box.result == "first line\nsecond line"
-        # 换行后框内多行全展开（所输即所见），不再是单行预览
-        screen = pyte.Screen(80, 24)
-        screen.set_mode(pyte.modes.LNM)
-        pyte.Stream(screen).feed(raw.decode("utf-8", "replace"))
-        text = "\n".join(
-            "".join(c.data for c in screen.buffer[y].values())
-            for y in range(24)
-        )
-        assert "first line" in text
-        assert "second line" in text
-        assert "+1 more lines" not in text
+            p.close()
 
 
 class TestEditorCursor:
-    """输入光标移动 + 删除无残影（用户报告 bug 1/2）。"""
+    """输入光标移动 + 删除无残影（ptk 原生行编辑；旧自绘增量写 bug 的
+    回归哨兵保留——宽字符删尽后屏上零残影）。"""
 
-    def _run_editor(self, monkeypatch, tmp_path, keys):
-        """pty 驱动编辑器，依次喂 keys，返回 (box, 输出字节)。"""
-        master, slave, fout, stop_drain = _pty_pair(monkeypatch)
-        monkeypatch.setattr(
-            "openx.ui._components.prompt.get_terminal_size",
-            lambda: os.terminal_size((80, 24)),
-        )
-        console = Console(config=OpenXConfig(workspace=str(tmp_path)))
-        console._terminal_width = 80
-        box = _SelectBox()
-
-        def run():
-            try:
-                box.result = console._read_line_interactive()
-            except BaseException as e:  # noqa: BLE001
-                box.exc = e
-            finally:
-                box.done.set()
-
-        th = threading.Thread(target=run, daemon=True)
-        th.start()
+    def test_arrow_left_inserts_in_middle(self):
+        """"ac" → ← → "b" → a|c 之间插入 → "abc"。"""
+        p = PtyPrompt()
         try:
-            time.sleep(0.1)
-            for k in keys:
-                os.write(master, k)
-                time.sleep(0.05)
-            assert box.done.wait(5), "_read_line_interactive 挂死"
+            p.wait_for("❯")
+            for k in (b"a", b"c", b"\x1b[D", b"b"):
+                p.type(k, settle=0.15)
+            p.type(b"\r")
+            assert p.finish()["line"] == "abc"
         finally:
-            raw = stop_drain()
-            fout.close()
-            os.close(master)
-            os.close(slave)
-        assert box.exc is None, f"异常：{box.exc!r}"
-        return box, raw
+            p.close()
 
-    def test_arrow_left_inserts_in_middle(self, monkeypatch, tmp_path):
-        """"ac" → ← → "b" → 光标移到 a|c 之间插入 → 提交 "abc"。"""
-        box, _ = self._run_editor(
-            monkeypatch, tmp_path,
-            [b"a", b"c", b"\x1b[D", b"b", b"\r"],
-        )
-        assert box.result == "abc"
+    def test_backspace_deletes_before_cursor(self):
+        """"abc" → ← → 退格删 b → "ac"。"""
+        p = PtyPrompt()
+        try:
+            p.wait_for("❯")
+            for k in (b"a", b"b", b"c", b"\x1b[D", b"\x7f"):
+                p.type(k, settle=0.15)
+            p.type(b"\r")
+            assert p.finish()["line"] == "ac"
+        finally:
+            p.close()
 
-    def test_backspace_deletes_before_cursor(self, monkeypatch, tmp_path):
-        """"abc" → ← → 退格删光标前的 b → 提交 "ac"。"""
-        box, _ = self._run_editor(
-            monkeypatch, tmp_path,
-            [b"a", b"b", b"c", b"\x1b[D", b"\x7f", b"\r"],
-        )
-        assert box.result == "ac"
+    def test_cjk_backspace_no_screen_residue(self):
+        """宽字符删尽后屏上零残影（旧增量写 bug：删干净了仍有残字）。
+        屏幕断言在提交**前**取证——提交清框会擦掉 ❯ 行。"""
+        p = PtyPrompt()
+        try:
+            p.wait_for("❯")
+            p.type("内存".encode(), settle=0.2)
+            p.type(b"\x7f", settle=0.15)
+            p.type(b"\x7f", settle=0.15)
+            rows = p.rows()
+            prompt_rows = [r for r in rows if "❯" in r]
+            assert prompt_rows, "提示符应在屏"
+            for r in prompt_rows:
+                assert r.strip() == "❯", f"❯ 行存在残影：{r!r}"
+            assert not any("内" in r or "存" in r for r in rows)
+            p.type(b"\r")
+            assert p.finish()["line"] == ""
+        finally:
+            p.close()
 
-    def test_cjk_backspace_no_screen_residue(self, monkeypatch, tmp_path):
-        """宽字符删尽后屏上零残影（旧增量写 bug：删干净了仍有残字）。"""
-        box, raw = self._run_editor(
-            monkeypatch, tmp_path,
-            ["内存".encode(), b"\x7f", b"\x7f", b"\r"],
-        )
-        assert box.result == ""
-        screen = pyte.Screen(80, 24)
-        screen.set_mode(pyte.modes.LNM)
-        pyte.Stream(screen).feed(raw.decode("utf-8", "replace"))
-        rows = [
-            "".join(c.data for c in screen.buffer[y].values())
-            for y in range(24)
-        ]
-        prompt_rows = [r for r in rows if "❯" in r]
-        assert prompt_rows, "提示符应在屏"
-        for r in prompt_rows:
-            assert r.strip() == "❯", f"❯ 行存在残影：{r!r}"
-        assert not any("内" in r or "存" in r for r in rows)
+    def test_multiline_edits_across_lines(self):
+        """跨行光标移动：第二行行首 ← 回第一行行尾插入。"""
+        p = PtyPrompt()
+        try:
+            p.wait_for("❯")
+            for k in (b"a", b"b", b"\x1b[13;2u", b"c", b"d",
+                      b"\x1b[D", b"\x1b[D", b"X"):
+                p.type(k, settle=0.15)
+            p.type(b"\r")
+            assert p.finish()["line"] == "ab\nXcd"
+            assert "ab" in p.text() and "Xcd" in p.text()
+        finally:
+            p.close()
 
-    def test_multiline_edits_across_lines(self, monkeypatch, tmp_path):
-        """跨行光标移动：第二行行首 ← 回第一行行尾插入/删除。"""
-        # "ab" + 换行 + "cd"，←← 回到第二行行首，插入 X → "ab\nXcd"
-        box, raw = self._run_editor(
-            monkeypatch, tmp_path,
-            [b"a", b"b", b"\x1b[13;2u", b"c", b"d",
-             b"\x1b[D", b"\x1b[D", b"X", b"\r"],
-        )
-        assert box.result == "ab\nXcd"
-        # 两行皆可见（多行全展开）
-        screen = pyte.Screen(80, 24)
-        screen.set_mode(pyte.modes.LNM)
-        pyte.Stream(screen).feed(raw.decode("utf-8", "replace"))
-        text = "\n".join(
-            "".join(c.data for c in screen.buffer[y].values())
-            for y in range(24)
-        )
-        assert "ab" in text and "Xcd" in text
-
-    def test_backspace_across_line_boundary(self, monkeypatch, tmp_path):
+    def test_backspace_across_line_boundary(self):
         """跨行边界退格：删掉行首字符后两行仍完整渲染。"""
-        # "ab\nXcd"，←← 至 X 后（c 前），退格删 X → "ab\ncd"
-        box, raw = self._run_editor(
-            monkeypatch, tmp_path,
-            [b"a", b"b", b"\x1b[13;2u", b"X", b"c", b"d",
-             b"\x1b[D", b"\x1b[D", b"\x7f", b"\r"],
-        )
-        assert box.result == "ab\ncd"
-        screen = pyte.Screen(80, 24)
-        screen.set_mode(pyte.modes.LNM)
-        pyte.Stream(screen).feed(raw.decode("utf-8", "replace"))
-        rows = [
-            "".join(c.data for c in screen.buffer[y].values()).rstrip()
-            for y in range(24)
-        ]
-        assert any("ab" in r for r in rows)
-        assert any(r.endswith("cd") or "cd" in r for r in rows)
-        assert not any("X" in r for r in rows), "X 应被删除且无残影"
+        p = PtyPrompt()
+        try:
+            p.wait_for("❯")
+            for k in (b"a", b"b", b"\x1b[13;2u", b"X", b"c", b"d",
+                      b"\x1b[D", b"\x1b[D", b"\x7f"):
+                p.type(k, settle=0.15)
+            p.type(b"\r")
+            assert p.finish()["line"] == "ab\ncd"
+            rows = p.rows()
+            assert any("ab" in r for r in rows)
+            assert any("cd" in r for r in rows)
+            assert not any("X" in r for r in rows), "X 应被删除且无残影"
+        finally:
+            p.close()
 
 
 class TestFramePreview:

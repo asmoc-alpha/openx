@@ -830,7 +830,7 @@ async def _cmd_image(agent, console, args):
     if not prompt.strip():
         console.print_info("Type your question (or Enter for auto-describe):")
         try:
-            raw = console.print_user_prompt()
+            raw = await console.print_user_prompt()
         except (KeyboardInterrupt, EOFError):
             return True
         # None = EOF（非 TTY stdin 已耗尽）：回 REPL 主循环统一退出，
@@ -878,7 +878,7 @@ async def _cmd_clipboard(agent, console, args):
     display_image(saved)
     console.print_info("Type your question about this image (or press Enter to skip):")
     try:
-        raw = console.print_user_prompt()
+        raw = await console.print_user_prompt()
     except (KeyboardInterrupt, EOFError):
         raw = ""
     question = (raw or "").strip()  # None (EOF) → 空串 → 自动描述 / empty → auto-describe

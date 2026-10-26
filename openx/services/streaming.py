@@ -1221,10 +1221,12 @@ class StreamingService:
                 hint = (" — ctrl+r to collapse" if self._reasoning_expanded
                         else " — ctrl+r to expand")
         else:
-            # 冻结指示行 ctrl+r 提示**常驻**（用户界面需求）：done() 后
-            # idle 输入框处的 Ctrl+R 经 _last_replay 就地重印实现展开/收起
-            # （见 ui/_components/prompt.py），提示恒为真；仅"冻结→done"
-            # 之间的几秒流式窗口是善意谎言（该窗口热键仍 no-op）。
+            # 冻结指示行 ctrl+r 提示**常驻**（用户界面需求）：流式期
+            # Ctrl+R 是 InputCapture 热键；done() 后 idle 输入框处的
+            # 展开/收起改由 Alt+R 经 _last_replay 就地重印实现（见
+            # ui/_components/prompt.py _replay_toggle）——该热键迁移后，
+            # "冻结→done" 之间的几秒窗口提示仍是流式期语义，保持 ctrl+r
+            # 不变。
             suffix = (" (ctrl+r to collapse)" if self._reasoning_expanded
                       else " (ctrl+r to expand)")
             label = (f"{MARK_INFO} Thought for "

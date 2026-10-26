@@ -1,7 +1,7 @@
-"""回答结束后 Ctrl+R 就地重印 thinking 的屏幕级测试（prompt._replay_toggle）。
+"""回答结束后 Alt+R 就地重印 thinking 的屏幕级测试（prompt._replay_toggle）。
 
 语义（用户需求）：展开内容必须**紧随 ● Thought for Ns 指示行**、不在对话
-末尾；指示行带常驻 (ctrl+r to expand) 提示。实现 = 从指示行到屏末整段擦除
+末尾；指示行带常驻 (alt+r to expand) 提示。实现 = 从指示行到屏末整段擦除
 + 重印 [指示行 (+ 思考全文 + 空行) + tail + gap 空行] + fresh 画框。
 
 覆盖：
@@ -58,7 +58,7 @@ def _footer() -> Text:
 def _collapsed_indicator(elapsed: float = 2.5) -> Text:
     t = Text(
         f"  {MARK_INFO} Thought for {fmt_duration(elapsed)}"
-        " (ctrl+r to expand)",
+        " (alt+r to expand)",
         style=DIM,
     )
     t.no_wrap = True
@@ -74,6 +74,7 @@ class ReplayHarness:
         self.screen.set_mode(pyte.modes.LNM)
         self.pyte = pyte.Stream(self.screen)
         self.buf = io.StringIO()
+        self.history_path = tmp_path / "history"
         monkeypatch.setattr(sys, "stdout", self.buf)
         monkeypatch.setattr(
             "openx.ui._components.prompt.get_terminal_size",
@@ -109,8 +110,6 @@ class ReplayHarness:
             c._console.print(Text(""))
         c._console.print(c._frame_renderable(0, 0))
         c._frame_on_screen = True
-        c._input_rows_on_screen = 1
-        c._input_cells_on_screen = 2
         sys.stdout.write("\033[3A\033[2K❯ ")  # 复用分支同款到输入行
         c._last_replay = {
             "thinking": (THINKING, 2.5),
@@ -127,6 +126,23 @@ class ReplayHarness:
         self.pyte.feed(self.buf.getvalue())
         self.buf.seek(0)
         self.buf.truncate()
+
+    def toggle(self, text: str = "") -> None:
+        """Alt+R 全周期：_replay_toggle + ptk 重绘自身 region。
+
+        生产里 _replay_toggle 经 run_in_terminal 调用：进入时 ptk 已把
+        自身 region（输入行 + toolbar）擦除、光标挪到输入行 col 0；退出
+        时 ptk 重绘输入行/底框线/状态行。harness 无 ptk——重印写入的
+        \033[J 自会带走旧框行，此处再补绘输入行 + toolbar 两行使 pyte
+        屏与真实屏面一致（❯ 断言依赖它）。
+        """
+        self.console._replay_toggle(text)
+        sys.stdout.write(f"❯ {text}\n")
+        sys.stdout.write("─" * COLS + "\n")
+        sys.stdout.write("  auto  ·  0 in  ·  0 out\n")
+        # ptk 光标停在输入行内（❯/框线/状态行 → 3A 归位），非 toolbar 之下
+        sys.stdout.write("\033[3A\r")
+        self.flush()
 
     def rows(self) -> list[str]:
         return [
@@ -158,7 +174,7 @@ class TestReplayToggle:
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert h.y_of("Thought for") == h.y_of(THINKING) - 1
         assert h.y_of(THINKING) < h.y_of(TAIL1) < h.y_of("❯")
@@ -168,18 +184,18 @@ class TestReplayToggle:
         # 展开态：指示 + 全文 + 空行（3）+ tail 4 行（含结束行）
         assert c._replay_block_rows == 7
         # 指示行提示翻转
-        assert "(ctrl+r to collapse)" in h.screen_text()
+        assert "(alt+r to collapse)" in h.screen_text()
 
     def test_collapse_restores_folded_form(self, monkeypatch, tmp_path):
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)     # 展开
-        c._replay_toggle([], None, 0, 0)     # 收起
+        h.toggle()     # 展开
+        h.toggle()     # 收起
         h.flush()
         text = h.screen_text()
         assert THINKING not in text          # 收起：全文撤下
-        assert "(ctrl+r to expand)" in text  # 提示复原
+        assert "(alt+r to expand)" in text  # 提示复原
         # 折叠形态与初始逐行等价：指示行 → 正文 → 框
         assert h.y_of("Thought for") == h.y_of(PRIOR) + 1
         assert h.y_of(TAIL1) == h.y_of("Thought for") + 1
@@ -191,10 +207,10 @@ class TestReplayToggle:
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert PRIOR in h.screen_text()
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert PRIOR in h.screen_text()
         assert TAIL2 in h.screen_text()
@@ -204,34 +220,25 @@ class TestReplayToggle:
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        buf = list("hello world")
-        c._replay_toggle(buf, None, 0, 3)    # 光标在 "hel|lo"
-        h.flush()
+        # 旧版断言"框内光标中途的输入原样恢复"——光标恢复现归 ptk；这里
+        # 钉住：toggle 周期后输入文本原样在框内。
+        h.toggle("hello world")
         assert THINKING in h.screen_text()
         assert "❯ hello world" in h.screen_text()
 
-    def test_typing_after_expand_keeps_block(self, monkeypatch, tmp_path):
-        """展开后打字：普通框重绘（锚点顶框线）不碰上方已展开思考块。"""
-        h = ReplayHarness(monkeypatch, tmp_path)
-        h.setup_turn()
-        c = h.console
-        c._replay_toggle([], None, 0, 0)
-        c._redraw_frame(list("hi"), None, 0, 2)
-        h.flush()
-        text = h.screen_text()
-        assert THINKING in text
-        assert "❯ hi" in text
-        assert h.y_of(THINKING) < h.y_of("❯ hi")
+    # （原 test_typing_after_expand_keeps_block 已删：其保证——"打字重绘
+    # 不碰上方已展开思考块"——迁移后由 ptk 构造性成立，ptk 只擦自身
+    # region（输入行 + toolbar），上方的思考块在它视线之外。）
 
     def test_gap0_turn_cancel_paths_arithmetic(self, monkeypatch, tmp_path):
         """cancel 回合（gap=0、正文紧贴框）：展开/收起算术同样正确。"""
         h = ReplayHarness(monkeypatch, tmp_path, gap=0)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert h.y_of("Thought for") == h.y_of(THINKING) - 1
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert THINKING not in h.screen_text()
         assert PRIOR in h.screen_text()
@@ -255,12 +262,12 @@ class TestReplayKeepsCompletionLine:
         h.setup_turn()
         c = h.console
         assert len(FOOTER_RE.findall(h.screen_text())) == 1, "初始应恰一条结束行"
-        c._replay_toggle([], None, 0, 0)                     # 展开
+        h.toggle()                     # 展开
         h.flush()
         assert THINKING in h.screen_text()
         assert len(FOOTER_RE.findall(h.screen_text())) == 1, \
             "展开后结束行丢失或重复"
-        c._replay_toggle([], None, 0, 0)                     # 收起
+        h.toggle()                     # 收起
         h.flush()
         assert THINKING not in h.screen_text()
         assert len(FOOTER_RE.findall(h.screen_text())) == 1, \
@@ -270,7 +277,7 @@ class TestReplayKeepsCompletionLine:
         """结束行位置：正文之后、输入框之前（对标 Claude Code 收尾）。"""
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
-        h.console._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert h.y_of(TAIL2) < h.y_of("✻") < h.y_of("❯")
 
@@ -279,7 +286,7 @@ class TestReplayKeepsCompletionLine:
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.reprint_bytes = h.buf.getvalue()
         h.flush()
         assert h.count_reprinted(FOOTER) <= 1, \
@@ -290,52 +297,60 @@ class TestReplayKeepsCompletionLine:
         走 _replay_toggle_windowed，它取 tail 尾部窗口。"""
         h = ReplayLongHarness(monkeypatch, tmp_path)
         h.setup_turn()
-        h.console._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         assert h.console._replay_windowed is True, "本用例应走窗口路径"
         assert len(FOOTER_RE.findall(h.screen_text())) == 1, \
             "窗口重印后结束行丢失或重复"
 
 
-# ── 编辑器真按键接线（_read_line_interactive 的 Ctrl+R 分支）──────
+# ── 编辑器真按键接线（editor.read_input_async 的 Alt+R 分支）──────
 
 
-def _drive_editor(monkeypatch, keys: list[str]) -> None:
-    """脚本化喂键跑一遍 _read_line_interactive（termios/fd 全桩）。"""
-    import termios as _termios
-    import tty as _tty
+async def _drive_editor(monkeypatch, h, keys: list[str]) -> str:
+    """PipeInput 喂键跑一遍 read_input_async（ptk 真会话，渲染走
+    DummyOutput；_replay_toggle 的裸写屏落在 harness 的 pyte 缓冲）。"""
+    import asyncio
 
-    import openx.ui._components.prompt as prompt_mod
-    monkeypatch.setattr(_termios, "tcgetattr", lambda fd: None)
-    monkeypatch.setattr(_termios, "tcsetattr", lambda *a: None)
-    monkeypatch.setattr(_tty, "setcbreak", lambda *a: None)
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(sys.stdin, "fileno", lambda: 0)
-    it = iter(keys)
-    monkeypatch.setattr(prompt_mod, "read_unicode_char", lambda fd: next(it))
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import openx.ui._components.editor as editor
+    monkeypatch.setattr(editor, "HISTORY_PATH", h.history_path)
+    it = list(keys)
+    with create_pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            task = asyncio.ensure_future(editor.read_input_async(h.console))
+            await asyncio.sleep(0.05)
+            for k in it:
+                pipe.send_text(k)
+                await asyncio.sleep(0.25)  # Alt+R 经 run_in_terminal 异步落地
+            text, _ = await asyncio.wait_for(task, timeout=5)
+    return text
 
 
 class TestCtrlRKeyWiring:
-    def test_ctrl_r_expands_via_editor_loop(self, monkeypatch, tmp_path):
+    async def test_alt_r_expands_via_editor_loop(self, monkeypatch, tmp_path):
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        _drive_editor(monkeypatch, ["\x12", "\x04"])  # Ctrl+R → Ctrl-D(空)
-        assert c._read_line_interactive() == ""
+        text = await _drive_editor(monkeypatch, h, ["\x1br", "\x04"])
+        assert text == ""  # Ctrl+D 空行提交 ""
         h.flush()
         assert THINKING in h.screen_text()
         assert c._replay_expanded is True
 
-    def test_ctrl_r_twice_collapses_back(self, monkeypatch, tmp_path):
+    async def test_alt_r_twice_collapses_back(self, monkeypatch, tmp_path):
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        _drive_editor(monkeypatch, ["\x12", "\x12", "\x04"])
-        assert c._read_line_interactive() == ""
+        text = await _drive_editor(monkeypatch, h, ["\x1br", "\x1br", "\x04"])
+        assert text == ""
         h.flush()
-        text = h.screen_text()
-        assert THINKING not in text            # 收起回到折叠态
-        assert PRIOR in text                   # 越界未吞对话
+        t = h.screen_text()
+        assert THINKING not in t              # 收起回到折叠态
+        assert PRIOR in t                      # 越界未吞对话
         assert c._replay_expanded is False
         assert c._replay_block_rows == 5   # 指示 1 + tail 4（含结束行）
 
@@ -344,18 +359,18 @@ class TestCtrlRKeyWiring:
 
 
 class TestNoReplayData:
-    def test_ctrl_r_silent_without_thinking(self, monkeypatch, tmp_path):
-        """_last_replay=None → Ctrl+R 静默忽略（同流式期无推理纪律）。"""
+    async def test_alt_r_silent_without_thinking(self, monkeypatch, tmp_path):
+        """_last_replay=None → Alt+R 静默忽略（同流式期无推理纪律）。"""
         h = ReplayHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
         c._last_replay = None
-        _drive_editor(monkeypatch, ["\x12", "\x04"])
-        assert c._read_line_interactive() == ""
+        text = await _drive_editor(monkeypatch, h, ["\x1br", "\x04"])
+        assert text == ""
         h.flush()
         assert THINKING not in h.screen_text()
         assert c._replay_expanded is False
-        assert "(ctrl+r" in h.screen_text()  # 折叠指示行仍在原位
+        assert "(alt+r" in h.screen_text()  # 折叠指示行仍在原位
 
 
 if __name__ == "__main__":
@@ -412,9 +427,9 @@ class ReplayLongHarness(ReplayHarness):
 class TestReplayToggleOversized:
     def _expand_collapse_cycle(self, h) -> None:
         c = h.console
-        c._replay_toggle([], None, 0, 0)     # 展开
+        h.toggle()     # 展开
         h.flush()
-        c._replay_toggle([], None, 0, 0)     # 收起
+        h.toggle()     # 收起
         h.flush()
 
     def test_expand_shows_thinking_window(self, monkeypatch, tmp_path):
@@ -423,12 +438,12 @@ class TestReplayToggleOversized:
         h = ReplayLongHarness(monkeypatch, tmp_path)
         h.setup_turn()
         h.reprint_bytes = ""
-        h.console._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.reprint_bytes = h.buf.getvalue()
         h.flush()
         text = h.screen_text()
         assert "Thought for" in text, "指示行必须回到屏上"
-        assert "(ctrl+r to collapse)" in text
+        assert "(alt+r to collapse)" in text
         assert THINKING in text, "思考内容必须可见（展开的焦点）"
         assert f"{h.LONG_PREFIX}{N_LONG_TAIL}" in text, "正文尾行保留"
         assert h.console._replay_windowed is True
@@ -438,13 +453,13 @@ class TestReplayToggleOversized:
         h = ReplayLongHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
-        c._replay_toggle([], None, 0, 0)
+        h.toggle()
         h.flush()
         text = h.screen_text()
         assert THINKING not in text
-        assert "(ctrl+r to expand)" in text
+        assert "(alt+r to expand)" in text
         assert f"{h.LONG_PREFIX}{N_LONG_TAIL}" in text
         assert f"{h.LONG_PREFIX}1 " not in text  # 头部不在窗口内
 
@@ -456,7 +471,7 @@ class TestReplayToggleOversized:
         c = h.console
         total = ""
         for _ in range(3):
-            c._replay_toggle([], None, 0, 0)
+            h.toggle()
             total += h.buf.getvalue()
             h.flush()
         h.reprint_bytes = total
@@ -475,14 +490,14 @@ class TestReplayToggleOversized:
         h = ReplayLongHarness(monkeypatch, tmp_path)
         h.setup_turn()
         c = h.console
-        c._replay_toggle([], None, 0, 0)     # → 窗口路径、闩置位
+        h.toggle()     # → 窗口路径、闩置位
         h.flush()
         assert c._replay_windowed is True
         assert c._replay_block_rows <= 24, "簿记应为窗口行数（非全量）"
         # 闩在 → 即便 up 算得 ≤ R 也必须走窗口：再 toggle 不重打头部
         total = ""
         for _ in range(2):
-            c._replay_toggle([], None, 0, 0)
+            h.toggle()
             total += h.buf.getvalue()
             h.flush()
         h.reprint_bytes = total
@@ -517,18 +532,18 @@ class TestReplayToggleMediumBlockLongThinking:
         c._replay_block_rows = len(mid_tail) + 1
         h.flush()
 
-        c._replay_toggle([], None, 0, 0)     # 展开（整块，滚动过屏）
+        h.toggle()     # 展开（整块，滚动过屏）
         h.flush()
         assert c._replay_expanded is True
-        c._replay_toggle([], None, 0, 0)     # 收起 → 窗口路径
+        h.toggle()     # 收起 → 窗口路径
         h.flush()
         text = h.screen_text()
-        assert "(ctrl+r to expand)" in text
+        assert "(alt+r to expand)" in text
         assert "mid answer line 10" in text  # 尾行可见
         # 整轮 toggle 里，首行正文只应被整块展开重打过一次（它当时还
         # 在屏上、不在 scrollback）——绝无第二次。
         h.reprint_bytes = ""
-        c._replay_toggle([], None, 0, 0)     # 再展开（窗口）
+        h.toggle()     # 再展开（窗口）
         total = h.buf.getvalue()
         h.flush()
         h.reprint_bytes = total

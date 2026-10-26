@@ -89,7 +89,7 @@ async def run_interactive(agent: OpenXAgent, console: Console) -> None:
                 console.clear_input_frame()
             else:
                 try:
-                    user_input = console.print_user_prompt(
+                    user_input = await console.print_user_prompt(
                         input_tokens=agent.total_input_tokens,
                         output_tokens=agent.total_output_tokens,
                     )
@@ -220,7 +220,7 @@ async def _stream_response(
                 "What would you like to know?"
             )
             try:
-                remaining = console.print_user_prompt(
+                remaining = await console.print_user_prompt(
                     input_tokens=agent.total_input_tokens,
                     output_tokens=agent.total_output_tokens,
                 )

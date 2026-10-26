@@ -41,6 +41,12 @@ dependencies = [
     "mdurl>=0.1.1",
     "httpx>=0.25.0",
     "pyperclip>=1.8.0",
+    # REPL 输入行编辑器（↑/↓ 历史、Ctrl+R 反向增量搜索、斜杠补全）：
+    # 自绘 cbreak 编辑器退役（ui/_components/editor.py）。下限 3.0.50+：
+    # PipeInput/testing API 与 kitty CSI-u 序列处理在该段才稳定；升级前
+    # 复检 ANSI_SEQUENCES 扩展（editor.py 模块级补 "\x1b[13;2u"）与
+    # CompletionsMenu 浮层布局。
+    "prompt_toolkit>=3.0.50",
 ]
 
 [project.optional-dependencies]

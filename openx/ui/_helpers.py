@@ -108,6 +108,16 @@ def fmt_duration(seconds: float) -> str:
     return f"{total // 3600}h {(total % 3600) // 60}m"
 
 
+def fmt_tokens(n: int) -> str:
+    """token 数 → 状态行短串：``999`` / ``1.2k``。
+
+    输入框状态行（prompt._status_text，rich 路径）与 editor.status_toolbar
+    （prompt_toolkit bottom_toolbar 路径）共用——两侧必须逐字一致，否则
+    流式帧换到等待态提示框时状态行数字跳变。
+    """
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def done_line(elapsed: float, verb: Optional[str] = None,
               suffix: str = "") -> Text:
     """回合结束行 ``✻ Cooked for 42s``（单行 Text）。

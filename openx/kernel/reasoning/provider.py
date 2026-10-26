@@ -27,9 +27,9 @@ class StreamReasoning:
 
     DeepSeek 系后端在正文之前以 ``delta.reasoning_content`` 逐块发送推理
     过程；部分 o-series 风格后端用 ``reasoning`` 字段。展示层默认折叠
-    （Ctrl+R 展开）--推理内容是模型输出的一部分，对用户必须可见但不
-    应与正文混排。不写入 history（部分后端拒收未知消息键，且 DeepSeek
-    官方建议不回放 reasoning_content）。
+    （流式期 Ctrl+R 展开；回答结束后输入框处 Alt+R）--推理内容是模型
+    输出的一部分，对用户必须可见但不应与正文混排。不写入 history（部分
+    后端拒收未知消息键，且 DeepSeek 官方建议不回放 reasoning_content）。
     """
 
     text: str

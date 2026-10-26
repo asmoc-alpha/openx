@@ -2,16 +2,21 @@ from __future__ import annotations
 
 """Chat input prompt — an inline frame that travels with the conversation.
 
-The frame (top rule, input line, bottom rule, status) is drawn at the
-current cursor position — right below the startup logo on the first turn,
-and below the latest response thereafter — so it is never pinned to a
-fixed screen row; it moves down as the conversation grows and scrolls
-naturally once the viewport fills.
+The frame travels with the conversation: drawn right below the startup
+logo on the first turn and below the latest response thereafter — never
+pinned to a fixed screen row; it moves down as the conversation grows and
+scrolls naturally once the viewport fills.
 
-During streaming the frame is part of the Rich ``Live`` region
-(:meth:`_frame_renderable`): the streamed response renders above it and,
-as it grows, the frame is pushed down — so the box stays visible and
-continuously moves down while the model answers, rather than vanishing.
+分态归属：流式期整个 4 行框（顶框线/输入行/底框线/状态行）都是 Rich
+``Live`` region 的一部分（:meth:`_frame_renderable`）——回答在框上方
+流式渲染、边长边把框推下去。等待输入期（本模块 + editor.py）：**顶框线
+仍是静态打印的 chrome，输入行/底框线/状态行交给 prompt_toolkit**
+（editor.read_input_async，:class:`PromptSession` 的 message +
+bottom_toolbar）——ptk 的补全菜单是 Float 浮层、bottom_toolbar 自带
+``~is_done`` 过滤，静态打印在输入行下方的内容会被浮层覆盖后不还原
+（ptk 擦除区只覆盖自身 region），故底 chrome 必须活在 ptk 内（实测
+结论，勿回退）。
+
 When streaming finishes the frame is left on screen as the next input;
 the next prompt reads into it directly (no redraw), and on send it is
 cleared so it never lingers in the conversation history — the user's
@@ -33,7 +38,6 @@ if __name__ == "__main__" and not __package__:
     _sys.path.insert(0, str(_root))
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
-import select
 import sys
 import unicodedata
 from shutil import get_terminal_size
@@ -41,13 +45,12 @@ from shutil import get_terminal_size
 from rich.console import Group
 from rich.text import Text as RichText
 
-from .._helpers import fmt_duration
+from .._helpers import fmt_duration, fmt_tokens
 from .._style import (
     ACCENT,
     ACCENT_BOLD,
     CHROME,
     DIM,
-    MARK_CURSOR,
     MARK_INFO,
     PROMPT_STYLE,
     USER_BANNER_BG,
@@ -91,16 +94,11 @@ class PromptMixin:
         return capture.get()
 
     def _status_text(self, input_tokens: int, output_tokens: int) -> RichText:
-        i_tok = (
-            f"{input_tokens / 1000:.1f}k"
-            if input_tokens >= 1000
-            else str(input_tokens)
-        )
-        o_tok = (
-            f"{output_tokens / 1000:.1f}k"
-            if output_tokens >= 1000
-            else str(output_tokens)
-        )
+        # 换算与 editor.status_toolbar（ptk bottom_toolbar 路径）共用
+        # fmt_tokens——两侧必须逐字一致，否则流式帧→提示框切换时状态行
+        # 数字跳变。
+        i_tok = fmt_tokens(input_tokens)
+        o_tok = fmt_tokens(output_tokens)
         # 模式名是唯一着色点（强调色），其余 dim 退居背景；未知模式
         # 黄色提示异常。单行 no_wrap/ellipsis 不变量（框恒四行，SDD §6）。
         mode_style = ACCENT if self._mode in ("auto", "plan", "manual") \
@@ -165,302 +163,91 @@ class PromptMixin:
         # four rows even on narrow terminals.
         return Group(rule, glyph, rule, self._status_text(input_tokens, output_tokens))
 
-    # ── 自绘行编辑器 ────────────────────────────────────────────
+    # ── 输入行（prompt_toolkit 路径 + 非 TTY 回退）──────────────
 
     @staticmethod
     def _char_width(c: str) -> int:
         """一个字符在终端占用的列数（中日韩 / emoji 等宽字符为 2）。"""
         return 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
 
-    def _read_line_interactive(self) -> str | None:
-        """用 cbreak 自绘编辑器读取一行（UTF-8 感知、宽字符干净擦除）。
-
-        内核的 cooked 行编辑在部分平台（尤其 macOS）上**不是 UTF-8 感知**的：
-        退格只擦掉多字节字符的**一个字节**，屏幕上留下残影（"删不干净"），
-        残缺的字节序列还会让 ``readline()`` 解码失败、直接崩掉 REPL。
-        改为自己接管行编辑：逐字符累积、退格删一个完整字符、按字符宽度擦除。
-
-        返回值区分 EOF 与空行 / Return values distinguish EOF from an empty
-        line：``None`` = EOF（stdin 已关闭/耗尽），``""`` = 空回车。
-        ``None`` on EOF (stdin closed/exhausted), ``""`` on an empty Enter.
-        """
-        if not sys.stdin.isatty():  # 非终端（测试 / 管道）走原生 readline
-            line = sys.stdin.readline()
-            if not line:  # EOF（如 `openx </dev/null`）→ None，供调用方干净退出
-                return None
-            return line.rstrip("\r\n")
-
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        out = sys.stdout
-        # 进入行编辑器前确保光标可见：流式 Live 会隐藏光标（?25l），正常
-        # 路径在 done()/cancel() 已恢复；这里是兜底——任何泄漏路径之后，
-        # 只要轮到用户输入，光标必然可见。?25h 幂等，重复发无副作用。
-        # Guarantee a visible cursor whenever the user is expected to type.
-        out.write("\033[?25h")
-        out.flush()
-        buf: list[str] = []
-        cur = 0  # 光标在 buf 中的下标（0..len(buf)）；←/→ 移动，退格
-                 # 删光标前一字符，可打印字符在光标处插入。
-        # 斜杠补全菜单状态（v0.4.2）： menu=None 为关闭；menu_sel 为选中
-        # 下标（↑↓ 移动，输入变化归零）
-        menu: list | None = None
-        menu_sel = 0
-        try:
-            tty.setcbreak(fd, termios.TCSANOW)
-            # 括号粘贴（?2004h）：终端把粘贴内容包在 \033[200~ … \033[201~
-            # 里，其间换行按字面收入——多行粘贴不再被首行截断、余行泄漏
-            # 成后续输入。扩展键协议（kitty \x1b[=1u + modifyOtherKeys
-            # \x1b[>4;2m）让 Shift+Enter 可区分（→ 插入字面换行；Enter
-            # 仍是提交）。不支持的终端忽略序列 → 行为同旧版。
-            out.write("\033[?2004h\033[=1u\033[>4;2m")
-            out.flush()
-            while True:
-                # 0.2s 超时 select 取代阻塞 read：超时时检查终端 resize
-                # （信号事件 + 宽度漂移双通道）并按新宽整框重绘。PEP 475：
-                # SIGWINCH 不会提前唤醒 select（带剩余超时自动重试），
-                # 超时轮询才是实际检测机制——信号只为降低延迟。
-                try:
-                    ready, _, _ = select.select([fd], [], [], 0.2)
-                except (OSError, ValueError):
-                    ready = [fd]  # 降级为直接读（保持原行为）
-                if not ready:
-                    if self._resize_pending():
-                        self._redraw_frame(buf, menu, menu_sel)
-                    continue
-                ch = read_unicode_char(fd)
-                if ch is None:  # EOF
-                    raise EOFError
-
-                if ch == PASTE_START:
-                    # 括号粘贴：整块读到 \033[201~，换行字面保留为 \n；
-                    # 多行内容在框内全展开（所见即所得），Enter 提交全文。
-                    buf.extend(self._read_paste_content(fd))
-                    cur = len(buf)
-                    self._redraw_frame(buf, menu, menu_sel, cur)
-                    continue
-                if ch == SHIFT_ENTER:
-                    # Shift+Enter（或 Alt+Enter）：插入字面换行——多行
-                    # 消息编辑；提交仍走 Enter（返回含 \n 的全文）。
-                    buf.append("\n")
-                    cur = len(buf)
-                    self._redraw_frame(buf, menu, menu_sel, cur)
-                    continue
-
-                # ── 菜单导航键（仅菜单打开时接管，否则落回原语义）──
-                if menu is not None and ch == "\x1b[A":      # ↑
-                    menu_sel = (menu_sel - 1) % len(menu)
-                    self._redraw_frame(buf, menu, menu_sel)
-                    continue
-                if menu is not None and ch == "\x1b[B":      # ↓
-                    menu_sel = (menu_sel + 1) % len(menu)
-                    self._redraw_frame(buf, menu, menu_sel)
-                    continue
-                if menu is not None and ch == "\t":
-                    # Tab：补全选中项 + 尾随空格 → 命令名完整，菜单自然
-                    # 关闭，光标留在参数位置继续编辑
-                    buf = list("/" + menu[menu_sel][0] + " ")
-                    cur = len(buf)
-                    self._input_cells_on_screen = 2 + sum(
-                        self._char_width(c) for c in buf)
-                    self._sync_input_rows()
-                    menu, menu_sel = None, 0
-                    self._redraw_frame(buf, None, 0, cur)
-                    continue
-                if menu is not None and ch in ("\r", "\n"):
-                    # Enter：按选中命令提交（部分输入如 /he → /help）
-                    buf = list("/" + menu[menu_sel][0])
-                    cur = len(buf)
-                    self._input_cells_on_screen = 2 + sum(
-                        self._char_width(c) for c in buf)
-                    self._sync_input_rows()
-                    menu = None
-                    self._redraw_frame(buf, None, 0, cur)  # 收菜单/框再提交
-                    out.write("\r\n")
-                    out.flush()
-                    break
-                if ch == "\x1b":  # 单独 Esc：有菜单关菜单，无则忽略
-                    if menu is not None:
-                        menu, menu_sel = None, 0
-                        self._redraw_frame(buf)
-                    continue
-
-                # ── 原有按键语义 ──
-                if ch in ("\r", "\n"):
-                    # \r 先取消 pending-wrap（写满行末时光标悬停在右边界，
-                    # 裸 \n 的行进距离终端间有二义性）；ONLCR 下 \n 自带 \r，
-                    # 多一个 \r 无副作用。
-                    out.write("\r\n")
-                    out.flush()
-                    break
-                if ch == "\x03":  # Ctrl-C
-                    raise KeyboardInterrupt
-                if ch == "\x04":  # Ctrl-D：空行→重新提示（与 cooked 一致），否则忽略
-                    if not buf:
-                        break
-                    continue
-                if ch == "\x12":  # Ctrl-R —— 回答结束后就地展开/收起
-                    # thinking（重印区紧随 ● Thought for 指示行，与流式期
-                    # 展开同位置）。无推理内容的回合静默忽略，同流式纪律；
-                    # 框内光标在擦除区之下，擦除+重印后原样恢复。
-                    self._replay_toggle(buf, menu, menu_sel, cur)
-                    continue
-
-                # ── 编辑键：光标移动 / 退格 / 插入（恒整框重绘）──
-                if ch == "\x1b[D":  # ← 光标左移
-                    if cur > 0:
-                        cur -= 1
-                        self._redraw_frame(buf, menu, menu_sel, cur)
-                    continue
-                if ch == "\x1b[C":  # → 光标右移
-                    if cur < len(buf):
-                        cur += 1
-                        self._redraw_frame(buf, menu, menu_sel, cur)
-                    continue
-                if ch in ("\x7f", "\b"):  # 退格：删光标前一字符
-                    if cur > 0:
-                        buf.pop(cur - 1)
-                        cur -= 1
-                        self._redraw_frame(buf, menu, menu_sel, cur)
-                    continue
-                if ch == "" or not (ch.isprintable() or ch == " "):
-                    continue  # 其他序列（↑↓ 已被菜单/粘贴以外路径忽略）
-                buf.insert(cur, ch)  # 可打印：在光标处插入
-                cur += 1
-
-                new_menu = self._slash_menu(buf)
-                # 任何内容变化恒整框重绘（选中项归零）：逐字节增量写在
-                # 光标中途移动 / 宽字符 / 行边界回退时无法正确擦除（用户
-                # 报告"删干净了屏幕还有残影"），从 buf 全量重建帧面无此
-                # 可能；单键重绘成本可忽略。
-                menu, menu_sel = new_menu, 0
-                self._redraw_frame(buf, menu, menu_sel, cur)
-        finally:
-            # 关括号粘贴 + 弹 kitty 协议 + 关 modifyOtherKeys（幂等，
-            # 不支持的终端忽略）
-            out.write("\033[?2004l\033[<u\033[>4m")
-            out.flush()
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        return "".join(buf)
-
     @staticmethod
-    def _read_paste_content(fd) -> list[str]:
-        """读括号粘贴体至 ``\\033[201~``（PASTE_END），按字符列表返回。
+    def _read_line_fallback() -> str | None:
+        """非终端（测试 / 管道）的原生 readline 回退。
 
-        换行（``\\r``/``\\n``）字面保留为 ``"\\n"``；Esc 系记号按原文逐字
-        追加（粘贴内容恰含转义样文本的罕见情形）；EOF 视为粘贴结束
-        （防御——粘贴标记不成对时绝不挂死）。
+        返回值区分 EOF 与空行 / Return values distinguish EOF from an
+        empty line：``None`` = EOF（stdin 已关闭/耗尽，如 ``openx
+        </dev/null``），``""`` = 空回车。TTY 路径在
+        :func:`editor.read_input_async`（Ctrl+D 空行返回 ``""``，Ctrl+C /
+        EOF 各有语义）。
         """
-        chars: list[str] = []
-        while True:
-            ch = read_unicode_char(fd)
-            if ch is None or ch == PASTE_END:
-                break
-            if ch in ("\r", "\n"):
-                chars.append("\n")
-            elif ch.startswith("\x1b"):
-                chars.extend(ch)
-            elif ch:
-                chars.append(ch)
-        return chars
-
-    # ── resize 支持（SDD 终端交互 §4.5）────────────────────────────
-
-    def _sync_input_rows(self) -> None:
-        """由当前格数与（缓存）宽度推导输入区物理行数。
-
-        pending-wrap（格数恰为宽度整倍数）不增加物理行——(c−1)//tw+1
-        对此正确。仅在无 resize 时与屏面一致；resize 后由重绘接管并
-        以新宽刷新簿记。
-        """
-        tw = max(1, self._terminal_width)
-        self._input_rows_on_screen = (self._input_cells_on_screen - 1) // tw + 1
-
-    def _resize_pending(self) -> bool:
-        """自上次绘制以来是否发生过 resize（信号事件 + 宽度漂移双通道）。
-
-        漂移轮询兜底 Windows（无 SIGWINCH）、事件丢失与非主线程 Console；
-        事件只为降低延迟。宽度 0（某些 pty 瞬态）视为无效、不触发重绘。
-        """
-        watcher = getattr(self, "_resize", None)
-        if watcher is not None and watcher.check():
-            return True
-        try:
-            cols = get_terminal_size().columns
-        except OSError:
-            return False
-        return cols not in (0, self._terminal_width)
-
-    def _redraw_input_frame(self, buf: list[str]) -> None:
-        """resize 后按新宽整框重绘（不带菜单；等价 ``_redraw_frame(buf)``）。"""
-        self._redraw_frame(buf)
+        line = sys.stdin.readline()
+        if not line:  # EOF → None，供调用方干净退出（不当空行重提示）
+            return None
+        return line.rstrip("\r\n")
 
     def _replay_indicator(self, elapsed: float, expanded: bool) -> RichText:
         """重印指示行（与 streaming._thinking_block 冻结态逐字一致）。"""
         t = RichText(
             f"  {MARK_INFO} Thought for {fmt_duration(elapsed)}"
-            + (" (ctrl+r to collapse)" if expanded
-               else " (ctrl+r to expand)"),
+            + (" (alt+r to collapse)" if expanded
+               else " (alt+r to expand)"),
             style=DIM,
         )
         t.no_wrap = True
         t.overflow = "ellipsis"
         return t
 
-    def _replay_toggle(self, buf, menu, menu_sel, cur) -> None:
-        """回答结束后 Ctrl+R：把 thinking 就地重印回 **● Thought for Ns**
+    def _replay_toggle(self, text: str) -> None:
+        """回答结束后 Alt+R：把 thinking 就地重印回 **● Thought for Ns**
         指示行的正下方（用户界面需求：展开位置紧随指示行、不在对话末尾）。
 
-        手法 = 擦除 + 重排：从指示行到屏末（指示行、回合 tail、间距空行、
-        框、菜单）整段擦掉，重印 [指示行 (+ 思考全文 + 分隔空行) + tail +
-        gap 空行]，再 fresh 绘制框（框内光标随 buf/cur 原样恢复，编辑器
-        无感）。rich 对已固化行恒写硬换行 → 光标到指示行的上移距离在
-        缩窄 reflow 下至多欠冲（留有界装饰残行，与 _ResizeAwareLive 同
-        类已知局限）、绝不越界吞上方对话。思考全文 dim 纯文本、绝不走
-        Markdown（围栏/反引号会被重排乱，与 streaming._thinking_block
-        同纪律）。
+        经 ptk 键位绑定（editor.build_key_bindings）的
+        ``run_in_terminal`` 调用：进入时 ptk 已把自身 region（输入行及
+        其下 toolbar）整段擦除、光标挪到 **region 顶 = 首个输入行、
+        col 0**（``Renderer.erase`` 的光标语义，与 ptk 自家
+        ``in_terminal`` 同一方法）——光标位置与输入内容/折行无关，上移
+        距离因而是常量：``1（顶框线）+ gap + 屏上块行数``。重印 [指示行
+        (+ 思考全文 + 分隔空行) + tail + gap] 后补印顶框线，ptk 在
+        ``run_in_terminal`` 退出时重绘自身 region。rich 对已固化行恒写
+        硬换行 → 缩窄 reflow 下至多欠冲（留有界装饰残行，与
+        _ResizeAwareLive 同类已知局限）、绝不越界吞上方对话。思考全文
+        dim 纯文本、绝不走 Markdown（围栏/反引号会被重排乱，与
+        streaming._thinking_block 同纪律）。
 
-        **块超一屏（指示行滚出屏顶）走窗口重印**（:meth:`_replay_toggle_windowed`）：
-        此时按全量块行数上移会被终端钳在行 0——擦除区吞掉屏顶的上方
-        对话、整块重印把已滚入 scrollback 的行二次追加（用户报告的
-        "输出前半部分重复 + 多轮之前的对话看不到"根因）。窗口路径只擦
-        本回合可见区、只重印视口放得下的窗口，绝不重打已入 scrollback
-        的行。
+        **块超一屏（指示行滚出屏顶）走窗口重印**
+        （:meth:`_replay_toggle_windowed`）：此时按全量块行数上移会被
+        终端钳在行 0——擦除区吞掉屏顶的上方对话、整块重印把已滚入
+        scrollback 的行二次追加（用户报告的"输出前半部分重复 + 多轮
+        之前的对话看不到"根因）。窗口路径只擦本回合可见区、只重印视口
+        放得下的窗口，绝不重打已入 scrollback 的行。
         """
         replay = getattr(self, "_last_replay", None)
         if not replay:
             return
         expand = not self._replay_expanded
-        text, elapsed = replay["thinking"]
+        thinking, elapsed = replay["thinking"]
         tail = replay["tail"]
         gap = max(0, int(replay.get("gap", 0)))
         self._refresh_terminal_size()
         tw = max(1, self._terminal_width)
-        typed_r, cursor_r = self._frame_typed_r(buf, cur, tw)
-        _line_rows, k_new, cur_row_off, _col, _cells = self._frame_layout(
-            typed_r, cursor_r, tw)
-        menu_h = 0
-        if menu:
-            m_rows, m_above, m_below = self._menu_window(menu, menu_sel)
-            menu_h = (len(m_rows) + (1 if m_above else 0)
-                      + (1 if m_below else 0))
+        # k_new 仅用于窗口路径的容量预算（当前输入占几行）；全量路径的
+        # 上移距离不需要它（光标恒在 region 顶，见方法 docstring）。
+        typed_r, _cursor_r = self._frame_typed_r(list(text), None, tw)
+        _line_rows, k_new, _off, _col, _cells = self._frame_layout(
+            typed_r, _cursor_r, tw)
         try:
             screen_h = self._console.height
         except Exception:
             screen_h = 24
-        # 块可视容量：屏高 − 间距 − 框（输入区 k_new + 两框线 + 状态行）
-        # − 菜单 − 底行余量 1（框触底时状态行尾换行会滚屏，末行须留空，
-        # 否则重印算术整体错位）。块行数 ≤ 容量 ⟺ 指示行必在屏上（块底
-        # 恒贴间距/框，上方无他物时块顶才可能滚出屏顶）。
-        budget = screen_h - gap - k_new - menu_h - 4
+        # 块可视容量：屏高 − 间距 − ptk 区（输入区 k_new + toolbar 2 行）
+        # − 顶框线 1 − 底行余量 1 = −4。块行数 ≤ 容量 ⟺ 指示行必在屏上
+        # （块底恒贴间距/框，上方无他物时块顶才可能滚出屏顶）。
+        budget = screen_h - gap - k_new - 4
         block = [self._replay_indicator(elapsed, expand)]
         if expand:
             # 思考全文 + 与 tail 首块（自带块间空行前缀）的呼吸空行，
             # 与流式期展开块的 [指示行, 全文, 空行] 结构逐字对齐。
-            block.append(RichText(text, style=DIM))
+            block.append(RichText(thinking, style=DIM))
             block.append(RichText(""))
         block.extend(tail)
         group = Group(*block)
@@ -474,16 +261,13 @@ class PromptMixin:
             # **窗口闩**：本回合一旦走过窗口路径，tail 已部分在
             # scrollback、部分被窗口擦除——此后再走整块重印必二次打印
             # scrollback 行，永久锁定窗口路径。
-            # 光标行号（窗口擦除的上移距离）：触底形态下光标在输入行，
-            # 其下 = 输入区余行 + 底框线 + 状态行 + 菜单 + 底行余量。
-            R = screen_h - k_new + cur_row_off - 3 - menu_h
             self._replay_toggle_windowed(
-                expand, text, elapsed, tail, gap, R, buf, menu, menu_sel, cur)
+                expand, thinking, elapsed, tail, gap, screen_h, text)
             return
-        # 光标 → 指示行 = 到顶框线（光标行偏移+1）+ gap 空行 + 当前屏上
-        # 块行数（指示行…tail 末行，_replay_block_rows 记账；不能用重印
-        # 后的新行数——擦除发生在重印之前）。
-        up = cur_row_off + 1 + gap + self._replay_block_rows
+        # 光标在 ptk region 顶（首输入行）：上移 = 顶框线 1 + gap 空行 +
+        # 当前屏上块行数（指示行…tail 末行，_replay_block_rows 记账；
+        # 不能用重印后的新行数——擦除发生在重印之前）。
+        up = 1 + gap + self._replay_block_rows
         out = sys.stdout
         out.write("\r")
         if up > 0:
@@ -492,9 +276,10 @@ class PromptMixin:
         self._console.print(group)
         for _ in range(gap):
             self._console.print(RichText(""))
+        out.write(_RULE_ANSI + "─" * tw + "\033[0m\n")  # 顶框线重印
+        out.flush()
         self._replay_expanded = expand
         self._replay_block_rows = rows
-        self._redraw_frame(buf, menu, menu_sel, cur, fresh=True)
 
     @staticmethod
     def _copy_render_line(line) -> RichText:
@@ -505,28 +290,36 @@ class PromptMixin:
                 t.append(seg.text, seg.style)
         return t
 
-    def _replay_toggle_windowed(self, expand, text, elapsed, tail, gap, R,
-                                buf, menu, menu_sel, cur) -> None:
+    def _replay_toggle_windowed(self, expand, thinking, elapsed, tail,
+                                gap, screen_h, text) -> None:
         """块超一屏（指示行在屏顶之上）的窗口重印。
 
-        块撑满视口 ⟺ 可见区整段（块可见尾 + 间距 + 框 + 菜单）全属本
-        回合——从行 0 擦除绝不吞上方对话（它们已被块挤入 scrollback）。
-        **绝不重印已在 scrollback 的行**：整块重印会把早已滚出的行二次
-        追加进 scrollback（"输出前半部分重复出现、多轮之前的对话看不
-        到"根因）。替代形态：
+        块撑满视口 ⟺ 可见区整段（块可见尾 + 间距 + 顶框线 + ptk 区）
+        全属本回合——从行 0 擦除绝不吞上方对话（它们已被块挤入
+        scrollback）。**绝不重印已在 scrollback 的行**：整块重印会把
+        早已滚出的行二次追加进 scrollback（"输出前半部分重复出现、多
+        轮之前的对话看不到"根因）。替代形态：
         - 展开 = 指示行 + 思考**尾部窗口**（推理全文常超屏，最近内容
           才是焦点——同日志滚屏；头部截断以 ↑ … +N more thoughts 标记）
           + 正文末尾几行（上下文连续）；
         - 收起 = 指示行 + 正文末尾窗口（还原 toggle 前的可见形态）。
+
+        光标恒在 ptk region 顶（首输入行，``run_in_terminal`` erase 的
+        语义）→ 上移 ``screen_h`` 被终端钳在行 0 = 可见区顶——旧版按
+        光标行号精确计算 R 的公式不再需要，借钳位直达行 0。
         簿记落窗口实际行数并置窗口闩：本回合此后恒走窗口路径（整块
         重印会二次打印 scrollback 行，见 _replay_toggle 窗口闩注释）。
         """
         self._refresh_terminal_size()
         tw = max(1, self._terminal_width)
-        typed_r, cursor_r = self._frame_typed_r(buf, cur, tw)
-        _line_rows, _k_new, cur_row_off, _col, _cells = self._frame_layout(
-            typed_r, cursor_r, tw)
-        budget = max(3, R - cur_row_off - 1 - gap)
+        # 当前输入占几行 → ptk 区高度（预算用；上移距离不需要——见
+        # 方法 docstring 的行 0 钳位）。
+        typed_r, _cursor_r = self._frame_typed_r(list(text), None, tw)
+        _line_rows, k_new, _off, _col, _cells = self._frame_layout(
+            typed_r, _cursor_r, tw)
+        # 预算：屏高 − 间距 − ptk 区（k_new + toolbar 2）− 顶框线 1 − 底
+        # 行余量 1。
+        budget = max(3, screen_h - gap - k_new - 4)
         block: list = [self._replay_indicator(elapsed, expand)]
         if expand:
             # 窗口大头给 thinking（用户主动展开就是想读它）；正文末尾
@@ -535,7 +328,7 @@ class PromptMixin:
             avail = budget - 2 - tail_keep  # 指示行与呼吸空行已占 2 行
             try:
                 think_lines = self._console.render_lines(
-                    RichText(text, style=DIM), pad=False)
+                    RichText(thinking, style=DIM), pad=False)
             except Exception:
                 think_lines = []
             if avail >= 2 and len(think_lines) > avail - 1:
@@ -559,8 +352,8 @@ class PromptMixin:
             return  # 重印失败宁可不换（屏面保持原状）
         out = sys.stdout
         out.write("\r")
-        if R > 0:
-            out.write(f"\033[{R}A")  # 光标行号即 R → 恰至行 0（可见区顶）
+        if screen_h > 0:
+            out.write(f"\033[{screen_h}A")  # 过冲上移 → 钳在行 0（可见区顶）
         out.write("\033[J")
         # 底对齐：块不足预算时上方补空行，块尾恒贴间距/框——框永悬空。
         for _ in range(max(0, budget - rows)):
@@ -568,14 +361,15 @@ class PromptMixin:
         self._console.print(group)
         for _ in range(gap):
             self._console.print(RichText(""))
+        out.write(_RULE_ANSI + "─" * tw + "\033[0m\n")  # 顶框线重印
+        out.flush()
         self._replay_expanded = expand
         self._replay_block_rows = min(rows, budget)
         self._replay_windowed = True  # 窗口闩：本回合此后恒走窗口路径
-        self._redraw_frame(buf, menu, menu_sel, cur, fresh=True)
 
     def _frame_typed_r(self, buf: list[str], cursor: int | None,
                        tw: int) -> tuple:
-        """渲染串与光标下标（pending-wrap 补尾空格规则，框重绘/重印共用）。"""
+        """渲染串与光标下标（pending-wrap 补尾空格规则，重印预算用）。"""
         typed = "".join(buf)
         cursor_idx = len(buf) if cursor is None else min(cursor, len(buf))
         pre_lines = typed.split("\n")
@@ -590,8 +384,8 @@ class PromptMixin:
         return typed + (" " if trail else ""), cursor_idx + trail
 
     def _frame_layout(self, typed_r: str, cursor_r: int, tw: int) -> tuple:
-        """多行格位模型（_redraw_frame 与 thinking 重印共用）：逻辑行按
-        \\n 切分、各行独立按 tw 折行（首行含 "❯ " 前缀 2 格）
+        """多行格位模型（thinking 重印预算用）：逻辑行按 \\n 切分、各行
+        独立按 tw 折行（首行含 "❯ " 前缀 2 格）
         → (各逻辑行物理行数, 输入区总行数, 光标行偏移, 光标列, 各行格数)。"""
         logical = typed_r.split("\n")
         cells = [
@@ -614,147 +408,6 @@ class PromptMixin:
             col = cells_before % tw
         return line_rows, k_new, cur_row_off, col, cells
 
-    def _redraw_frame(
-        self, buf: list[str], menu: list | None = None, menu_sel: int = 0,
-        cursor: int | None = None, fresh: bool = False,
-    ) -> None:
-        """整框重绘 + 可选斜杠补全菜单（v0.4.2），光标归位到输入文本末尾。
-
-        ``fresh=True``（thinking 就地重印的收尾）：跳过锚点上移与擦除，
-        视光标已在顶框线行直接向下绘制 4 行框（+菜单）——重印路径刚把
-        指示行到屏末整段重排完，框位天然干净。
-
-        锚点公式 ``up = min(K_old, K_new)``——K_old 为屏上观测行数、
-        K_new = ⌈c/新宽⌉（c = "❯ " 前缀 2 格 + 输入格数，宽字符按
-        :meth:`_char_width` 计格）。终端 reflow 只会**增加**（缩窄）
-        或**减少**（加宽）光标上方的行数，故 min 在任何终端类下
-        **永不越界上移**（绝不吞没上方对话），至多在新框之上留有界
-        装饰残行（随后续滚动/重绘消失）。自锚点 ``\\033[J`` 向下
-        精确清除——菜单渲染在状态行之下，同属擦除区（输入期间框下
-        绝无他物）。
-
-        整除宽度（c ≡ 0 mod tw）时补一尾空格：pending-wrap 态的光标
-        位置不可由 ``\\033[C`` 寻址（停在行首会覆盖内容），补空格提交
-        换行使光标落新行可寻址处；``_input_cells_on_screen`` 记 c+1
-        使后续清框/再重绘算术自洽。
-
-        光标回程计入菜单高 menu_h：``(k_new − 光标行偏移) + 2 + menu_h``
-        行上移（无菜单时 ≡ 旧式 3A）。菜单行绘制在近屏底时可能滚屏——
-        滚屏保持框/菜单相对布局不变，相对回程算术仍精确。
-        """
-        old_rows = self._input_rows_on_screen
-        self._refresh_terminal_size()
-        tw = max(1, self._terminal_width)
-        typed_r, cursor_r = self._frame_typed_r(buf, cursor, tw)
-        line_rows, k_new, cur_row_off, col, cells = self._frame_layout(
-            typed_r, cursor_r, tw)
-        out = sys.stdout
-        if not fresh:
-            up = min(old_rows, k_new)  # 永不越界上移
-            out.write("\r")
-            if up > 0:
-                out.write(f"\033[{up}A")  # 尽力锚点（≥ 顶框线行）
-            out.write("\033[J")  # 锚点行 → 屏末：向下精确
-        # 框线按终端实际新宽输出（裸 dim ANSI）——不经 Rich 渲染，避免
-        # Rich console 缓存宽度滞后于终端时把框线折行
-        out.write(_RULE_ANSI + "─" * tw + "\033[0m\n")  # 顶框线
-        # 输入区：多行全文展开（\n 经终端 ONLCR 成真换行，各逻辑行
-        # 独立折行）——Shift+Enter / 多行粘贴后所输即所见。
-        out.write("❯ " + typed_r)
-        out.write("\n")
-        out.write(_RULE_ANSI + "─" * tw + "\033[0m\n")  # 底框线
-        self._console.print(
-            self._status_text(self._input_tokens_view, self._output_tokens_view),
-            no_wrap=True, overflow="ellipsis",
-        )
-        # ── 斜杠补全菜单（状态行之下；候选单行、选中反白）────────
-        menu_h = 0
-        if menu:
-            rows, above, below = self._menu_window(menu, menu_sel)
-            if above:
-                out.write(f"\033[2m   ↑ +{above} more\033[0m\n")
-                menu_h += 1
-            for i, (name, desc, aliases) in enumerate(rows):
-                out.write(self._format_menu_line(
-                    name, desc, aliases,
-                    selected=(i == menu_sel - above), width=tw,
-                ) + "\n")
-                menu_h += 1
-            if below:
-                out.write(f"\033[2m   ↓ +{below} more\033[0m\n")
-                menu_h += 1
-        # 光标归位：菜单/状态行之下 → 回到光标所在格（cur_row_off/col 由
-        # _frame_layout 的多行格位模型给出），\r 列 0，按格右移（宽字符
-        # 正确）。行偏移 = 之前逻辑行行数之和 + 行内折行偏移；列 = 行内
-        # 格数 mod tw（首行前缀 2 格；行首无内容时列 0，仅首行落 "❯ "
-        # 之后 = 列 2，与单行旧行为一致）。
-        back = (k_new - cur_row_off) + 2 + menu_h
-        out.write(f"\033[{back}A\r\033[{col}C")
-        out.flush()
-        self._frame_width = tw
-        self._input_rows_on_screen = k_new
-        self._input_cells_on_screen = cells[-1] if cells else 2
-
-    # ── 斜杠命令补全菜单（v0.4.2）────────────────────────────────
-
-    _MENU_MAX_ROWS = 10  # 候选行上限；超出折叠为 ↑/↓ +N more 滚动提示
-
-    def _slash_menu(self, buf: list[str]) -> list | None:
-        """由当前输入计算斜杠命令候选；``None`` = 不开菜单。
-
-        仅当**整行以 ``/`` 起头且命令名未写完**（不含空白）时开启；
-        前缀同时匹配主名与别名。命令数据经 cli.commands 注册表取用——
-        **延迟导入**断开 ui→cli 顶层环（cli.interactive 顶层导入
-        ui.console，顶层互导会在 ui.console 未完成初始化时炸）。
-        """
-        text = "".join(buf)
-        if not text.startswith("/"):
-            return None
-        body = text[1:]
-        if any(ch.isspace() for ch in body):
-            return None  # 命令名已完整（正在写参数）→ 关菜单
-        from ...app.cli.commands import menu_entries
-        q = body.lower()
-        items = [
-            (name, desc, aliases)
-            for name, desc, aliases in menu_entries()
-            if name.startswith(q) or any(a.startswith(q) for a in aliases)
-        ]
-        return items or None
-
-    def _menu_window(self, items: list, sel: int) -> tuple:
-        """以 sel 为中心取 ≤ _MENU_MAX_ROWS 的候选切片。
-
-        → ``(切片, 上方折叠数, 下方折叠数)``；上方折叠数即切片起点
-        下标，选中行在切片内索引 = ``sel − 上方折叠数``。
-        """
-        n = len(items)
-        if n <= self._MENU_MAX_ROWS:
-            return items, 0, 0
-        half = self._MENU_MAX_ROWS // 2
-        start = max(0, min(sel - half, n - self._MENU_MAX_ROWS))
-        end = start + self._MENU_MAX_ROWS
-        return items[start:end], start, n - end
-
-    def _format_menu_line(
-        self, name: str, desc: str, aliases: list, selected: bool, width: int
-    ) -> str:
-        """单条候选行（裸 ANSI，截断至 width 内单行）：选中项反白。"""
-        marker = "❯" if selected else " "
-        alias_hint = f" ({','.join(aliases)})" if aliases else ""
-        left = f" {marker} {name}{alias_hint} "
-        used = sum(self._char_width(ch) for ch in left)
-        d = ""
-        budget = width - used - 1
-        if desc and budget > 3:
-            d = desc
-            while d and sum(self._char_width(ch) for ch in d) > budget - 1:
-                d = d[:-1]
-            d = " " + d
-        if selected:
-            return f"\033[7m{left}\033[0m\033[2m{d}\033[0m"
-        return f"\033[1m{left}\033[0m\033[2m{d}\033[0m"
-
     def reset_scroll_region(self) -> None:
         """No-op; the terminal always uses normal (full-screen) scrolling."""
         return
@@ -775,7 +428,7 @@ class PromptMixin:
 
     # ── public ───────────────────────────────────────────────────
 
-    def print_user_prompt(
+    async def print_user_prompt(
         self, input_tokens: int = 0, output_tokens: int = 0
     ) -> str | None:
         """Show the input frame and read one line; clear it on send.
@@ -788,71 +441,70 @@ class PromptMixin:
 
         返回 ``None`` 表示 EOF（非 TTY 的 stdin 已耗尽，如 ``openx
         </dev/null``）——调用方应像 /quit 一样干净退出，而非把 ``None``
-        当作空行重新提示（那会死循环）。TTY 下的 EOF 仍抛 EOFError。
-        Returns ``None`` on EOF (non-TTY stdin exhausted); callers should
-        break cleanly instead of re-prompting.  TTY EOF still raises
-        EOFError.
+        当作空行重新提示（那会死循环）。TTY 下 Ctrl+C 抛
+        KeyboardInterrupt、Ctrl+D 空行返回 ``""``（重提示）。
+
+        ``async``：ptk 的同步 ``prompt()`` 在运行中的事件循环内会
+        RuntimeError（其内部 ``asyncio.run``）——必须走 ``prompt_async``；
+        全部调用点（interactive / commands）均在 async 上下文。
         """
         self._refresh_terminal_size()
         out = sys.stdout
         tw = self._terminal_width
         rule = "─" * tw
-        # 暂存 token 数：resize 重绘时渲染准确的状态行
+        # 暂存 token 数：bottom_toolbar 渲染准确的状态行
         self._input_tokens_view = input_tokens
         self._output_tokens_view = output_tokens
         # thinking 重印簿记**不**在此复位：上一轮就地展开的思考块留在
-        # 屏上原位（Ctrl+R 仍可持续 toggle 最近一轮），清框只擦框自身。
+        # 屏上原位（Alt+R 仍可持续 toggle 最近一轮），清框只擦框自身。
+
+        if not sys.stdin.isatty():
+            return self._read_line_fallback()
 
         if self._frame_on_screen and tw != self._frame_width:
             # 上一轮留屏的框是旧宽绘制的（done 后发生过 resize）：尽力擦除
             # （框恒 4 行 → 4A 精确；缩窄 reflow 终端可能在新框之上留有界
             # 装饰残行，随滚动消失），然后落回新绘分支按新宽重绘。
-            out.write("\033[4A\033[J")
+            out.write("\033[4A\r\033[J")
             out.flush()
             self._frame_on_screen = False
 
         if self._frame_on_screen:
-            # A frame is already on screen (left by the previous stream).
-            # The cursor is below it; move up to the input line, clear it,
-            # and write the prompt glyph fresh before reading.
-            out.write("\033[3A\033[2K")
-            out.write(self._render(RichText.from_markup(
-                f"[{PROMPT_STYLE}]❯[/{PROMPT_STYLE}] "
-            )))
+            # 留屏框（4 行）：擦 [字形行, 底框线, 状态行]，**顶框线保留**
+            # ——其下清空后 ptk 的浮层/toolbar 可自由生长（底 chrome 在
+            # ptk 内，见模块 docstring 的分态归属）。
+            out.write("\r\033[3A\033[J")
             out.flush()
-            # 留屏框的输入行是空的 "❯ "（捕获已停）：刷新簿记
-            self._input_rows_on_screen = 1
-            self._input_cells_on_screen = 2
         else:
-            # Draw the full frame (4 lines), then move up to the input line.
-            self._console.print(f"[{CHROME}]{rule}[/{CHROME}]")     # top rule
-            self._console.print()                          # input line (blank)
-            self._console.print(f"[{CHROME}]{rule}[/{CHROME}]")     # bottom rule
-            self._print_status_line(input_tokens, output_tokens)
-            out.write("\033[3A")
-            out.write(self._render(RichText.from_markup(
-                f"[{PROMPT_STYLE}]❯[/{PROMPT_STYLE}] "
-            )))
-            out.flush()
-            # 新绘簿记：框宽 + 空输入行（"❯ " = 2 格 1 行）
+            # 新绘：只有顶框线是静态 chrome；输入行 + 底框线 + 状态行
+            # 全在 ptk（message + bottom_toolbar）。
+            self._console.print(f"[{CHROME}]{rule}[/{CHROME}]")
             self._frame_width = tw
-            self._input_rows_on_screen = 1
-            self._input_cells_on_screen = 2
+            out.flush()
 
-        result = self._read_line_interactive()
+        # 惰性导入：非 TTY / 脚本化路径与 openx.ui.console 的顶层导入
+        # 完全不触碰 ptk。
+        from . import editor
+        result, session = await editor.read_input_async(self)
 
-        # Clear the transient frame so it isn't left in history.  Enter left
-        # the cursor on the bottom-rule row (\r\n 取消了 pending-wrap，位置
-        # 确定)；move up to the top-rule line — accounting for wrapped input
-        # rows — and clear to the end of the screen, erasing the whole frame.
-        #
-        # 读实例态（= 屏上**实际绘出**的布局），绝不在清框前重新探测宽度：
-        # <200ms 内的 resize 若未触发重绘，缓存宽度才与屏面一致。
-        # 上移行数以**物理行数**计（输入区可多行：Shift+Enter / 多行
-        # 粘贴 / 折行）：extra = 输入物理行 − 1（光标所在行不计），+2 =
-        # 底框线 + 状态行。单行时 ≡ 旧式 (c_render−1)//tw（等价替换）。
-        extra_rows = max(0, self._input_rows_on_screen - 1)
-        out.write(f"\033[{2 + extra_rows}A\033[J")
+        # 提交清框：banner 将印在框的位置（框不入对话史）。优先 ptk 自身
+        # 簿记（renderer.erase 把光标挪回 region 顶并精确下擦——折行/
+        # pending-wrap 边界正是旧自绘编辑器的算术事故区，ptk 的内部记账
+        # 比重算可靠）；erase 不可用时才按返回文本估算行数兜底。
+        cleared = False
+        try:
+            session.app.renderer.erase()
+            cleared = True
+        except Exception:
+            pass
+        if cleared:
+            # erase 后光标在输入行首：再上移 1 行吞掉顶框线
+            out.write("\033[1A\033[J")
+        else:
+            typed_r, cursor_r = self._frame_typed_r(list(result), None, tw)
+            _lrows, k_new, _off, _col, _cells = self._frame_layout(
+                typed_r, cursor_r, tw)
+            out.write(f"\r\033[{k_new + 1}A\033[J")
         out.flush()
         self._frame_on_screen = False
 
@@ -984,7 +636,7 @@ if __name__ == "__main__":
     _m._console = Console(file=_buf, width=100, force_terminal=False, color_system=None)
     _m._terminal_width, _m._mode = 100, "auto"
     _m._frame_on_screen, _m._input_capture = False, None
-    with _m._console.capture() as _cap:  # 只渲染输入框，绝不读 stdin
+    with _m._console.capture() as _cap:  # 只渲染流式帧，绝不读 stdin
         _m._console.print(_m._frame_renderable(120, 340))
     _frame = _cap.get()
     _input_line = _frame.splitlines()[1]          # 第 2 行是输入行
@@ -993,15 +645,13 @@ if __name__ == "__main__":
     _m.print_sent_message("hello from self-check")
     # 宽字符宽度：中文/emoji 占 2 列，ASCII 占 1 列
     assert _m._char_width("a") == 1 and _m._char_width("中") == 2
-    # 斜杠补全菜单离线渲染（v0.4.2）：候选行、选中反白、折叠提示
-    _m._input_rows_on_screen = 1
-    _m._input_cells_on_screen = 2
-    _items = [(f"cmd{i:02d}", f"desc {i}", []) for i in range(15)]
-    _rows, _above, _below = _m._menu_window(_items, 12)
-    assert len(_rows) == _m._MENU_MAX_ROWS and _below == 0 and _above == 5
-    with _m._console.capture() as _cap2:
-        _m._console.print(_m._format_menu_line("help", "Show all", [], True, 80))
-    assert "help" in _cap2.get() and "\033[7m" in _cap2.get()  # 选中反白
-    assert _m._slash_menu is not None  # 方法就位（过滤逻辑见 pytest）
+    # 状态行换算与 editor 共用 fmt_tokens：两侧逐字一致
+    assert fmt_tokens(999) == "999" and fmt_tokens(1500) == "1.5k"
+    # 重印指示行：键位提示已是 Alt+R（Ctrl+R 让位历史反搜）
+    _ind = _m._replay_indicator(42.0, expanded=False)
+    assert "alt+r to expand" in _ind.plain and "ctrl" not in _ind.plain
+    # 多行格位模型（Alt+R 预算用）："ab\n中文" 首行含前缀 2 格
+    _lrows, _k, _off, _col, _cells = _m._frame_layout("ab\n中文", 6, 40)
+    assert _lrows == [1, 1] and _k == 2 and _cells == [4, 4], (_lrows, _cells)
     print(f"frame input line: {_input_line!r} | sent-banner: {len(_buf.getvalue())} chars")
     print("openx/ui/_components/prompt.py OK ✓")

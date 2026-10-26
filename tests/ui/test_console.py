@@ -278,13 +278,13 @@ class TestEOFHandling:
         # 非 TTY 且 stdin 已耗尽：readline() == "" → None（区别于空行的 ""）
         # Exhausted non-TTY stdin: readline() == "" must map to None, not "".
         monkeypatch.setattr("sys.stdin", io.StringIO(""))
-        assert console._read_line_interactive() is None
+        assert console._read_line_fallback() is None
 
     def test_read_line_returns_empty_on_blank_line(self, console, monkeypatch):
         # 空回车仍是 ""，REPL 依此重新提示（既有行为不变）
         # An empty Enter still yields "" so the REPL re-prompts as before.
         monkeypatch.setattr("sys.stdin", io.StringIO("\n"))
-        assert console._read_line_interactive() == ""
+        assert console._read_line_fallback() == ""
 
     @pytest.mark.asyncio
     async def test_run_interactive_breaks_on_eof(self, tmp_path, monkeypatch):
@@ -309,7 +309,7 @@ class TestEOFHandling:
 
         calls = {"n": 0}
 
-        def fake_prompt(*args, **kwargs):
+        async def fake_prompt(*args, **kwargs):
             calls["n"] += 1
             return None  # EOF：非 TTY stdin 已耗尽 / non-TTY stdin exhausted
 

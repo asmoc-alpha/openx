@@ -47,6 +47,24 @@ and `/release-notes`.
   trailing rendered blank lines before choosing the volatile line, so each code
   line commits once, complete. Plain-text answers were unaffected (their last
   line really is the growing one), which is why it only ever bit code
+- **The input line is now prompt_toolkit**: the waiting-for-input REPL prompt
+  moved from the hand-rolled cbreak editor (~600 lines of termios reading,
+  hand-drawn slash menu and manual CJK width/cursor arithmetic in
+  `ui/_components/prompt.py`) to a `PromptSession` (new
+  `ui/_components/editor.py`). Users get **persistent input history**
+  (`~/.openx/history`, ↑/↓ recall), **Ctrl+R incremental reverse search**
+  (one Enter submits the hit), full emacs line editing (Home/End, Ctrl+A/E/K/W,
+  forward delete) and slash-command completion — the streaming layer
+  (`InputCapture`, `Live`) is untouched. Key remap: the idle-state thinking
+  expand/collapse moves from Ctrl+R (now history search) to **Alt+R**;
+  Ctrl+D on an empty line still re-prompts (never exits), Ctrl+C still exits.
+  Alt+Enter and kitty-protocol Shift+Enter still insert literal newlines (ptk's
+  ANSI table is extended with `\x1b[13;2u` at import). The frame's bottom rule
+  and status line now render inside ptk as the `bottom_toolbar` — a static
+  print there would be clobbered by the CompletionsMenu overlay without
+  restore (ptk only erases its own region; verified empirically). Non-TTY
+  (piped) input keeps the readline fallback byte-for-byte, dialogs/wizard
+  readers are untouched
 - **`curl … | bash` installs again**: `pyproject.toml` carried a redundant
   `force-include` for `openx/app/serve/web`. `packages = ["openx"]` already
   selects the whole package tree (skipping only VCS-ignored files), so the

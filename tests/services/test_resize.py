@@ -428,7 +428,7 @@ class TestStreamResize:
         assert sum("FRAME" in r for r in rows) == 1
 
 
-# ── 4. 编辑器 resize 重绘 ────────────────────────────────────────
+# ── 4. 留屏框复用（prompt_toolkit 迁移后）────────────────────────
 
 
 class FakeStdout:
@@ -447,251 +447,83 @@ class FakeStdout:
     def isatty(self):
         return True
 
-    def fileno(self):
-        return 1
-
     @property
     def text(self) -> str:
         return "".join(self.writes)
 
 
-class FakeStdin:
-    def isatty(self):
-        return True
+def _patch_prompt(monkeypatch, tmp_path, fake_out, canned="ok", cols=80):
+    """接线 fake stdin/stdout + 罐头 read_input_async，返回 Console。
 
-    def fileno(self):
-        return 7
-
-
-class Script:
-    """输入脚本：("char", ch) / ("resize", new_cols) / ("enter",)。"""
-
-    def __init__(self, entries, cols=80):
-        self.entries = list(entries)
-        self.cols = cols
-
-
-def _patch_editor(monkeypatch, tmp_path, script, fake_out):
-    """接线假 stdin/stdout/termios/select/read/终端尺寸，返回 Console。"""
+    （原 _patch_editor 驱动自绘编辑器的 termios/select/read 桩——该编辑
+    器已退役；ptk 路径只需罐头返回值 + 仿 renderer.erase。罐头行均单行
+    → erase 的 1A 精确。）"""
     import sys
-    import openx.ui._components.prompt as prompt_mod
+
+    import openx.ui._components.editor as editor_mod
     from openx.ui.console import Console
 
     # Console 先于 sys.stdout 替换构造：其 __post_init__ 的 watcher.install()
     # 见的是 pytest 捕获 stdout（非 TTY）→ 不安装真实信号处理器
     c = Console(config=OpenXConfig(workspace=str(tmp_path)))
     c._console = RichConsole(
-        file=fake_out, width=80, height=24, force_terminal=True
+        file=fake_out, width=cols, height=24, force_terminal=True
     )
-    c._terminal_width = 80
+    c._terminal_width = cols
 
-    monkeypatch.setattr(sys, "stdin", FakeStdin())
+    class _FakeStdin:
+        @staticmethod
+        def isatty():
+            return True
+
+    class _FakeRenderer:
+        @staticmethod
+        def erase():
+            fake_out.write("\033[1A\r\033[J")
+
+    class _FakeApp:
+        renderer = _FakeRenderer()
+
+    class _FakeSession:
+        app = _FakeApp()
+
+    async def fake_read(_console):
+        return canned, _FakeSession()
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin())
     monkeypatch.setattr(sys, "stdout", fake_out)
-    monkeypatch.setattr("termios.tcgetattr", lambda fd: None)
-    monkeypatch.setattr("termios.tcsetattr", lambda fd, when, attrs: None)
-    monkeypatch.setattr("tty.setcbreak", lambda fd, when=0: None)
-
-    def fake_select(r, w, x, timeout):
-        if not script.entries:
-            return ([], [], [])  # 超时挂起（脚本必须以 enter 结束）
-        if script.entries[0][0] == "resize":
-            script.cols = script.entries.pop(0)[1]
-            return ([], [], [])  # 超时 → 触发 resize 检查
-        return ([r[0]], [], [])  # 可读
-
-    def fake_read(fd):
-        kind, *rest = script.entries.pop(0)
-        if kind == "char":
-            return rest[0]
-        if kind == "enter":
-            return "\r"
-        raise AssertionError(f"unexpected script entry: {kind}")
-
-    monkeypatch.setattr(prompt_mod.select, "select", fake_select)
-    monkeypatch.setattr(prompt_mod, "read_unicode_char", fake_read)
+    monkeypatch.setattr(editor_mod, "read_input_async", fake_read)
     monkeypatch.setattr(
-        prompt_mod,
-        "get_terminal_size",
-        lambda: SimpleNamespace(columns=script.cols, lines=24),
+        "openx.ui._components.prompt.get_terminal_size",
+        lambda: SimpleNamespace(columns=cols, lines=24),
     )
     return c
 
 
-class TestEditorRedraw:
-    def test_grow_uses_min_anchor_and_new_rules(self, tmp_path, monkeypatch):
-        # "中" + 83×a：c=87，K_old=ceil(87/80)=2；加宽 100 → K_new=1 → up=1
-        typed = "中" + "a" * 83
-        entries = [("char", ch) for ch in typed]
-        entries.append(("resize", 100))
-        entries.append(("enter",))
-        out = FakeStdout()
-        script = Script(entries)
-        c = _patch_editor(monkeypatch, tmp_path, script, out)
-
-        result = c.print_user_prompt(1, 2)
-        assert result == typed  # 缓冲完整返回
-        text = out.text
-        # 重绘：min(2,1)=1 上移 + 擦除 + 100 宽框线 + 全量回显
-        assert "\033[1A\033[J" in text
-        assert "─" * 100 in text
-        # 重绘的全量回显（最后一次连续出现）在擦除之后
-        assert text.count(typed) == 2  # 逐字符拼接 + 重绘整串各一份
-        assert text.index("\033[J") < text.rindex(typed)
-        # 光标归位：c=87 → 87 % 100 = 87
-        assert "\033[3A\r\033[87C" in text
-
-    def test_shrink_uses_old_rows_anchor(self, tmp_path, monkeypatch):
-        # 148×a：c=150，K_old=2；缩窄 60 → K_new=3 → up=min(2,3)=2
-        typed = "a" * 148
-        entries = [("char", ch) for ch in typed]
-        entries.append(("resize", 60))
-        entries.append(("enter",))
-        out = FakeStdout()
-        c = _patch_editor(monkeypatch, tmp_path, Script(entries), out)
-
-        assert c.print_user_prompt() == typed
-        text = out.text
-        assert "\033[2A\033[J" in text
-        assert "─" * 60 in text
-        assert "\033[3A\r\033[30C" in text  # 150 % 60 = 30
-
-    def test_timeout_without_resize_writes_nothing_extra(self, tmp_path, monkeypatch):
-        # 超时但宽度未变：不触发重绘（框线只出现初始绘制的一次）
-        entries = [("char", "x")]
-        entries += [("__noop__",)] * 0  # 占位保持风格
-        entries.append(("enter",))
-        out = FakeStdout()
-        script = Script(entries)
-
-        # 注入两次纯超时：select 先返回空两次再供字符
-        import openx.ui._components.prompt as prompt_mod
-
-        real = {}
-
-        def fake_select(r, w, x, timeout):
-            if not hasattr(fake_select, "timeouts"):
-                fake_select.timeouts = 0
-            if fake_select.timeouts < 2:
-                fake_select.timeouts += 1
-                return ([], [], [])
-            if not script.entries:
-                return ([], [], [])
-            return ([r[0]], [], [])
-
-        c = _patch_editor(monkeypatch, tmp_path, script, out)
-        monkeypatch.setattr(prompt_mod.select, "select", fake_select)
-
-        assert c.print_user_prompt() == "x"
-        # 初始新绘 2 条框线 + 键入 "x" 触发一次整框重绘（+2 条）；
-        # 两次纯超时不触发任何重绘（本测试钉的就是这个）
-        assert out.text.count("─" * 80) == 4
-
-    def test_exact_multiple_appends_trailing_space(self, tmp_path, monkeypatch):
-        # 78×a：c=80 恰整除 80 → 重绘补尾空格，c_render=81，k_new=2
-        typed = "a" * 78
-        entries = [("char", ch) for ch in typed]
-        entries.append(("resize", 80))  # 同宽 resize（经事件通道触发）
-        entries.append(("enter",))
-        out = FakeStdout()
-        script = Script(entries)
-        c = _patch_editor(monkeypatch, tmp_path, script, out)
-        # 走事件通道：resize 条目不改变宽度，手工置事件
-        orig_select = None
-
-        import openx.ui._components.prompt as prompt_mod
-
-        def select_with_event(r, w, x, timeout):
-            if script.entries and script.entries[0][0] == "resize":
-                script.entries.pop(0)
-                c._resize._event.set()  # 事件通道（宽度未变）
-                return ([], [], [])
-            if not script.entries:
-                return ([], [], [])
-            return ([r[0]], [], [])
-
-        monkeypatch.setattr(prompt_mod.select, "select", select_with_event)
-
-        assert c.print_user_prompt() == typed
-        assert c._input_cells_on_screen == 81  # 80 + 尾空格
-        assert c._input_rows_on_screen == 2
-        # 光标归位：81 % 80 = 1（新行第 1 列，尾空格后）
-        assert "\033[3A\r\033[1C" in out.text
-
-    def test_enter_writes_crlf(self, tmp_path, monkeypatch):
-        out = FakeStdout()
-        c = _patch_editor(
-            monkeypatch, tmp_path, Script([("char", "h"), ("enter",)]), out
-        )
-        assert c.print_user_prompt() == "h"
-        # Enter 发 \r\n（取消 pending-wrap 二义性），且先于清框序列
-        text = out.text
-        assert "\r\n" in text
-        assert text.index("\r\n") < text.rindex("\033[")
-
-    def test_clear_uses_drawn_width_not_captured(self, tmp_path, monkeypatch):
-        # 80 绘制 → resize 重绘到 100 → 清框按 100 计算（实例态），
-        # 而非 print_user_prompt 捕获的旧 tw=80
-        typed = "中" + "a" * 83  # c=87
-        entries = [("char", ch) for ch in typed]
-        entries.append(("resize", 100))
-        entries.append(("enter",))
-        out = FakeStdout()
-        c = _patch_editor(monkeypatch, tmp_path, Script(entries), out)
-        c.print_user_prompt()
-        # 新宽清框：2 + (87−1)//100 = 2；旧宽会是 2 + 87//80 = 3
-        assert "\033[2A\033[J" in out.text
-        assert "\033[3A\033[J" not in out.text
-
-    def test_clear_exact_multiple_no_overerase(self, tmp_path, monkeypatch):
-        # 整除宽度回归：c=160 @ tw=80 → 重绘补尾空格 c_render=161、
-        # k_new=3（输入占 3 物理行）；提交清框 = 2 + (161−1)//80 = 4A，
-        # 恰落顶框线（不多一行吞对话、不少一行留残框）。
-        typed = "a" * 158  # c=160
-        entries = [("char", ch) for ch in typed]
-        entries.append(("enter",))
-        out = FakeStdout()
-        c = _patch_editor(monkeypatch, tmp_path, Script(entries), out)
-        c.print_user_prompt()
-        assert "\033[4A\033[J" in out.text
-        assert "\033[5A\033[J" not in out.text  # 再多一行即吞上方对话
-
-    def test_wide_char_reposition_by_cells(self, tmp_path, monkeypatch):
-        typed = "中文"  # 4 格，c=6
-        entries = [("char", ch) for ch in typed]
-        entries.append(("resize", 100))
-        entries.append(("enter",))
-        out = FakeStdout()
-        c = _patch_editor(monkeypatch, tmp_path, Script(entries), out)
-        assert c.print_user_prompt() == typed
-        assert "\033[3A\r\033[6C" in out.text  # 按格（非字符数）归位
-
-
-# ── 5. 留屏框复用 ────────────────────────────────────────────────
-
-
 class TestFrameReuse:
-    def test_reuse_same_width_reuses_frame(self, tmp_path, monkeypatch):
+    async def test_reuse_same_width_reuses_frame(self, tmp_path, monkeypatch):
         out = FakeStdout()
-        c = _patch_editor(
-            monkeypatch, tmp_path, Script([("enter",)]), out
-        )
+        c = _patch_prompt(monkeypatch, tmp_path, out, canned="ok")
         c._frame_on_screen = True
         c._frame_width = 80  # 与当前宽度一致 → 复用
-        c.print_user_prompt()
+        result = await c.print_user_prompt()
+        assert result == "ok"
         text = out.text
-        assert text.startswith("\033[?25h\033[3A\033[2K") or "\033[3A\033[2K" in text
+        # 复用分支：擦 [字形行, 底框线, 状态行]，顶框线保留
+        assert text.startswith("\r\033[3A\033[J")
         assert "\033[4A\033[J" not in text  # 未擦旧框
         assert "─" * 80 not in text  # 未新绘框线
 
-    def test_reuse_after_resize_erases_and_redraws(self, tmp_path, monkeypatch):
-        script = Script([("enter",)], cols=100)
+    async def test_reuse_after_resize_erases_and_redraws(
+        self, tmp_path, monkeypatch
+    ):
         out = FakeStdout()
-        c = _patch_editor(monkeypatch, tmp_path, script, out)
+        c = _patch_prompt(monkeypatch, tmp_path, out, canned="ok", cols=100)
         c._frame_on_screen = True
-        c._frame_width = 80  # 旧宽 ≠ 新宽 100 → 擦旧框 + 新绘
+        c._frame_width = 80  # 旧宽 ≠ 新宽 100 → 擦旧框 + 新绘顶框线
         c._console._width = 100  # 生产 Rich console 实时测宽，此处镜像
-        c.print_user_prompt()
+        await c.print_user_prompt()
         text = out.text
-        assert "\033[4A\033[J" in text  # 尽力擦除旧框
-        assert "─" * 100 in text  # 新宽重绘
-        assert text.index("\033[4A\033[J") < text.index("─" * 100)
+        assert "\033[4A\r\033[J" in text  # 尽力擦除旧框
+        assert "─" * 100 in text  # 新宽顶框线
+        assert text.index("\033[4A\r\033[J") < text.index("─" * 100)
