@@ -23,6 +23,7 @@ const Chat = {
     this.bindAttach();
     this.bindWelcomeChips();
     this.bindPickers();
+    this.bindSlashMenu();
     this.setStreaming(false);
   },
 
@@ -372,6 +373,8 @@ const Chat = {
   bindInput() {
     const inp = $("input");
     inp.addEventListener("keydown", (e) => {
+      // 斜杠菜单打开时接管导航键（Enter/Tab 选中、↑↓ 移动、Esc 关闭）
+      if (this.slash.el && !this.slash.el.hidden && this.slashMenuKeydown(e)) return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         this.submit();
@@ -392,6 +395,139 @@ const Chat = {
         this.submit();
       }
     };
+  },
+
+  // ── 斜杠命令菜单（"/" 触发；数据与终端补全同源 /api/commands）──
+  slash: { el: null, items: [], filtered: [], active: 0, loaded: false },
+
+  bindSlashMenu() {
+    const inp = $("input");
+    if (!inp) return;
+    const menu = document.createElement("div");
+    menu.id = "slash-menu";
+    menu.hidden = true;
+    document.body.appendChild(menu);
+    this.slash.el = menu;
+
+    // mousedown（非 click）防止点击瞬间 textarea 失焦收走菜单
+    menu.addEventListener("mousedown", (e) => {
+      const item = e.target.closest("[data-name]");
+      if (!item) return;
+      e.preventDefault();
+      this.applySlash(item.dataset.name);
+    });
+    inp.addEventListener("input", () => this.updateSlash());
+  },
+
+  slashMenuKeydown(e) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      this.moveSlash(1);
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      this.moveSlash(-1);
+      return true;
+    }
+    if (e.key === "Tab" || e.key === "Enter") {
+      if (this.slash.filtered.length) {
+        e.preventDefault();
+        this.applySlash(this.slash.filtered[this.slash.active].name);
+      }
+      return true;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      this.closeSlash();
+      return true;
+    }
+    return false;
+  },
+
+  async updateSlash() {
+    const inp = $("input");
+    if (!inp) return;
+    const v = inp.value;
+    // 触发条件："/" 是首字符、仍在命令词内（无空格）且光标在其后
+    const m = /^\/(\S*)$/.exec(v);
+    if (!m || inp.selectionStart !== v.length) { this.closeSlash(); return; }
+    const token = m[1].toLowerCase();
+    if (!this.slash.loaded) {
+      try {
+        const d = await OX.get("/api/commands");
+        this.slash.items = (d && d.commands) || [];
+        this.slash.loaded = true;
+      } catch (_) {
+        this.closeSlash();
+        return;
+      }
+    }
+    const starts = [];
+    const others = [];
+    for (const c of this.slash.items) {
+      const n = c.name.toLowerCase();
+      const aliasHit = (c.aliases || []).some((a) => a.toLowerCase().startsWith(token));
+      if (n.startsWith(token) || aliasHit) starts.push(c);
+      else if (n.includes(token) || (c.description || "").toLowerCase().includes(token)) {
+        others.push(c);
+      }
+    }
+    this.slash.filtered = starts.concat(others).slice(0, 12);
+    this.slash.active = 0;
+    if (!this.slash.filtered.length) { this.closeSlash(); return; }
+    this.renderSlash();
+  },
+
+  renderSlash() {
+    const menu = this.slash.el;
+    menu.textContent = "";
+    for (const [i, c] of this.slash.filtered.entries()) {
+      const item = document.createElement("div");
+      item.className = "slash-item" + (i === this.slash.active ? " active" : "");
+      item.dataset.name = c.name;
+      const name = document.createElement("span");
+      name.className = "slash-name";
+      name.textContent = "/" + c.name;
+      const desc = document.createElement("span");
+      desc.className = "slash-desc";
+      desc.textContent = c.description || "";
+      item.appendChild(name);
+      item.appendChild(desc);
+      if ((c.aliases || []).length) {
+        const al = document.createElement("span");
+        al.className = "slash-alias";
+        al.textContent = c.aliases.map((a) => "/" + a).join(" ");
+        item.appendChild(al);
+      }
+      menu.appendChild(item);
+    }
+    const rect = $("input").getBoundingClientRect();
+    menu.style.left = rect.left + "px";
+    menu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+    menu.hidden = false;
+  },
+
+  moveSlash(delta) {
+    const n = this.slash.filtered.length;
+    if (!n) return;
+    this.slash.active = (this.slash.active + delta + n) % n;
+    this.renderSlash();
+    const act = this.slash.el.querySelector(".slash-item.active");
+    if (act) act.scrollIntoView({ block: "nearest" });
+  },
+
+  applySlash(name) {
+    const inp = $("input");
+    if (!inp) return;
+    inp.value = "/" + name + " ";
+    this.closeSlash();
+    inp.focus();
+    inp.dispatchEvent(new Event("input"));
+  },
+
+  closeSlash() {
+    if (this.slash.el) this.slash.el.hidden = true;
   },
 
   /**
@@ -512,6 +648,7 @@ const Chat = {
     const text = inp.value.trim();
     const attIds = this.pending.map((p) => p.id);
     if (!text && !attIds.length) return;
+    this.closeSlash();
     inp.value = "";
     inp.style.height = "auto";
     // 图无独立视觉模型：提示仍发送（主模型也许可看图）

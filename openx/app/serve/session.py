@@ -41,6 +41,7 @@ if __name__ == "__main__" and not __package__:
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
 import asyncio
+import io
 import logging
 import re
 import shutil
@@ -52,8 +53,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from aiohttp import web
+from rich.console import Console as RichConsole
 
 from ...kernel import protocol
+from ...ui.console import Console
 from .bridge import WebPermissionBridge
 
 _log = logging.getLogger("openx.serve")
@@ -139,6 +142,33 @@ class _Pending:
 
     text: str
     content: Any
+
+
+class _WebInputNeeded(Exception):
+    """web 端发起了需要交互输入的命令（paste_aware_input / 选择弹窗）。"""
+
+
+class _SlashConsole(Console):
+    """斜杠命令的捕获 console：print 全落内存缓冲，广播时整体取走。
+
+    真实 Console 换底层 Rich console 即可复用全部 mixin（print_help 等
+    面板输出照常渲染成纯文本）；``_interactive_select`` 是唯一例外——
+    它读服务进程 stdin，web 端以干净报错代答（``_WebInputNeeded``）。
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self._buf = io.StringIO()
+        self._console = RichConsole(file=self._buf, width=100, highlight=False)
+
+    def _interactive_select(self, *args, **kwargs):
+        raise _WebInputNeeded(getattr(args[0], "title", "") if args else "")
+
+    def take_output(self) -> str:
+        out = self._buf.getvalue()
+        self._buf.truncate(0)
+        self._buf.seek(0)
+        return out
 
 
 class ServeSession:
@@ -607,6 +637,19 @@ class ServeSession:
         )
         self._live_user = event
         self.broadcast(event)
+        # ── 斜杠命令（web 端对齐 CLI REPL）────────────────────────
+        # 与终端同一注册表分发（内置 + skill + 插件命令）；输出经捕获
+        # console 落成 text_delta 广播。命令不产生模型回合——直接收尾。
+        # 自带兜底：分发自身崩溃也要广播 result，绝不把 worker 卡在忙态。
+        if text.startswith("/"):
+            try:
+                await self._run_slash_command(text, started)
+            except Exception as e:  # noqa: BLE001
+                _log.exception("slash dispatch failed for /%s", text[1:].split()[0] if text[1:].split() else "?")
+                self.broadcast(self._result_event(
+                    started, error=f"slash dispatch failed: {type(e).__name__}: {e}"
+                ))
+            return
         # ── UserPromptSubmit 用户钩子（对齐 CLI REPL，Phase 5）─────
         # 提示词送达模型之前的最后一道关卡：策略钩子可整条驳回本次提问
         # （blocked → 广播阻断说明 + result 收尾，不跑回合）。钩子自身
@@ -690,6 +733,61 @@ class ServeSession:
                 self._broadcast_fleet(force=True)
             self._live_user = None
             self._live_events = []
+
+    async def _run_slash_command(self, text: str, started: float) -> None:
+        """web 端斜杠命令：CLI 注册表分发 → 捕获输出 → 广播成一条回复。
+
+        交互式输入在 web 端不可用：``paste_aware_input`` 与
+        ``_interactive_select`` 换成干净报错（命令中性收尾），绝不读服务
+        进程的 stdin、绝不阻塞事件循环。命令异常不毒死 worker（与模型
+        回合同一条纪律）。
+        """
+        from ..cli import commands as commands_mod
+
+        cmd = text[1:].strip().split()
+        name = cmd[0].lower()
+        args = cmd[1:]
+        con = self._slash_console()
+        real_input = commands_mod.paste_aware_input
+        result: Optional[bool] = True  # 异常路径已产出警告行，视为已处理
+
+        def _no_web_input(*a, **k):
+            raise _WebInputNeeded(name)
+
+        commands_mod.paste_aware_input = _no_web_input
+        try:
+            result = await commands_mod.handle_slash_command(name, self.agent, con, args)
+        except _WebInputNeeded:
+            con.print_warning(
+                f"/{name} 需要交互式输入，web 端暂不支持——请在终端 REPL 使用。"
+            )
+        except Exception as e:  # noqa: BLE001  命令崩溃不毒死 worker
+            _log.exception("slash command /%s failed", name)
+            con.print_error(f"/{name} 执行失败：{type(e).__name__}: {e}")
+        finally:
+            commands_mod.paste_aware_input = real_input
+
+        if result is None:
+            con.print_warning(f"Unknown command: /{name}. Try /help")
+        elif result is False:
+            con.print_info("/exit 属于终端动作，web 会话忽略之。")
+
+        output = con.take_output().strip("\n")
+        if output:
+            ev = protocol.text_delta(output)
+            self._live_events.append(ev)
+            self.broadcast(ev)
+        self.broadcast(self._result_event(started))
+
+    def _slash_console(self):
+        """捕获型 console（会话级缓存）：所有 print 落 StringIO，take_output 取走。"""
+        con = getattr(self, "_slash_console_cache", None)
+        if con is None:
+            from ...ui.console import Console
+
+            con = _SlashConsole(config=self.agent.config)
+            self._slash_console_cache = con
+        return con
 
     def _result_event(self, started: float, error: str = "") -> dict:
         """终局事件：镜像 single_shot 的 result 形状（同 schema）。"""

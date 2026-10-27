@@ -4,6 +4,36 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.17 — The web UI speaks slash: "/" opens the command menu, commands actually run
+
+### Typing `/` in `openx serve` now does what it does in the terminal
+
+- **The "/" menu**: typing `/` as the first character of the web input opens a
+  filterable command menu — name, description, aliases — backed by a new
+  `GET /api/commands` endpoint that serves the **same source** as the
+  terminal's completion menu (`commands.menu_entries`: built-ins, dynamic
+  `/<skill-name>` commands, plugin commands). Prefix matches rank first,
+  then substring matches on name/description; ↑/↓ move, Enter/Tab select
+  (inserts `/name ` into the input), Esc closes, click selects, and the
+  menu only appears while the caret is inside the command word
+- **Slash commands actually execute on serve**: leading-`/` messages route
+  through the same registry the REPL uses (`handle_slash_command`) instead
+  of being fed to the model as literal text. Command output is captured by
+  a buffered console (a real `Console` with its Rich backend swapped for a
+  StringIO — every mixin panel, `/help`'s table included, renders to plain
+  text) and broadcast as one `user_message → text_delta → result` turn, so
+  the web transcript shape is identical to a model answer. `/clear` clears
+  the same shared history/todos; state commands act on the live agent
+- **Interactive input degrades loudly, never hangs**: commands that read the
+  terminal (`paste_aware_input`, `_interactive_select`) get clean
+  "需要交互式输入，请在终端 REPL 使用" responses in web — the session swaps
+  the input helper during dispatch and catches the guard; the server's stdin
+  is never read and the event loop is never blocked. A dispatch crash still
+  broadcasts a `result` (belt and suspenders around the worker), so a broken
+  command can't wedge the session into a stuck-busy state
+- 7 new tests (endpoint, dispatch/broadcast shape, unknown-command hint,
+  both interactive guards, frontend wiring)
+
 ## 0.1.16 — Web search grows up: relevance extraction, real search APIs, query fan-out
 
 ### The scraping-grade ceiling lifts; the head-truncation waste goes away

@@ -472,3 +472,18 @@ def test_css_has_web_plugin_styles():
     for sel in (".wp-card", ".wp-head", ".wp-frame", ".wp-frame iframe",
                 ".wp-toggle", ".wp-off", ".wp-src"):
         assert sel in css, f"缺 {sel}"
+
+
+def test_slash_menu_wiring():
+    """web 端 "/" 命令菜单：chat.js 装配 + api 端点 + 样式三件齐。"""
+    chat = _read("chat.js")
+    assert "bindSlashMenu" in chat
+    assert "/api/commands" in chat
+    assert "applySlash" in chat and "slashMenuKeydown" in chat
+    assert "updateSlash" in chat
+    css = _read("style.css")
+    for sel in ("#slash-menu", ".slash-item", ".slash-name", ".slash-desc"):
+        assert sel in css, f"缺 {sel}"
+    api_src = (Path(__file__).resolve().parents[2]
+               / "openx" / "app" / "serve" / "api.py").read_text(encoding="utf-8")
+    assert "/api/commands" in api_src and "menu_entries" in api_src

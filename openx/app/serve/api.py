@@ -281,6 +281,21 @@ async def session_info(request: web.Request) -> web.Response:
     })
 
 
+async def commands_get(request: web.Request) -> web.Response:
+    """GET /api/commands → 斜杠命令清单（web 输入框 "/" 菜单数据源）。
+
+    与终端补全菜单同源（``menu_entries``）：内置 + 动态 skill ``/<name>``
+    + 插件命令，含别名。只读、零审批。
+    """
+    from ..cli.commands import menu_entries
+
+    cmds = [
+        {"name": name, "description": desc, "aliases": aliases}
+        for name, desc, aliases in menu_entries()
+    ]
+    return _ok({"commands": cmds})
+
+
 def _reset_live_session(session: Any, workspace: str) -> str:
     """在当前工作区新建一个空会话并整体重绑 agent；返回新 session_id。
 
@@ -1276,6 +1291,7 @@ def register_api(app: web.Application, session: Any, workspace: str) -> None:
     app[WORKSPACE_KEY] = WorkspaceRef(workspace)
     app[SESSION_KEY] = session
     app.router.add_get("/api/info", session_info)
+    app.router.add_get("/api/commands", commands_get)
     app.router.add_post("/api/session/new", session_new)
 
     app.router.add_get("/api/models", models_get)
