@@ -47,6 +47,28 @@ function _renderFence(info, code) {
   return `<pre><code>${escapeHtml(code)}</code></pre>`;
 }
 
+/* KaTeX 排版（vendor 内嵌，离线可用）；脚本缺席/渲染异常回退转义文本。
+   trust:false（默认）封死 \href/javascript 注入面——模型文本永不产生
+   自选 HTML，输出全部由 KaTeX 生成。 */
+function renderMathHtml(tex, display) {
+  if (window.katex && typeof window.katex.renderToString === "function") {
+    try {
+      const html = window.katex.renderToString(tex, {
+        displayMode: display,
+        throwOnError: false,
+        strict: false,
+      });
+      return display
+        ? `<div class="math-block">${html}</div>`
+        : `<span class="math-inline">${html}</span>`;
+    } catch (e) { /* 落到文本回退 */ }
+  }
+  const body = `<code>${escapeHtml(tex)}</code>`;
+  return display
+    ? `<div class="math-block math-fallback">${body}</div>`
+    : `<span class="math-fallback">${body}</span>`;
+}
+
 function renderMarkdown(text) {
   const blocks = [];
   let src = String(text || "");
@@ -58,6 +80,28 @@ function renderMarkdown(text) {
     blocks.push(_renderFence(String(info).trim(), code.replace(/\n$/, "")));
     return PH_PREFIX + (blocks.length - 1) + "@@";
   });
+
+  // 1.5 行内代码抽离：数学不在代码里排版（`$x^2$` 是代码不是公式）。
+  //     恢复时才转义——与第 3 步行内变换共享"先转义后成 HTML"的纪律。
+  const codes = [];
+  src = src.replace(/`[^`\n]+`/g, (m) => {
+    codes.push(m);
+    return "@@OPENX_CODE_" + (codes.length - 1) + "@@";
+  });
+
+  // 1.6 数学 span 抽离：闭合才转（流式中未闭合公式按字面走，闭合瞬间
+  //     成型，与围栏同纪律）；行内 $...$ 带货币启发式（闭 $ 前有空白
+  //     → 不是公式，原样保留，"$100 and $200" 不误伤）。
+  const maths = [];
+  const stashMath = (tex, display) => {
+    maths.push(renderMathHtml(tex, display));
+    return "@@OPENX_MATH_" + (maths.length - 1) + "@@";
+  };
+  src = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, tex) => stashMath(tex, true));
+  src = src.replace(/\\\[((?:[^\]\\]|\\.)+?)\\\]/g, (m, tex) => stashMath(tex, true));
+  src = src.replace(/\\\(((?:[^)\\]|\\.)+?)\\\)/g, (m, tex) => stashMath(tex, false));
+  src = src.replace(/\$(?=[^\s$])([^$\n]+?)\$/g, (m, tex) =>
+    /\s$/.test(tex) ? m : stashMath(tex, false));
 
   // 2. 其余整体转义后再变换
   let html = escapeHtml(src);
@@ -90,6 +134,13 @@ function renderMarkdown(text) {
 
   // 8. 恢复代码块
   html = html.replace(PH_RE, (m, i) => blocks[Number(i)]);
+
+  // 8.5 恢复行内代码（此刻才转义，第 3 步行内变换碰不到内容）与数学
+  //     （renderMathHtml 产出，已是安全 HTML；math-block 的 <div> 开头
+  //     让第 9 步段落分包不再套 <p>）。
+  html = html.replace(/@@OPENX_CODE_(\d+)@@/g, (m, i) =>
+    "<code>" + escapeHtml((codes[Number(i)] || "").slice(1, -1)) + "</code>");
+  html = html.replace(/@@OPENX_MATH_(\d+)@@/g, (m, i) => maths[Number(i)] || "");
 
   // 9. 段落（空行分段；段内换行 → <br>；块级标签不再套 <p>）
   const parts = html.split(/\n{2,}/).filter((p) => p.trim().length);

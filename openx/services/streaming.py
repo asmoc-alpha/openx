@@ -161,10 +161,17 @@ def _markdown_safe(src: str) -> Any:
     渲染处的 fail-open 同一条纪律，退回 ``Text``（不解析 markup，逐字
     可见）比整场会话丢掉划算得多；链接补全后下一帧自然恢复 Markdown。
 
+    LaTeX 数学在此转成 Unicode 近似（``ui._math_text.render_math``）：终端
+    没有 TeX 引擎，字面 ``\\frac``/``^``/``_`` 堆成一团不如体面的
+    ``1⁄2``/``x²``——只转已闭合 span，围栏内不动，未闭合帧保持原样。
+
     根修在依赖侧（pyproject 钉 ``mdurl>=0.1.1``，畸形链接照常渲染成
     链接）；这个包装是**结构性兜底**——凡是解析器在任意畸形输入上抛
     出的异常都不该有能力终结会话。
     """
+    from ..ui._math_text import render_math
+
+    src = render_math(src)
     try:
         return Markdown(src, code_theme="monokai")
     except Exception:
@@ -1443,8 +1450,11 @@ class StreamingService:
                if ln.lstrip().startswith("```")) % 2:
             return None  # "| 行"在围栏内 = 代码不是表格
         try:
+            from ..ui._math_text import render_math
+
             return len(self._rich.render_lines(
-                Markdown("\n".join(src[:i]), code_theme="monokai"), pad=False))
+                Markdown(render_math("\n".join(src[:i])), code_theme="monokai"),
+                pad=False))
         except Exception:
             return None
 

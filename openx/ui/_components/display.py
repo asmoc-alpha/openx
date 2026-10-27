@@ -78,8 +78,10 @@ class DisplayMixin:
         """Print assistant response as rendered Markdown."""
         if not text.strip():
             return
+        from .._math_text import render_math
+
         self._console.print()
-        md = Markdown(text, code_theme=self.config.syntax_theme)
+        md = Markdown(render_math(text), code_theme=self.config.syntax_theme)
         self._console.print(md)
         # 与流式分支同款留白：正文之后恒隔 1 行（= _BODY_FRAME_GAP，对标
         # Claude Code）。紧随其后是 print_streaming_done 的结束行。

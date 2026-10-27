@@ -119,17 +119,18 @@ def create_app(session: ServeSession, workspace: str = "") -> web.Application:
     # web 插件端点（发现/启停/静态 iframe 卡片）——见 web_plugins.py
     register_web_plugins(app)
     app.router.add_get("/", _index)
-    # 静态前端：统一 no-store，杜绝浏览器缓存旧版 JS/CSS（前端零构建、改动即生效）
-    app.router.add_get("/static/{name}", _static_file)
+    # 静态前端：统一 no-store，杜绝浏览器缓存旧版 JS/CSS（前端零构建、改动即生效）。
+    # 路径含子目录（vendor/katex 的 js/css/字体）；穿越防护靠 resolve 前缀校验。
+    app.router.add_get("/static/{tail:.+}", _static_file)
     return app
 
 
 async def _static_file(request: web.Request) -> web.FileResponse:
-    """GET /static/{name} → web/ 下文件；扁平目录 + no-store 防缓存旧稿。"""
-    name = request.match_info.get("name", "")
-    if not name or "/" in name or "\\" in name:
+    """GET /static/{tail} → web/ 下文件（可含子目录）+ no-store 防缓存旧稿。"""
+    tail = request.match_info.get("tail", "")
+    if not tail or "\\" in tail:
         raise web.HTTPNotFound()
-    path = (_WEB_DIR / name).resolve()
+    path = (_WEB_DIR / tail).resolve()
     if not str(path).startswith(str(_WEB_DIR.resolve())) or not path.is_file():
         raise web.HTTPNotFound()
     resp = web.FileResponse(path)

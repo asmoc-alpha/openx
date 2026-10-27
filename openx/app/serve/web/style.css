@@ -2323,3 +2323,16 @@ select.input { font-family: var(--sans); }
   font-size: 11px;
   color: var(--text-faint);
 }
+
+/* ── 数学公式（KaTeX 真排版；回退 = code 文本）──────────────────────
+   KaTeX 自带样式表（vendor/katex/katex.min.css）管字形与基线；这里只管
+   布局与主题跟随：颜色继承 currentColor，深/浅主题自动一致；块级公式
+   超出栏宽横向滚动而非换行断裂。 */
+.assistant-body .math-block {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 8px 0;
+  padding: 2px 0;
+}
+.assistant-body .math-inline { unicode-bidi: isolate; }
+.assistant-body .math-fallback { opacity: 0.85; }

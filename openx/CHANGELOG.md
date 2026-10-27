@@ -4,6 +4,48 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.15 — Math rendering: real typesetting on the web, dignified text in the terminal
+
+### `$$…$$` stops being literal punctuation soup in both output surfaces
+
+- **The web gets real math (KaTeX, vendored)**: `renderMarkdown` now extracts
+  closed math spans — `$$…$$` and `\[…\]` as display blocks, `\(…\)` and
+  `$…$` inline — and typesets them through **KaTeX 0.16.11**, vendored into
+  `web/vendor/katex/` (js + css + the 20 woff2 fonts, ~630KB) so the local
+  server stays self-contained and offline-capable; index.html pulls it with
+  `defer`. The extraction runs *after* fenced blocks are pulled aside and
+  *before* escaping, with inline code spans pulled out too — a `$…$` inside
+  backticks is code, not a formula. Same streaming discipline as fences:
+  only **closed** spans render, an unclosed `$$` stays literal until its
+  closing pair arrives, then the block appears. Inline `$…$` carries a
+  currency guard (closing `$` preceded by whitespace → not math), so
+  `cost $100 and $200` is untouched. KaTeX output is safe by construction
+  (`trust` stays `false` — the model text can never produce chosen HTML);
+  if the script fails to load, the span falls back to escaped text
+  (`math-fallback`), never a blank hole
+- **The terminal gets a Unicode transcriber** (`ui/_math_text.py`, new): there
+  is no TeX engine in the Rich ecosystem and a matplotlib-render-to-image
+  dependency would be absurd, so terminal math is transcribed into the
+  closest Unicode: Greek letters, operators and relations, `∑ ∫ √` with
+  script limits (`∫₀^∞ e⁻ˣ dx`), `1⁄2` fractions (`(n+1)/2` when a side is
+  compound), super/subscripts (`E=mc²`, `a₁`) with a **lossless fallback** —
+  a character without a variant (`x^q`) keeps its original notation instead
+  of half a glyph, accents (`v⃗`), blackboard (`ℝ`), operator names
+  (`sin² x`), unknown commands keep their name minus the backslash. Same
+  closed-span / fence / inline-code / currency rules as the web, one shared
+  discipline. Wired into all three render sites: the streaming frame
+  (`_markdown_safe`, so it survives fail-open), the streaming table-height
+  measurement, and the non-streaming `print_assistant`
+- **`/static` serves subpaths**: the route was flat-only (`{name}` rejected
+  any `/`), which would 404 every vendored font. Now `{tail:.+}` with the
+  same `resolve()` + prefix guard — traversal and symlink escape stay 404
+- **`test_no_build_artifacts_in_static` still holds**: it inspects top-level
+  files only; a third-party minified bundle under `vendor/` is a vendored
+  dependency, not a build artifact of this repo — the distinction is the
+  point
+- Zero new Python dependencies; the wheel grows by the ~630KB vendor dir,
+  all of it tracked so hatchling ships it exactly once
+
 ## 0.1.14 — The retirement eval gate actually runs
 
 ### E4 step ① closes: scaffold retirement is now evidence-backed end to end
