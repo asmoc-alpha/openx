@@ -39,6 +39,10 @@ class ToolHost:
     allowed_commands: list = field(default_factory=list)
     dangerous_commands: list = field(default_factory=list)
     web_search_provider: Optional[Any] = None
+    # web_fetch 小模型蒸馏（opt-in，首个真实消费方 = WebFetchTool）：
+    # ``None`` = 关闭（纯启发式提取）；dict = 经 role_settings("mini") 解析的
+    # provider 设置快照（构造期定值，非回路——工具不持有 agent/内核引用）。
+    web_extract: Optional[dict] = None
     # 代码搜索旋钮（首个真实消费方 = grep / glob 工具，按最小面纪律加入）：
     # search_backend ∈ {"auto","ripgrep","python"}；respect_gitignore 决定
     # grep/glob 是否走 `git ls-files` 的权威 ignore 语义。

@@ -73,7 +73,7 @@ def build_capability_tools(host) -> list:
         # 任务追踪（共享 host.todos）
         TodoWriteTool(host.todos),
         # 联网
-        WebFetchTool(),
+        WebFetchTool(extract_settings=host.web_extract),
         WebSearchTool(provider=host.web_search_provider),
         # 自主记忆（agent 决定何时存/取）
         MemoryTool(host.coding_memory),

@@ -68,6 +68,15 @@ class GrepTool(WorkspaceTool):
                 "type": "string",
                 "description": "Glob pattern to filter files (e.g., '*.py'). Optional.",
             },
+            "output_mode": {
+                "type": "string",
+                "enum": ["content", "files_with_matches", "count"],
+                "description": (
+                    "content = matching lines with path:line (default); "
+                    "files_with_matches = just the file paths; "
+                    "count = matches per file."
+                ),
+            },
         },
         "required": ["pattern"],
     }
@@ -96,6 +105,7 @@ class GrepTool(WorkspaceTool):
         case_sensitive: bool = True,
         context_lines: int = 0,
         include: str | None = None,
+        output_mode: str = "content",
     ) -> ToolResult:
         search_path = Path(path)
         if not search_path.is_absolute():
@@ -113,6 +123,8 @@ class GrepTool(WorkspaceTool):
                 return ToolResult(error=f"Invalid regex pattern: {e}")
 
         context_lines = max(0, min(5, context_lines))
+        if output_mode not in ("content", "files_with_matches", "count"):
+            return ToolResult(error=f"Invalid output_mode: {output_mode}")
 
         matches = await fs_search.grep_files(
             search_path,
@@ -128,6 +140,25 @@ class GrepTool(WorkspaceTool):
             return ToolResult(output=f"No matches found for: {pattern}")
 
         match_count = len(matches)
+
+        if output_mode == "files_with_matches":
+            # 顺序保序去重（matches 已按 (路径, 行号) 排好序）
+            seen: set[str] = set()
+            files = []
+            for m in matches:
+                rel = self._rel(m.path)
+                if rel not in seen:
+                    seen.add(rel)
+                    files.append(rel)
+            return ToolResult(output="\n".join(files) + f"\n\n[{len(files)} file(s) with matches]")
+
+        if output_mode == "count":
+            counts: dict[str, int] = {}
+            for m in matches:
+                rel = self._rel(m.path)
+                counts[rel] = counts.get(rel, 0) + 1
+            body = "\n".join(f"{rel}:{n}" for rel, n in sorted(counts.items()))
+            return ToolResult(output=body + f"\n\n[{match_count} match(es) total]")
         ctx_cache: dict[Path, list[str]] = {}
         results: list[str] = []
         for m in matches:

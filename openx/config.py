@@ -106,10 +106,16 @@ class OpenXConfig:
     stream: bool = True  # streaming output; CLI --no-stream sets this False
 
     # ── Web search settings ──────────────────────────────────────
-    # web_search 后端："auto" = DDG 优先、网络错误自动降级 Bing（并粘住
-    # 成功的后端）；"ddg" / "bing" = 固定单一后端。大陆网络 DDG 被墙，
-    # auto 首次搜索付一次 ≤5s 连接超时后即粘住 Bing。
+    # web_search 后端："auto" = 有 key 的 API 后端（Tavily/Brave，按
+    # OPENX_TAVILY_API_KEY / OPENX_BRAVE_API_KEY 判定）优先，其次 DDG、
+    # 网络错误自动降级 Bing（并粘住成功的后端）；亦可固定单一后端
+    # "tavily" / "brave" / "ddg" / "bing"。大陆网络 DDG 被墙，auto 首次
+    # 搜索付一次 ≤5s 连接超时后即粘住可用后端。
     web_search_provider: str = "auto"
+    # web_fetch 是否做小模型蒸馏（opt-in）：开启后抓取的页面先按相关性
+    # 预选（零成本启发式），再交给 mini 角色模型按 prompt 蒸馏——省主
+    # 上下文，付一次小模型调用。凭据来自模型组（缺 mini 角色回落 main）。
+    web_fetch_extract: bool = False
 
     # ── UI settings ──────────────────────────────────────────────
     show_token_usage: bool = True
@@ -303,6 +309,10 @@ class OpenXConfig:
             config.auto_approve = os.environ["OPENX_AUTO_APPROVE"].lower() == "true"
         if os.environ.get("OPENX_WEB_SEARCH"):
             config.web_search_provider = os.environ["OPENX_WEB_SEARCH"].lower()
+        if os.environ.get("OPENX_WEB_EXTRACT"):
+            config.web_fetch_extract = os.environ["OPENX_WEB_EXTRACT"].lower() in (
+                "1", "true", "on", "yes",
+            )
         if os.environ.get("OPENX_SEARCH_BACKEND"):
             config.search_backend = os.environ["OPENX_SEARCH_BACKEND"].lower()
         _rounds = os.environ.get("OPENX_MAX_TOOL_ROUNDS")

@@ -793,6 +793,7 @@ class OpenXAgent:
             web_search_provider=self.config.web_search_provider,
             search_backend=self.config.search_backend,
             respect_gitignore=self.config.respect_gitignore,
+            web_extract=self._web_extract_settings(),
         )
         registry.update(
             assembly.instantiate_tools(
@@ -864,6 +865,21 @@ class OpenXAgent:
                 )
             )
         ]
+
+    def _web_extract_settings(self) -> dict | None:
+        """web_fetch 小模型蒸馏的设置快照（opt-in）：未开启 / 解析失败 → None。
+
+        只在工具实例化期解析一次（ToolHost 是构造期快照）：mini 角色缺席时
+        resolve_role_settings 已回落 main 绑定，模型组未配置（无凭据）则
+        宁可关掉也不让每次 web_fetch 撞墙。
+        """
+        if not self.config.web_fetch_extract:
+            return None
+        try:
+            _, settings = self.config.role_settings("mini")
+        except Exception:
+            return None
+        return settings if settings.get("model") else None
 
     def _rebuild_tools(self) -> None:
         """重建工具注册表与 schema（load/unload 插件后调用；/workspace 同款）。

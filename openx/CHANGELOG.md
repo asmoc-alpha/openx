@@ -4,6 +4,50 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.16 — Web search grows up: relevance extraction, real search APIs, query fan-out
+
+### The scraping-grade ceiling lifts; the head-truncation waste goes away
+
+- **`web_fetch` returns what you asked for, not the top of the page**: fetched
+  pages are no longer head-truncated (modern pages spend their first 400 lines
+  on navigation, headers and cookie banners while the answer sits mid-page).
+  A zero-cost heuristic (`_extract_relevant`) scores text blocks by query-term
+  hits (latin words + CJK runs, stopwords stripped, CJK function chars trimmed
+  off the edges), selects the scoring blocks with one line of neighbor context
+  and returns them in original order under a `[relevant passages extracted]`
+  note. No prompt or zero hits → the old head truncation. The 15-minute cache
+  now stores the **cleaned raw page** — extraction runs per call, so re-fetching
+  the same URL with a different prompt doesn't get the previous answer's residue
+- **Optional small-model distillation** (opt-in, `OPENX_WEB_EXTRACT=on` or
+  `settings.json` `web_fetch_extract`): with it on, the heuristic pre-selects
+  24K chars and hands them to the model group's **mini role** (falls back to
+  the main binding) for a target-aware distillation — the claude-code WebFetch
+  behavior this tool's own docstring used to decline for cost reasons. The
+  call goes straight through `OpenAICompatProvider` with the role settings
+  snapshotted at tool instantiation (a read-only `ToolHost` field — no agent
+  loopback); any failure, timeout (60s) or `NO_RELEVANT_CONTENT` silently
+  falls back to the heuristic. `web_fetch` never becomes unavailable because
+  of it
+- **Real search APIs land**: Tavily and Brave backends (keys via
+  `OPENX_TAVILY_API_KEY` / `OPENX_BRAVE_API_KEY`) — API-grade ranking,
+  content-quality snippets, no anti-bot fights. The `auto` chain admits
+  key-holding backends first, then the scraper chain (DDG → Bing) as the
+  keyless fallback; `OPENX_WEB_SEARCH=tavily|brave|ddg|bing` still pins one.
+  Missing keys degrade, never crash. All searches now run in
+  `asyncio.to_thread` — a search can no longer freeze the TUI or serialize
+  the executor's parallel `gather` behind a blocking HTTP call
+- **Query fan-out**: `web_search` accepts `queries` — up to 3 additional
+  variants the model phrases itself. All variants run in parallel (per-query
+  backend chains intact), merge round-robin by rank (query diversity without
+  privileging the first phrasing), dedupe by normalized URL (host lowercased,
+  fragments and trailing slashes dropped), then domain-diversify and cap.
+  All backends failing vs. genuinely-no-results stays a strict distinction
+- **grep learns `output_mode`**: `content` (default, unchanged), plus
+  `files_with_matches` (unique paths) and `count` (matches per file) — both
+  derived from the shared match list, so ripgrep and pure-Python backends
+  stay output-identical. (`context_lines` already existed.)
+- 15 new tests; zero new Python dependencies
+
 ## 0.1.15 — Math rendering: real typesetting on the web, dignified text in the terminal
 
 ### `$$…$$` stops being literal punctuation soup in both output surfaces

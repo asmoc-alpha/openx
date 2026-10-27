@@ -70,7 +70,9 @@ Examples:
 Model & provider config lives in model groups (~/.openx/settings.json); manage
 them interactively with /model and /config. Environment:
   OPENX_AUTO_APPROVE Set to 'true' to skip all prompts
-  OPENX_WEB_SEARCH   'ddg' | 'bing' | 'auto' (web-search backend)
+  OPENX_WEB_SEARCH   'auto' | 'tavily' | 'brave' | 'ddg' | 'bing' (backend;
+                     API backends need OPENX_TAVILY_API_KEY/OPENX_BRAVE_API_KEY)
+  OPENX_WEB_EXTRACT  'on' to distill fetched pages with the mini-role model
 """,
     )
 
