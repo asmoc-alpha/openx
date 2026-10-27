@@ -4,6 +4,24 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.18 — The settings overlay gets a fixed frame
+
+### One box size for every tab; content differences live in the scroll region
+
+- **The settings modal no longer resizes itself per tab**: `.modal.wide` had
+  only a `max-height`, so the frame was content-sized — the 通用 tab rendered
+  a short box, the 模型 tab a tall one, and the frame jumped on every tab
+  switch. It now pins both dimensions (880 × min(660px, 86vh)): head, tab
+  strip and body stay put; only `.modal-body` scrolls (`min-height: 0` so
+  the flex child actually scrolls inside the fixed column)
+- **Tab strip redrawn as a segmented control**: the accent-underline tabs
+  become raised pills (hover fill + bordered active) — the strip reads as a
+  constant part of the frame skeleton rather than content chrome
+- **One horizontal rhythm for all modal parts**: head / tool / reason /
+  details / actions all align to the body's 20px padding (was a mix of
+  16/18px), so confirm dialogs and the settings shell share the same inset
+- CSS only; DOM, JS and tests untouched
+
 ## 0.1.17 — The web UI speaks slash: "/" opens the command menu, commands actually run
 
 ### Typing `/` in `openx serve` now does what it does in the terminal

@@ -1842,21 +1842,28 @@ select.input { font-family: var(--sans); }
   overflow: hidden;
   box-shadow: var(--shadow-high), 0 0 0 0.5px var(--shadow-hairline);
 }
-.modal.wide { width: 880px; max-width: 94vw; }
+/* 设置浮层：宽高都钉死——切 tab 时框体不再随内容长高缩矮，差异全部
+   落进 .modal-body 的滚动区（此前只有 max-height，通用页矮、模型页高，
+   框体每切一页跳一次尺寸）。 */
+.modal.wide {
+  width: 880px;
+  max-width: 94vw;
+  height: min(660px, 90vh);
+}
 .modal-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--border-soft);
 }
 .modal-title { font-size: 15px; font-weight: 600; color: var(--text-strong); }
-.modal-body { flex: 1; padding: 16px 18px 20px; overflow-y: auto; }
+.modal-body { flex: 1; min-height: 0; padding: 18px 20px 24px; overflow-y: auto; }
 .modal-tool {
-  padding: 10px 18px 4px;
+  padding: 10px 20px 4px;
   font-family: var(--mono); font-size: 12.5px; color: var(--accent);
 }
-.modal-reason { padding: 0 18px 8px; font-size: 13.5px; color: var(--text-dim); }
+.modal-reason { padding: 0 20px 8px; font-size: 13.5px; color: var(--text-dim); }
 .modal-details, .modal-plan {
-  margin: 0 18px 12px;
+  margin: 0 20px 12px;
   padding: 9px 12px;
   background: var(--bg-raised);
   border: 1px solid var(--border-soft);
@@ -1867,29 +1874,30 @@ select.input { font-family: var(--sans); }
 }
 .modal-actions {
   display: flex; gap: 8px; justify-content: flex-end;
-  padding: 12px 18px;
+  padding: 12px 20px;
   border-top: 1px solid var(--border-soft);
 }
 
-/* 标签页（设置等） */
+/* 标签页（设置浮层骨架的一部分）：分段控件式——active 抬为凹面 pill。
+   框体尺寸已固定（.modal.wide），tab 条恒定，切页只有内容区滚动。 */
 .tabs {
   display: flex; gap: 4px;
-  padding: 10px 16px 0;
+  padding: 12px 20px;
   border-bottom: 1px solid var(--border-soft);
   flex: none;
 }
 .tab {
-  background: transparent; border: none;
-  padding: 8px 12px;
+  background: transparent; border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 6px 14px;
   color: var(--text-dim); font-size: 13px; cursor: pointer;
-  position: relative; transition: color 0.12s;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--text-strong); font-weight: 600; }
-.tab.active::after {
-  content: "";
-  position: absolute; left: 8px; right: 8px; bottom: -1px;
-  height: 2px; background: var(--accent); border-radius: 2px 2px 0 0;
+.tab:hover { background: var(--bg-hover); color: var(--text); }
+.tab.active {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-strong); font-weight: 600;
 }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
