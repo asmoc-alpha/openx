@@ -131,3 +131,20 @@ progressively disclosed, no registration surface — they ride one builtin
 context fragment. Plugins are **code**: they register capabilities. The two
 do not merge; they cooperate (a skill teaches the model when to call a
 plugin's tool).
+
+## Protocol pinning
+
+A plugin may pin the contract it was written against:
+
+```python
+__openx_meta__ = {"type": "capability.tool", "protocol": "tool/v1", ...}
+```
+
+The declaration is **enforced**: an unknown protocol refuses load, and a
+protocol whose routed type differs from `manifest.type` refuses load with
+both types in the message (`find()` in `kernel/assembly/protocols.py` is the
+checker). Without a `protocol` key, routing falls back to the type table —
+existing plugins are unaffected. `strategy.planning` / `orchestration` are
+reserved type names with no protocol row: they cannot be pinned yet.
+Inventory projections (`/plugins`, `plugin_help`) expose `api` (the kernel's
+supported plugin API version, currently 1) alongside the pin.

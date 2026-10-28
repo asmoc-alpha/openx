@@ -5,7 +5,9 @@
 同款）：新增一个插件类别 = 目录加一行 + 一个校验器，内核五件套不动。
 
 三协议 + UI 协议先行（决断 N4 + ui/v1 扩展），其余占位（``strategy.planning``
-/ ``orchestration`` 的单例协议在 cardinality 结构就绪后落地）：
+/ ``orchestration`` 的单例协议在 cardinality 结构就绪后落地——manifest 词汇表
+保留这两个 type，但**没有协议行即不可钉扎**：``manifest.protocol`` 声明它们
+会在 validate_manifest 被拒）：
 
 - ``tool/v1``       ``capability.tool`` -> ``tools`` 注册表（多例：注册即累加）
 - ``context/v1``    ``context.memory``  -> ``contexts`` 注册表（多例：片段

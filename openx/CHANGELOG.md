@@ -4,6 +4,32 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.22 — Protocol pinning becomes part of the plugin contract
+
+### `find()` gets its consumer; the Skills line is drawn in writing
+
+- **`manifest.protocol` is enforced**: a plugin can pin the contract it
+  targets (`"protocol": "tool/v1"` alongside `type`). The declaration is now
+  a refuse-load check in `validate_manifest` — an unknown protocol, or a
+  protocol whose routed type differs from `manifest.type`, is rejected with
+  both type names in the message. This wires `protocols.find()`, which
+  existed since P-D with zero callers and a docstring promising exactly this
+  consumer. No `protocol` key → the type-table default route, zero impact on
+  existing plugins. `strategy.planning` / `orchestration` stay reserved with
+  no protocol row (documented: they cannot be pinned yet)
+- **`api` and `protocol` are visible**: `/plugins` and `plugin_help`
+  projections now include the kernel's supported plugin API version
+  (`manifest_api_version()`) and the plugin's pin — the model and the user
+  can see the contract, not just the outcome
+- **The Skills↔plugins boundary, in writing**: skills are instruction packs
+  (prompt-level, one builtin context fragment, no registration surface);
+  plugins are code (the four protocols). They don't merge — a skill teaches
+  the model *when* to call a plugin's tool. Cross-linked from both docs;
+  the speculative `plugin:` frontmatter bridge is explicitly not built
+  (no consumer)
+- 6 new tests (pin/match, unknown, mismatch, non-string, no-pin regression,
+  direct validator)
+
 ## 0.1.21 — Plugin author experience: scaffold, reload, sandboxed self-test, a real guide
 
 ### The write-test-load loop stops requiring restarts and guesswork

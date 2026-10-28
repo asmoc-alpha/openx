@@ -59,11 +59,11 @@ KNOWN_SCAFFOLD_FALLBACKS = {"reinstall-on-regression"}
 # PHASE_FAILED 靠猜）。未声明 = 随内核当前版本（兼容存量插件）。
 PLUGIN_API_VERSION = 1
 
-# manifest 顶层已知键（S2c）：键外 → 警告（此前顶层未知键被静默忽略，
+# manifest 顶层已知键（S2c/S4a）：键外 → 警告（此前顶层未知键被静默忽略，
 # 拼错的键无声失效，极难排查；沿用 P-B 哲学：警告不拒）。
 KNOWN_MANIFEST_KEYS = {
     "type", "mount", "trust", "summary", "permissions", "cost",
-    "timeout", "dependencies", "scaffold", "api",
+    "timeout", "dependencies", "scaffold", "api", "protocol",
 }
 
 
@@ -138,6 +138,29 @@ def validate_manifest(meta: Any) -> tuple[list[str], list[str]]:
             f"manifest.api {api!r} not supported by this kernel "
             f"(supported: {PLUGIN_API_VERSION})"
         )
+    # S4a：显式 protocol 声明 = 契约钉扎（此前是摆设，find() 零消费方）。
+    # 协议不存在 / 协议路由的 type 与 manifest.type 不符 → 拒载。
+    protocol = meta.get("protocol")
+    if protocol is not None:
+        if not isinstance(protocol, str):
+            problems.append("manifest.protocol must be a str (e.g. 'tool/v1')")
+        else:
+            from .protocols import find
+
+            spec = find(protocol)
+            if spec is None:
+                problems.append(
+                    f"unknown manifest.protocol {protocol!r}; "
+                    f"known: tool/v1, context/v1, lifecycle/v1, ui/v1"
+                )
+            else:
+                declared_type = meta.get("type")
+                if declared_type and spec.ptype != declared_type:
+                    problems.append(
+                        f"manifest.protocol {protocol!r} routes type "
+                        f"{spec.ptype!r}, but manifest.type declares "
+                        f"{declared_type!r}"
+                    )
     for key in meta:
         if key not in KNOWN_MANIFEST_KEYS:
             warnings.append(f"unknown manifest key {key!r}; "

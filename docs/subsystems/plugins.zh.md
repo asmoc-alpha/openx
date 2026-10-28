@@ -121,3 +121,18 @@ OPENX_PLUGIN_AUTORELOAD=1  # 插件文件变化自动重组
 [Skills](skills.zh.md)（`SKILL.md`）是**指令包**：提示词层、渐进披露、
 没有注册面——只骑在一条内置 context 片段上。插件是**代码**：注册能力。
 两者不合并；协作方式 = skill 教模型"何时调用某插件工具"。
+
+## 协议钉扎
+
+插件可以钉住它编写时所依据的契约：
+
+```python
+__openx_meta__ = {"type": "capability.tool", "protocol": "tool/v1", ...}
+```
+
+声明会被**强制执行**：未知协议拒载；协议路由到的 type 与 `manifest.type`
+不符拒载（message 写明两侧 type；检查器是 `kernel/assembly/protocols.py`
+的 `find()`）。不声明 `protocol` 则按 type 表默认路由——存量插件零影响。
+`strategy.planning` / `orchestration` 是保留 type 名、尚无协议行：暂不可
+钉扎。清单投影（`/plugins`、`plugin_help`）在钉扎之外还暴露 `api`
+（内核支持的插件 API 版本，当前 1）。

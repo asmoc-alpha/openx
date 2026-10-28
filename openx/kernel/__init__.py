@@ -107,6 +107,13 @@ def _disabled_ids() -> list[str]:
         return []
 
 
+def manifest_api_version() -> int:
+    """内核支持的插件 API 版本（S2c/S4a 的唯一事实源在 manifest.py）。"""
+    from .assembly.manifest import PLUGIN_API_VERSION
+
+    return PLUGIN_API_VERSION
+
+
 class PluginKernel:
     """微内核本体：注册表 + 加载流水线 + inventory。"""
 
@@ -1002,6 +1009,9 @@ class PluginKernel:
                 "type": p.manifest.get("type", ""),
                 "mount": p.manifest.get("mount", ""),
                 "trust": p.manifest.get("trust", "user"),
+                # S4a：协议契约可见（api = 内核支持的插件 API 版本）
+                "api": manifest_api_version(),
+                "protocol": p.manifest.get("protocol") or "",
                 # E1：是否带脚手架演进声明（轻量标记；详情经 plugin_help 展开）
                 # E4：退场脚手架未被导入，标记改由账本登记表回填
                 "scaffold": bool(p.scaffold) or p.phase == PHASE_RETIRED,
@@ -1197,6 +1207,9 @@ class PluginKernel:
             # P-B：manifest 全量 + 校验警告
             "manifest": dict(info.manifest),
             "manifest_warnings": list(info.manifest_warnings),
+            # S4a：内核支持的插件 API 版本 + 插件显式钉扎的协议
+            "api": manifest_api_version(),
+            "protocol": info.manifest.get("protocol") or "",
             # E1：脚手架演进声明（compensates/exit_when/eval_set/fallback）
             # E4：退场脚手架未被导入，声明已在 _load_one 从账本条目回填
             "scaffold": dict(info.scaffold),

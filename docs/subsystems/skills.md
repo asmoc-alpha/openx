@@ -102,5 +102,6 @@ tool).
 
 ## See also
 
+- [Plugins](plugins.md) — the code-registration counterpart: skills teach the model *when*, plugins provide the *what*
 - [Commands](../user/guide/commands.md) — the full slash-command list
 - [Architecture](../architecture.md) — where skills sit in the tree

@@ -92,5 +92,7 @@ Web 端在「设置 → Skills」暴露同一套能力（`GET` / `POST` / `DELET
 
 ## 另见
 
+- [插件](plugins.zh.md)——代码注册面的另一侧：skill 教模型「何时」，插件提供「什么」
+
 - [命令](../user/guide/commands.zh.md)——完整的斜杠命令清单
 - [架构](../architecture.zh.md)——技能在目录树中的位置
