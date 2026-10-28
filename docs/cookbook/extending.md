@@ -2,13 +2,23 @@
 
 English | [中文](extending.zh.md)
 
-Two routes: code (custom tools) and configuration (everything else).
+Three routes: **plugins** (code, no core changes), **configuration**
+(subagents, hooks, MCP, workflows), and — only if you mean to contribute to
+the core — modifying the builtin assembly directly.
 
-## Add a custom tool
+## Add a custom tool — as a plugin (recommended)
 
-Subclass `Tool`:
+Drop a single file into `<workspace>/.openx/plugins/my_tool.py` (or generate
+the skeleton with `/plugin new my_tool`):
 
 ```python
+__openx_meta__ = {
+    "type": "capability.tool",
+    "trust": "user",
+    "summary": "Does something useful",
+    "permissions": ["fs:read"],   # capability attestation — see docs
+}
+
 from openx.tools.base import Tool, ToolResult
 from openx.permissions import Permission
 
@@ -30,14 +40,30 @@ class MyTool(Tool):
     async def execute(self, arg1: str) -> ToolResult:
         # Your logic here
         return ToolResult(output=f"Got: {arg1}")
+
+def apply(ctx):
+    ctx.register_tool(MyTool())
+
+def self_test():
+    assert True
 ```
 
 Verify:
 
-1. Register the tool where the builtins are assembled (see `openx/tools/__init__.py`).
-2. Run `openx`, then ask the agent to use `my_tool` — the permission prompt shows
-   "Running my tool".
-3. `pytest` — existing tools keep passing.
+1. `/plugin test my_tool` — runs `self_test` in the admission sandbox.
+2. `/plugin reload my_tool` (or restart) — then ask the agent to use
+   `my_tool`; the permission prompt shows "Running my tool".
+3. `/plugins` — inventory, warnings, and per-plugin detail.
+
+Full reference — manifest keys, all `apply(ctx)` registration methods,
+security model, directory plugins with assets: [subsystems/plugins.md]
+(../subsystems/plugins.md).
+
+## Add a custom tool — in core (only for contributions)
+
+If you intend to ship the tool as part of OpenX itself, register it where
+the builtins are assembled (`openx/builtin/tools.py`), not as a plugin.
+Run `pytest` — existing tools keep passing.
 
 ## Declare a scaffold
 

@@ -4,6 +4,7 @@
 
 每个子系统一页 reference：语义、配置、限制。使用指南在 [user/](../user/index.zh.md)；分步 how-to 在 [cookbook/](../cookbook/extending.zh.md)。
 
+| 插件 | [plugins.zh.md](plugins.zh.md) | 经 `apply(ctx)` 注册工具/命令/上下文/UI 的代码扩展：信任门、admission 沙箱、权限上限、目录插件、git 安装 |
 | 子系统 | 页面 | 一句话 |
 |---|---|---|
 | Subagents | [subagents.zh.md](subagents.zh.md) | `task` 工具：内置与自定义 agent 类型、结构化输出、实时状态面板 |

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +135,14 @@ def load_module(spec: PluginSpec) -> object:
     mod_spec = importlib.util.spec_from_file_location(mod_name, spec.path)
     if mod_spec is None or mod_spec.loader is None:
         raise ImportError(f"cannot resolve module spec for {spec.path}")
+    # 开发期重载的坑（S3b）：pyc 头的 mtime 是**秒级**——同秒内等长改写
+    # 会让重新 import 拿到旧字节码（reload 修了半天"没生效"）。插件文件
+    # 就绪即删缓存 pyc：每次装载都新编译（单文件毫秒级，代价可忽略），
+    # 重载语义从此不依赖文件系统时间戳粒度。
+    try:
+        os.unlink(importlib.util.cache_from_source(spec.path))
+    except OSError:
+        pass
     module = importlib.util.module_from_spec(mod_spec)
     sys.modules[mod_name] = module
     mod_spec.loader.exec_module(module)

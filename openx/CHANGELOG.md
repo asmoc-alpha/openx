@@ -4,6 +4,39 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.21 — Plugin author experience: scaffold, reload, sandboxed self-test, a real guide
+
+### The write-test-load loop stops requiring restarts and guesswork
+
+- **`/plugin new <name>`**: writes a loadable minimal tool plugin into the
+  project plugins dir — manifest with the S1c permission semantics as
+  comments, an example tool, `apply(ctx)`, and a meaningful `self_test`
+  (the admission prerequisite). The generated file is the documentation:
+  pass admission as-is, edit the TODOs. Refuses to overwrite. (`auto-`
+  prefix stays reserved for model-produced plugins.)
+- **`/plugin reload <name>`**: explicit dev reload. Session/persistent
+  plugins unload and reload fresh; **boot-scoped plugins refresh in place**
+  (lifecycle `on_unload` → provenance purge → module drop → re-apply, scope
+  preserved) — previously a boot plugin could only refresh by restarting.
+  `OPENX_PLUGIN_AUTORELOAD=1` folds plugin-file signatures into the
+  composition key so saving a file rebuilds the bundle on the next turn
+  (off by default: it stats every plugin file per key check)
+- **`/plugin test <name>`**: re-runs `self_test` in the admission sandbox
+  (same subprocess as S1b) and shows PASS/FAIL plus the test's own output —
+  the model-facing `test_plugin` tool uses the same path. Reloading in
+  general hit a subtle trap that's now fixed centrally: the bytecode cache
+  validates on **second-granularity mtime + size**, so an equal-length edit
+  within the same second made a "reloaded" plugin run its old bytecode —
+  `load_module` now drops the cache pyc before every import
+- **A real plugin guide**: `docs/subsystems/plugins.md` (+ 中文) — discovery
+  order, full manifest reference (including the new `api`/`dependencies`/
+  permission-ceiling semantics), the whole `apply(ctx)` surface, security
+  model with honest limits, lifecycle, testing/debugging, and the Skills
+  boundary. The cookbook's "add a custom tool" no longer teaches editing
+  core files first; the plugin path is the default and core edits are framed
+  as contributions. (User-guide coverage lives in the same page to avoid
+  drift; en + zh.)
+
 ## 0.1.20 — Plugins get packaging: directories, dependencies, versions, git install
 
 ### A plugin stops being a single .py file; the dead manifest fields grow teeth

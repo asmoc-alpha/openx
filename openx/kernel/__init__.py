@@ -32,6 +32,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -185,9 +186,10 @@ class PluginKernel:
             return (str(path), 0, 0)
 
     def _compose_key(self, workspace: str) -> tuple:
-        """加载键：目录 + 禁用表 + 组合输入签名（P6）+ 信任态（S1a）。"""
+        """加载键：目录 + 禁用表 + 组合输入签名（P6）+ 信任态（S1a）
+        + 插件文件签名（S3b 自动重载开启时）。"""
         profile_name = composition.active_profile_name()
-        return (
+        key = (
             str(loader.user_plugins_dir()),
             str(loader.project_plugins_dir(workspace)),
             tuple(sorted(_disabled_ids())),
@@ -198,6 +200,15 @@ class PluginKernel:
             # S1a：信任判定进键——用户把工作区加入信任后下次重组自动装载
             loader.project_plugins_untrusted(workspace),
         )
+        # S3b 开发期自动重载（OPENX_PLUGIN_AUTORELOAD=1，默认关）：插件
+        # 文件签名进键——保存后下一轮 ensure_loaded 自动整体重组。代价是
+        # 每次键比较都 stat 一遍插件文件，故只对显式开启者生效。
+        if os.environ.get("OPENX_PLUGIN_AUTORELOAD") == "1":
+            key += tuple(sorted(
+                (str(s.path), self._file_sig(s.path))
+                for s in loader.discover(workspace) if s.path is not None
+            ))
+        return key
 
     def _reload(self, workspace: str, key: tuple) -> None:
         disabled = set(key[2])
@@ -1056,6 +1067,50 @@ class PluginKernel:
             {"type": "plugin_loaded", "plugin": name, "source": spec.source},
         )
         return (True, f"plugin loaded: {name} (session)")
+
+    def reload_plugin(self, name: str) -> tuple[bool, str]:
+        """显式重载（S3b 开发命令）：卸干净再按当前文件内容装载。
+
+        - session/persistent 作用域：走既有 unload_plugin（含 on_unload
+          收尾 + 撤销晋升写回）+ load_plugin（fresh discover，scope 保持）；
+        - boot 作用域：组合输入不动（改组合请走 overlay），**原地刷新**——
+          on_unload → 清注册 → 摘模块对象 → 重走 _load_apply（scope 保持
+          boot）。这是显式开发动作，文档写明"boot 插件运行时刷新仅供
+          开发期"。
+        """
+        specs = {s.id: s for s in loader.discover(self.workspace)}
+        spec = specs.get(name)
+        if spec is None:
+            hint = ""
+            if loader.project_plugins_untrusted(self.workspace):
+                hint = " (project plugins are untrusted here; run /trust)"
+            return (False, f"plugin not found: {name}{hint}")
+        info = self._plugins.get(name)
+        scope = info.scope if info is not None else "boot"
+        if scope in ("session", "persistent"):
+            ok, msg = self.unload_plugin(name)
+            if not ok:
+                return (False, msg)
+            return self.load_plugin(name, path=spec.path)
+        # boot 作用域：原地刷新
+        if info is not None and info.phase == PHASE_ACTIVE:
+            self.trigger_lifecycle("unload", plugin_id=name)
+        self._purge_plugin_entries(name)
+        loader.unload_module(spec)
+        if info is None:
+            info = PluginInfo(id=name, source=spec.source, phase=PHASE_LOADING,
+                              builtin=spec.builtin)
+            self._plugins[name] = info
+        info.phase = PHASE_LOADING
+        info.error = ""
+        for kinds in (info.tools, info.commands, info.providers,
+                      info.contexts, info.lifecycle, info.ui_slots):
+            kinds.clear()
+        if not self._load_apply(spec, info):
+            return (False, f"plugin failed to reload: {info.error}")
+        self.emit("plugin_loaded",
+                  {"type": "plugin_loaded", "plugin": name, "source": spec.source})
+        return (True, f"plugin reloaded: {name} (boot scope, in-place)")
 
     def unload_plugin(self, name: str) -> tuple[bool, str]:
         """会话内卸载（P-A）/ 回滚晋升（E7）。

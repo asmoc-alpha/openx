@@ -2,13 +2,22 @@
 
 [English](extending.md) | 中文
 
-两条路线：代码（自定义 tool）与配置（其余一切）。
+三条路线：**插件**（写代码、不动内核）、配置（子代理/hooks/MCP/workflows）、
+以及——仅当您打算向内核贡献时——直接改内置组装。
 
-## 添加自定义 tool
+## 添加自定义 tool——以插件方式（推荐）
 
-继承 `Tool`：
+往 `<workspace>/.openx/plugins/my_tool.py` 放一个文件即可（或
+`/plugin new my_tool` 生成骨架）：
 
 ```python
+__openx_meta__ = {
+    "type": "capability.tool",
+    "trust": "user",
+    "summary": "Does something useful",
+    "permissions": ["fs:read"],   # 能力声明——见文档
+}
+
 from openx.tools.base import Tool, ToolResult
 from openx.permissions import Permission
 
@@ -30,13 +39,28 @@ class MyTool(Tool):
     async def execute(self, arg1: str) -> ToolResult:
         # 你的逻辑
         return ToolResult(output=f"Got: {arg1}")
+
+def apply(ctx):
+    ctx.register_tool(MyTool())
+
+def self_test():
+    assert True
 ```
 
 验证：
 
-1. 在内置工具组装处注册该 tool（见 `openx/tools/__init__.py`）。
-2. 运行 `openx`，让 agent 使用 `my_tool`——权限弹窗会显示 "Running my tool"。
-3. `pytest`——既有工具保持通过。
+1. `/plugin test my_tool`——在 admission 沙箱里跑 `self_test`。
+2. `/plugin reload my_tool`（或重启）——然后让 agent 使用 `my_tool`，
+   权限弹窗会显示 "Running my tool"。
+3. `/plugins`——清单、警告与单插件详情。
+
+完整参考——manifest 全键、`apply(ctx)` 全部注册方法、安全模型、带资产的
+目录插件：[subsystems/plugins.zh.md](../subsystems/plugins.zh.md)。
+
+## 添加自定义 tool——进内核（仅限内核贡献）
+
+若该 tool 本就该随 OpenX 发行，请在内置组装处注册
+（`openx/builtin/tools.py`），而非做成插件。跑 `pytest`——既有工具保持通过。
 
 ## 声明脚手架
 

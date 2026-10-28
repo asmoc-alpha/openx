@@ -301,21 +301,116 @@ async def _cmd_trust(agent, console, args):
 
 @register(
     "plugin",
-    description="Plugin packaging tools: install <git-url> (S2d)",
+    description="Plugin tools: install <git-url> | new <name> | reload <name> | test <name>",
 )
 async def _cmd_plugin(agent, console, args):
-    """插件打包面（S2d）——``/plugin install <git-url>``。
+    """插件工具族（S2d/S3）——install / new / reload / test。
 
-    流程：URL 白名单（https:// 或 git@）→ **ASK 确认**（serve/headless 无
-    人可问 = fail-closed 拒绝，同晋升门哲学）→ ``git clone --depth 1`` 到
-    临时目录 → 定位 plugin.py（根目录或一级子目录）→ **admission 沙箱门**
-    （S1b）→ 拷入用户插件目录（已存在即拒）→ 会话装载。不 marketplace、
-    不做依赖解析——版本管理是远期事。
+    - ``/plugin install <git-url>``：克隆第三方插件（S2d，见下）；
+    - ``/plugin new <name>``：生成可装载的最小插件骨架（S3a）——落
+      项目插件目录，改掉 TODO 即是您的第一个插件；
+    - ``/plugin reload <name>``：显式重载（S3b 开发循环）——session 插件
+      卸了重装，boot 插件原地刷新（scope 保持）；
+    - ``/plugin test <name>``：在 admission 沙箱里重跑 self_test（S3c），
+      输出 PASS/FAIL + 插件自己的 print。另见
+      ``OPENX_PLUGIN_AUTORELOAD=1``（文件改动自动重组，默认关）。
     """
     sub = args[0].lower() if args else ""
     if sub == "install":
         return await _plugin_install(agent, console, args[1:])
-    console.print_warning("usage: /plugin install <git-url>")
+    if sub == "new":
+        return await _plugin_new(agent, console, args[1:])
+    if sub == "reload":
+        return await _plugin_reload(agent, console, args[1:])
+    if sub == "test":
+        return await _plugin_test(agent, console, args[1:])
+    console.print_warning("usage: /plugin install <git-url> | new <name> "
+                          "| reload <name> | test <name>")
+    return True
+
+
+async def _plugin_new(agent, console, args) -> bool:
+    """/plugin new：脚手架 → 项目插件目录（重名拒）→ 指引下一步。"""
+    from ...kernel.assembly.loader import (
+        project_plugins_dir,
+        user_plugins_dir,
+    )
+    from ...tools.plugin_scaffold import normalize_plugin_name, scaffold_source
+
+    if not args:
+        console.print_warning("usage: /plugin new <name> [type]")
+        return True
+    name = normalize_plugin_name(args[0])
+    ptype = args[1] if len(args) > 1 else "capability.tool"
+    for base in (project_plugins_dir(str(agent.workspace)), user_plugins_dir()):
+        for candidate in (base / f"{name}.py", base / name / "plugin.py"):
+            if candidate.exists():
+                console.print_warning(f"plugin already exists: {candidate}")
+                return True
+    dest = project_plugins_dir(str(agent.workspace)) / f"{name}.py"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(scaffold_source(name, ptype), encoding="utf-8")
+    console.print_success(
+        f"✓ scaffolded {dest}\n"
+        "  next: edit the TODOs, then /plugin test "
+        f"{name} and /plugin reload {name} (or restart to boot-load it)\n"
+        "  docs: docs/subsystems/plugins.md"
+    )
+    return True
+
+
+def _locate_plugin_source(workspace: str, name: str):
+    """按名定位插件入口文件（目录插件的 plugin.py 或单文件 .py）。"""
+    from ...kernel.assembly.loader import project_plugins_dir, user_plugins_dir
+
+    for base in (project_plugins_dir(workspace), user_plugins_dir()):
+        for candidate in (base / name / "plugin.py", base / f"{name}.py"):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+async def _plugin_reload(agent, console, args) -> bool:
+    """/plugin reload：kernel.reload_plugin + 工具重建。"""
+    from ...kernel import get_kernel
+
+    if not args:
+        console.print_warning("usage: /plugin reload <name>")
+        return True
+    name = args[0]
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+    ok, msg = kernel.reload_plugin(name)
+    if ok:
+        if agent is not None:
+            agent._rebuild_tools()
+        console.print_success(f"✓ {msg}")
+    else:
+        console.print_warning(msg)
+    return True
+
+
+async def _plugin_test(agent, console, args) -> bool:
+    """/plugin test：admission 沙箱里重跑 self_test（主进程零执行）。"""
+    from ...kernel.sandbox.admission import run_admission
+
+    if not args:
+        console.print_warning("usage: /plugin test <name>")
+        return True
+    path = _locate_plugin_source(str(agent.workspace), args[0])
+    if path is None:
+        console.print_warning(f"plugin source not found: {args[0]}")
+        return True
+    console.print_info(f"running self_test in admission sandbox: {path}")
+    verdict = await asyncio.to_thread(run_admission, path)
+    if verdict.ok:
+        console.print_success(f"PASS: {args[0]}")
+    else:
+        console.print_warning(f"FAIL: {args[0]} — {verdict.error}")
+    if verdict.output:
+        from rich.markup import escape
+
+        console.raw.print(escape(verdict.output))
     return True
 
 
