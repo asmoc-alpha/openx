@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+
+from ._helpers import merge_settings
 import textwrap
 from pathlib import Path
 
@@ -121,7 +123,7 @@ def _write_plugin_file(ws: Path, name: str, body: str) -> None:
 def _load_session_plugin(ws, settings, name, body):
     """boot 禁用 + 会话内 load_plugin -> 拿到 session 作用域插件。"""
     _write_plugin_file(ws, name, body)
-    settings.write_text(json.dumps({"plugins": {"disabled": [name]}}))
+    merge_settings(settings, {"plugins": {"disabled": [name]}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     ok, msg = k.load_plugin(name)
@@ -247,7 +249,7 @@ def test_trigger_lifecycle_fault_isolation(kernel_env):
             ctx.register_lifecycle("badhooks", on_session_start=bad_start)
     ''')
     _write_plugin_file(ws, "badhooks", bad)
-    settings.write_text(json.dumps({"plugins": {"disabled": ["badhooks"]}}))
+    merge_settings(settings, {"plugins": {"disabled": ["badhooks"]}})
     k = get_kernel()
     sink = Sink()
     k.attach_ledger(sink, session="s1")

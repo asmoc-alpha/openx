@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+
+from ._helpers import merge_settings
 import textwrap
 from types import SimpleNamespace
 
@@ -104,7 +106,7 @@ def test_ui_registration_validates_shape(kernel_env):
 
 def _load_ui_plugin(ws, settings, name, body):
     _write_plugin_file(ws, name, body)
-    settings.write_text(json.dumps({"plugins": {"disabled": [name]}}))
+    merge_settings(settings, {"plugins": {"disabled": [name]}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     ok, msg = k.load_plugin(name)
@@ -336,14 +338,15 @@ def apply(ctx):
 
 
 async def test_write_plugin_rejects_hanging_self_test(kernel_env, monkeypatch):
-    """self_test 挂死 → 超时拒绝（daemon 线程兜底，主进程不卡死）。
+    """self_test 挂死 → admission 子进程被超时 kill，write 拒绝（D9 L2）。
 
-    用 sleep 模拟挂死（释放 GIL，不烧 CPU 拖慢后续测试）；纯 spin 死循环
-    走同一条 join 超时路径。
+    用 sleep 模拟挂死（释放 GIL，不烧 CPU 拖慢后续测试）。S1b 后挂死
+    发生在沙箱子进程里：超时 kill，主进程零阻塞、零线程泄漏。
     """
     import openx.tools.write_plugin_tools as wpt
 
-    monkeypatch.setattr(wpt, "SELF_TEST_TIMEOUT", 0.2)
+    monkeypatch.setenv("OPENX_PLUGIN_ADMISSION", "1")
+    monkeypatch.setattr(wpt, "SELF_TEST_TIMEOUT", 0.5)
     ws, _ = kernel_env
     k = get_kernel()
     k.ensure_loaded(str(ws))
@@ -352,5 +355,5 @@ async def test_write_plugin_rejects_hanging_self_test(kernel_env, monkeypatch):
     r = await WritePluginTool(k, None).execute(
         "hang", "挂死测试", hang,
         "import time\ntime.sleep(5)", type="ui.panel")
-    assert not r.success and "超时" in r.error
+    assert not r.success and "timeout" in r.error
     assert not (ws / ".openx" / "plugins" / "auto-hang.py").exists()

@@ -43,8 +43,36 @@ def project_plugins_dir(workspace: str) -> Path:
     return Path(workspace) / ".openx" / "plugins"
 
 
+def project_plugins_untrusted(workspace: str) -> bool:
+    """项目插件目录存在但工作区未获信任（S1a boot 信任门）。
+
+    信任判定复用 CLI 层的 ``OpenXConfig.is_trusted``（trusted_dirs 持久化
+    在 settings.json；交互 CLI 启动时信任屏先行）。内核只消费判定结果——
+    未信任 = 该目录的插件代码一行都不 import（clone 恶意仓库 + 打开会话
+    不再等于静默执行其插件）。用户目录与 entry-points 默认可信（决策 #5）。
+    """
+    from ... import config
+
+    directory = project_plugins_dir(workspace)
+    if not directory.is_dir():
+        return False
+    return not config.OpenXConfig.is_trusted(str(Path(workspace).resolve()))
+
+
+def untrusted_project_plugin_ids(workspace: str) -> list[str]:
+    """未信任项目目录里**会被跳过**的插件 id（plugin_skipped 记账用）。"""
+    if not project_plugins_untrusted(workspace):
+        return []
+    directory = project_plugins_dir(workspace)
+    return sorted(p.stem for p in directory.glob("*.py")
+                  if not p.name.startswith("_"))
+
+
 def discover(workspace: str) -> list[PluginSpec]:
-    """发现插件指定符；同 id 先见者赢（用户级先于项目级）。"""
+    """发现插件指定符；同 id 先见者赢（用户级先于项目级）。
+
+    S1a：项目目录未获工作区信任 → 整目录跳过（一个 spec 都不产出）。
+    """
     specs: list[PluginSpec] = []
     seen: set[str] = set()
 
@@ -57,6 +85,14 @@ def discover(workspace: str) -> list[PluginSpec]:
 
     for directory in (user_plugins_dir(), project_plugins_dir(workspace)):
         if not directory.is_dir():
+            continue
+        if directory == project_plugins_dir(workspace) and project_plugins_untrusted(workspace):
+            # S1a：项目目录未信任 → 一个 spec 都不产出（记账由 kernel 侧
+            # _reload 发 plugin_skipped，loader 只负责沉默地跳过）。
+            _log.warning(
+                "project plugin dir untrusted (workspace not trusted); skipped: %s",
+                directory,
+            )
             continue
         for path in sorted(directory.glob("*.py")):
             if path.name.startswith("_"):
@@ -100,3 +136,16 @@ def extract_apply(loaded: object) -> Optional[object]:
     if callable(loaded):
         return loaded
     return None
+
+
+def unload_module(spec: PluginSpec) -> None:
+    """把文件插件的模块对象从 ``sys.modules`` 摘除（S1e）。
+
+    此前 unload 只清注册项，模块对象（类/线程/模块级状态）永久滞留——
+    卸载是名义的，重载会生成第二个模块对象。调用前提：该插件的注册项
+    已按 provenance 清空（模块仅被注册项引用时 pop 才安全）。builtin 与
+    entry-point 插件不走这里（模块不是本加载器创建的）。
+    """
+    if spec.path is None:
+        return
+    sys.modules.pop(f"_openx_plugin_{spec.id}", None)

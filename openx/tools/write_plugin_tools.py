@@ -1,16 +1,18 @@
 """模型自产插件元工具（P-F）—— write / test / promote。
 
 - ``write_plugin``（ASK）：admit 管线——manifest 校验（type/mount 由内核
-  协议表派生）→ 语法/契约存在性 + 按 type 的注册面契约检查 → 进程内
-  ``self_test`` → 绿 → 写 ``auto-<name>.py`` 到项目插件目录 →
-  ``load_plugin``（会话热插）→ 重建工具集与系统提示。名字强制 ``auto-`` 前缀（批量回滚）。
-- ``test_plugin``（ALLOW）：对**已加载**的文件插件重跑 ``self_test``（验证/调试）。
-- ``promote_plugin``（ASK）：用户确认 → 决策事件 + ``manifest.trust="user"``
-  （boot 持久化/进组合列后续）。
+  协议表派生）→ 语法/契约存在性 + 按 type 的注册面契约检查 → **沙箱子进程**
+  跑 ``self_test``（D9 加载期 L2，``kernel/sandbox/admission.py``）→ 绿 →
+  写 ``auto-<name>.py`` 到项目插件目录 → ``load_plugin``（会话热插）→
+  重建工具集与系统提示。名字强制 ``auto-`` 前缀（批量回滚）。
+- ``test_plugin``（ALLOW）：对**已加载**的文件插件重跑 ``self_test``（验证/调试），
+  同一沙箱门。
+- ``promote_plugin``（ASK）：用户确认 → 决策事件 + ``manifest.trust="user"``。
 
-安全（D9 分层定价）：``self_test`` 在**进程内**跑——模型代码的隔离是 P-C
-执行隔离（进程沙箱）的后续加固；P-F 的信任闸 = write/promote 的 ASK 弹窗 +
-self_test 必须先绿 + 生成的工具调用仍走正常权限闸（且 P-C 已套 ProtectPluginTool）。
+安全（D9 分层定价）：模型代码的**首次执行**（import + self_test）在受控
+子进程里（macOS sandbox-exec 拒网 + setrlimit；超时即 kill，零线程泄漏）；
+信任闸 = write/promote 的 ASK 弹窗 + self_test 必须先绿 + 生成的工具调用
+仍走正常权限闸（ProtectPluginTool 包装）。
 """
 
 from __future__ import annotations
@@ -28,19 +30,21 @@ if __name__ == "__main__" and not __package__:
 
 import ast
 import json
+import os
 import re
-import threading
+import tempfile
 from typing import Any, Optional
 
 from ..kernel.assembly.loader import project_plugins_dir
 from ..kernel.assembly.manifest import validate_manifest
 from ..kernel.assembly.protocols import ProtocolSpec, route
+from ..kernel.sandbox.admission import ADMISSION_TIMEOUT, run_admission
 from ..permissions import Permission, PermissionLevel
 from .base import Tool, ToolResult
 
-# self_test 超时（秒）：模型生成的代码可能含死循环（while True），超时
-# 即拒--宁留一个 daemon 死线程，不卡死 write_plugin/主进程。
-SELF_TEST_TIMEOUT = 10.0
+# self_test 超时（秒）：模型生成的代码可能含死循环（while True）——子进程
+# 被超时 kill（D9 前是 daemon 线程泄漏，现在零残留）。
+SELF_TEST_TIMEOUT = ADMISSION_TIMEOUT
 
 
 def _auto_id(name: str) -> str:
@@ -134,37 +138,31 @@ def _admit(source: str, proto: ProtocolSpec) -> tuple[bool, str]:
 def _run_in_thread(
     source: str, ns: dict, timeout: Optional[float] = None
 ) -> tuple[bool, str]:
-    """daemon 线程里执行模块代码 + self_test，join 超时即弃。
+    """沙箱子进程里执行模块代码 + self_test（D9 加载期 L2）。
 
-    模块级代码与 self_test 都可能死循环；Python 无线程终止原语，超时后
-    线程遗留为 daemon（进程退出不受阻）--这是 D9 进程隔离落地前的
-    保守兜底，write_plugin 的 ASK 闸仍是信任锚点。timeout 缺省取模块
-    常量（调用期读，测试可 monkeypatch）。
+    签名与旧实现兼容（``ns`` 参数不再使用——模块在子进程里独立 import，
+    状态不回传），调用方零改动。源码先落临时文件（admission 以文件为
+    单位验 sha256），跑完即删；超时/异常/网络尝试一律拒。
     """
+    del ns  # 旧参数：子进程里模块独立 import，命名空间注入已无意义
     if timeout is None:
         timeout = SELF_TEST_TIMEOUT
-    result: dict = {}
-
-    def _run() -> None:
+    fd, tmp_path = tempfile.mkstemp(prefix="openx-write-plugin-", suffix=".py")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        result = run_admission(tmp_path, timeout=timeout)
+    finally:
         try:
-            exec(compile(source, "<generated-plugin>", "exec"), ns)
-        except Exception as e:
-            result["error"] = f"self_test 失败: 模块代码异常 {type(e).__name__}: {e}"
-            return
-        try:
-            ns["self_test"]()
-            result["ok"] = True
-        except Exception as e:
-            result["error"] = f"self_test 失败: {type(e).__name__}: {e}"
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        return (False, f"self_test 超时（>{timeout:.0f}s，疑似死循环）")
-    if result.get("ok"):
-        return (True, "")
-    return (False, str(result.get("error") or "self_test 失败"))
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    if result.ok:
+        return (True, result.output)
+    why = result.error or "self_test 失败"
+    if not why.startswith(("admission", "self_test")):
+        why = f"self_test 失败: {why}"
+    return (False, why)
 
 
 class WritePluginTool(Tool):
@@ -237,7 +235,7 @@ class WritePluginTool(Tool):
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{plugin_id}.py"
         path.write_text(source, encoding="utf-8")
-        ok, msg = self._kernel.load_plugin(plugin_id)
+        ok, msg = self._kernel.load_plugin(plugin_id, path=path)
         if not ok:
             try:
                 path.unlink()  # 装载失败 → 回滚文件，不留垃圾
@@ -382,7 +380,8 @@ assert factory(None)[0].name == "greet"
             k.attach_ledger(lambda e: sink.append(e), session="s1")
             r = await PromotePluginTool(k).execute("auto-greet")
             assert r.success and k.plugin_help("auto-greet")["manifest"]["trust"] == "user"
-            assert any(e.type == "plugin_promoted" for e in sink)
+            # K5：决策全文上全局账本，会话账本只留 decision_ref 引用
+            assert any(e.type == "decision_ref" for e in sink)
             r = await PromotePluginTool(k).execute("builtin-tools")
             assert "only auto-" in r.output
             reset_kernel()

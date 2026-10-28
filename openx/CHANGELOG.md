@@ -4,6 +4,58 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.19 — Plugin trust gate, admission sandbox, and a permission ceiling
+
+### The five holes from the plugin audit close; two designed-but-unbuilt items land
+
+- **Boot trust gate (S1a, per openx-kernel-design.md §1.4)**: a hostile repo's
+  `.openx/plugins/*.py` no longer executes just because you opened a session
+  in it. `discover()` consults the existing `OpenXConfig.is_trusted()` —
+  an untrusted project plugin directory yields **zero** specs (user dir and
+  entry-points stay trusted by design), the skip is recorded as a
+  `plugin_skipped` event, and the trust decision is part of the composition
+  key so trusting the workspace reloads plugins automatically. Interactive
+  CLI already asks via the trust screen; serve/headless fail closed, and
+  `/trust` is the explicit opt-in there. `write_plugin`'s own output bypasses
+  the discovery gate (`load_plugin(name, path=...)`) — that code was just
+  approved via ASK and admitted through the sandbox; explicit
+  `/plugin load` of an untrusted project file gets a hint instead
+- **Admission sandbox (S1b, D9 loading-phase L2)**: the first execution of
+  plugin code (import + `self_test`) moved out of the main process. New
+  `kernel/sandbox/admission.py` runs `python -m openx.kernel.sandbox.admission`
+  with the file's sha256 verified on both sides (TOCTOU closed), under
+  macOS `sandbox-exec` (deny network, deny file-write outside /tmp; degrades
+  to a plain subprocess with rlimits, honestly documented) plus
+  `resource.setrlimit`. `subprocess.run` timeout kills the child — the old
+  daemon-thread leak (a timed-out thread with full privileges) is gone.
+  Every file plugin passes this gate before `load_module` at boot and at
+  session load; builtins and pip entry-points are exempt (explicit install).
+  `OPENX_PLUGIN_ADMISSION=0` is the documented debug escape hatch
+- **Manifest permissions become a capability ceiling (S1c)**: the field was
+  decorative — nothing consumed it. Now a plugin tool whose manifest declares
+  **no** `permissions` gets its self-declared permission level capped to ASK
+  and `auto_allowed` disabled (the wrapper notes the reason; `/plugins`
+  shows a warning). Declaring permissions keeps the tool's own levels; Guard's
+  high-risk force-ASK still applies on top. **Migration**: existing plugins
+  that self-declared ALLOW without declaring permissions will start asking —
+  add a `permissions: [...]` list to keep the old behavior
+- **contribute/render timeouts (S1d)**: context `contribute()` (5s) and UI
+  `render()` (1s) now run bounded in a shared thread pool — a hanging plugin
+  can no longer stall system-prompt assembly or the 5Hz deck frame. Repeated
+  timeouts trip the same circuit-breaker semantics as crashes (3 → the
+  contribution is skipped for the session / the panel is unregistered)
+- **Transactional apply + real module unload (S1e)**: a plugin whose
+  `apply(ctx)` throws mid-registration no longer leaves half its tools
+  registered under PHASE_FAILED — entries are purged by provenance, the
+  contribution lists cleared, and the module object removed from
+  `sys.modules` (unload used to be nominal: classes and state persisted
+  forever)
+- New tests: trust gate, admission subprocess (real child processes:
+  pass/raise/hang/hash-mismatch/network-deny), timeouts + permission cap,
+  transactional failure; two stale test contracts updated to the new
+  guarantees. `OPENX_PLUGIN_ADMISSION=0` and pre-trusted workspace defaults
+  are wired into the kernel test fixture so the regular suite stays fast
+
 ## 0.1.18 — The settings overlay gets a fixed frame
 
 ### One box size for every tab; content differences live in the scroll region

@@ -271,6 +271,33 @@ async def _cmd_ledger(agent, console, args):
 
 
 @register(
+    "trust",
+    description="Trust this workspace's project plugins and reload them (S1a)",
+)
+async def _cmd_trust(agent, console, args):
+    """信任当前工作区（S1a boot 信任门的 serve/headless 侧出口）。
+
+    交互 CLI 的信任屏在启动时已经问过（main.py），这里主要服务 serve：
+    项目目录未信任时其插件不装载（fail-closed），用户敲 /trust 显式授权
+    ——信任态进组合键，下一轮 ensure_loaded 自动装载项目插件。
+    """
+    from ...config import OpenXConfig
+    from ...kernel import get_kernel
+
+    ws = str(Path(str(agent.workspace)).resolve())
+    if OpenXConfig.is_trusted(ws):
+        console.print_info("This workspace is already trusted.")
+        return True
+    OpenXConfig.add_trusted_dir(ws)
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+    if agent is not None:
+        agent._rebuild_tools()
+    console.print_success(f"✓ Workspace trusted: {ws}")
+    return True
+
+
+@register(
     "scaffolds",
     description="List scaffolds; run the eval gate, retire or restore one (E1/E4)",
 )

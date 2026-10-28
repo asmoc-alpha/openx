@@ -21,5 +21,11 @@ def kernel_env(tmp_path, monkeypatch):
     reset_kernel()
     ws = tmp_path / "ws"
     (ws / ".openx" / "plugins").mkdir(parents=True)
+    # S1a：测试工作区默认**已信任**（真实 trusted_dirs 路径；S1b admission
+    # 默认关——专属测试 test_load_admission.py 走真实子进程）。既有测试
+    # 改 settings 必须经 _helpers.merge_settings（合并而非覆盖），否则会把
+    # 信任抹掉、项目插件被信任门跳过。
+    config_mod.OpenXConfig.add_trusted_dir(str(ws))
+    monkeypatch.setenv("OPENX_PLUGIN_ADMISSION", "0")
     yield ws, settings
     reset_kernel()

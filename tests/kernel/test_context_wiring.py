@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import inspect
 import json
+
+from ._helpers import merge_settings
 import textwrap
 
 from openx.builtin.context import MEMORY_INSTRUCTIONS
@@ -45,7 +47,7 @@ def _session_plugins(ws, settings, bodies: dict) -> object:
     d.mkdir(parents=True, exist_ok=True)
     for name, body in bodies.items():
         (d / f"{name}.py").write_text(body, encoding="utf-8")
-    settings.write_text(json.dumps({"plugins": {"disabled": list(bodies)}}))
+    merge_settings(settings, {"plugins": {"disabled": list(bodies)}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     return k

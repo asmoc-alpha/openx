@@ -62,6 +62,7 @@ class ProtectPluginTool(Tool):
         max_output: int = MAX_OUTPUT,
         max_failures: int = MAX_FAILURES,
         on_trip: Optional[Callable[["ProtectPluginTool"], None]] = None,
+        cap: bool = False,
     ) -> None:
         self._inner = inner
         self.name = inner.name
@@ -73,17 +74,36 @@ class ProtectPluginTool(Tool):
         self._failures = 0
         self._tripped = False
         self._on_trip = on_trip
+        # S1c 能力上限：manifest 未声明 permissions → 工具的**自声明**不被
+        # 信任（压到 ASK、auto_allowed 失效）。高危仍被 Guard 第③站抬严，
+        # 与本上限正交。声明了 permissions 的插件不受影响。
+        self._cap = cap
 
     # ── 委托 Tool 表面 ──────────────────────────────────────────
 
     @property
     def permission(self) -> Any:
-        return self._inner.permission
+        perm = self._inner.permission
+        if not self._cap:
+            return perm
+        from ...permissions import Permission, PermissionLevel
+
+        level = getattr(perm, "level", None)
+        if level == PermissionLevel.ASK:
+            return perm
+        reason = getattr(perm, "reason", "") or ""
+        suffix = "manifest declares no permissions; self-declared level capped to ASK"
+        return Permission(
+            level=PermissionLevel.ASK,
+            reason=f"{reason}; {suffix}" if reason else suffix,
+        )
 
     def validate_args(self, **kwargs: Any) -> Optional[str]:
         return self._inner.validate_args(**kwargs)
 
     def auto_allowed(self, args: dict) -> bool:
+        if self._cap:
+            return False
         return self._inner.auto_allowed(args)
 
     def is_high_risk(self, args: dict) -> bool:
@@ -196,6 +216,35 @@ if __name__ == "__main__":
         big.execute = _big  # type: ignore[method-assign]
         r = await ProtectPluginTool(big, max_output=100).execute()
         assert len(r.output) == 100 and r.truncated
+
+        # S1c 能力上限：manifest 未声明 permissions（cap=True）→ 自声明
+        # ALLOW 压到 ASK、auto_allowed 失效；不 cap 时原样
+        from ...permissions import Permission, PermissionLevel
+
+        class _EasyTool(Tool):
+            name = "easy"
+            @property
+            def permission(self):
+                return Permission(level=PermissionLevel.ALLOW, reason="why not")
+            def auto_allowed(self, args):
+                return True
+            async def execute(self, **kw):
+                return ToolResult(output="ok")
+
+        w = ProtectPluginTool(_EasyTool(), cap=True)
+        assert w.permission.level == PermissionLevel.ASK
+        assert "manifest declares no permissions" in w.permission.reason
+        assert not w.auto_allowed({})
+        w2 = ProtectPluginTool(_EasyTool())
+        assert w2.permission.level == PermissionLevel.ALLOW and w2.auto_allowed({})
+        # 已是 ASK 的工具 cap 后原样（reason 不重复堆叠）
+        class _AskTool(_EasyTool):
+            name = "askme"
+            @property
+            def permission(self):
+                return Permission(level=PermissionLevel.ASK, reason="careful")
+        w3 = ProtectPluginTool(_AskTool(), cap=True)
+        assert w3.permission.reason == "careful"
 
     asyncio.run(_check())
     print("openx/kernel/protect.py OK ✓")

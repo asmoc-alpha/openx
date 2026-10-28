@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import json
 
 from openx.kernel import get_kernel
@@ -14,6 +16,7 @@ from ._helpers import (
     BAD_SRC,
     HELLO_SRC,
     NOVALID_SRC,
+    merge_settings,
     write_plugin,
     write_user_plugin,
 )
@@ -54,7 +57,7 @@ class TestLoadPhases:
     def test_disabled_via_settings(self, kernel_env):
         ws, settings = kernel_env
         write_plugin(ws, "hello", HELLO_SRC)
-        settings.write_text(json.dumps({"plugins": {"disabled": ["hello"]}}))
+        merge_settings(settings, {"plugins": {"disabled": ["hello"]}})
         k = get_kernel()
         k.ensure_loaded(str(ws))
         info = next(i for i in k.inventory() if i.id == "hello")
@@ -79,7 +82,7 @@ class TestReload:
         k = get_kernel()
         k.ensure_loaded(str(ws))
         assert next(i for i in k.inventory() if i.id == "hello").phase == "active"
-        settings.write_text(json.dumps({"plugins": {"disabled": ["hello"]}}))
+        merge_settings(settings, {"plugins": {"disabled": ["hello"]}})
         k.ensure_loaded(str(ws))  # 禁用表变 -> 重载
         assert next(i for i in k.inventory() if i.id == "hello").phase == "disabled"
 
@@ -105,8 +108,10 @@ class TestReload:
             assert providers.get("anthropic") is not None
         assert instantiate_tools(k, None, include_builtin=False) == {}
 
-    def test_half_loaded_state_retries(self, kernel_env, monkeypatch):
+    def test_half_loaded_state_retries(self, kernel_env):
         """B2 回归：中途致命异常不提交加载键，下次完整重试。"""
+        import openx.builtin.tools as builtin_tools
+
         ws, _ = kernel_env
         write_plugin(ws, "hello", HELLO_SRC)
         k = get_kernel()
@@ -114,12 +119,15 @@ class TestReload:
         def boom(ctx):
             raise RuntimeError("builtin broken")
 
-        monkeypatch.setattr("openx.builtin.tools.apply", boom)
+        # 手动 patch/还原（不用 monkeypatch.undo——那会连坐 fixture 的
+        # SETTINGS_PATH 隔离）
+        real_apply = builtin_tools.apply
+        builtin_tools.apply = boom
         try:
-            k.ensure_loaded(str(ws))
-        except RuntimeError:
-            pass
+            with pytest.raises(RuntimeError):
+                k.ensure_loaded(str(ws))
+        finally:
+            builtin_tools.apply = real_apply
         assert k._load_key is None  # 键未提交
-        monkeypatch.undo()
         k.ensure_loaded(str(ws))  # 同一 key 重试成功
         assert next(i for i in k.inventory() if i.id == "hello").phase == "active"

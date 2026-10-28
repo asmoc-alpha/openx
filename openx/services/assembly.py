@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from typing import Any, Mapping, Optional
 
@@ -26,6 +27,30 @@ UI_PANEL_MAX_LINES = 8
 # 连续渲染失败熔断阈值（同 ProtectPluginTool 语义：崩溃计数，业务空
 # 返回不计）——触发即 unregister，防坏插件每帧刷警告拖慢渲染
 UI_PANEL_MAX_FAILURES = 3
+
+# ── S1d 超时隔离：contribute / render 限时执行 ────────────────────
+# "必须快速返回"从约定变成约束：贡献与渲染在共享线程池里限时跑，超时
+# 按崩溃语义计（熔断同款）。挂死的 worker 线程无法终止（Python 无线程
+# 终止原语）——熔断保证每个坏 entry 至多泄漏 _CONTRIBUTE_MAX_FAILURES 根。
+_CONTRIBUTE_TIMEOUT = 5.0          # 秒；系统提示组装的每贡献上限
+UI_RENDER_TIMEOUT = 1.0            # 秒；5Hz 渲染帧的每面板上限
+_CONTRIBUTE_MAX_FAILURES = 3
+_FuturesTimeout = concurrent.futures.TimeoutError
+_CALL_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="openx-plugin-call"
+)
+_CONTRIBUTE_FAILS: dict[str, int] = {}  # "plugin:name" -> 连续失败计数
+
+
+def _call_bounded(fn: Any, *args: Any, timeout: float) -> Any:
+    """在共享线程池里执行 fn 并限时；超时抛 ``concurrent.futures.TimeoutError``。
+
+    阻塞调用方线程直到完成/超时——collect_context_fragments（事件循环）
+    与 panels()（Live 刷新线程）本就是同步路径，此前坏插件可以把它们挂到
+    永远；现在上界明确。fn 内的异常原样穿透（调用方按各自崩溃语义处理）。
+    """
+    future = _CALL_POOL.submit(fn, *args)
+    return future.result(timeout=timeout)
 
 
 def _builtin_ids(kernel: Any) -> set:
@@ -101,7 +126,16 @@ def instantiate_tools(
             if entry.plugin in builtin_ids:
                 registry[tname] = tool
             else:
-                registry[tname] = _wrap_plugin_tool(kernel, entry.plugin, tool)
+                wrapper = _wrap_plugin_tool(kernel, entry.plugin, tool)
+                registry[tname] = wrapper
+                # S1c：收紧要在装配面留痕（/plugins 可见），不然用户只看到
+                # "突然开始弹窗"而不知道为什么。
+                if getattr(wrapper, "_cap", False):
+                    tools_reg.add_warning(
+                        entry.name,
+                        f"tool {tname!r} capped to ASK: manifest declares "
+                        "no permissions (self-declared level not trusted)",
+                    )
             produced_by[tname] = entry.plugin
     return registry
 
@@ -110,18 +144,23 @@ def _wrap_plugin_tool(kernel: Any, plugin_id: str, tool: Any) -> Any:
     """P-C：插件工具包 ProtectPluginTool，timeout 取插件 manifest 声明。
 
     on_trip：熔断触发 → ``kernel.unregister_tool(name)``（自动摘除，
-    防止模型反复调用坏插件）。
+    防止模型反复调用坏插件）。S1c 能力上限：manifest 未声明 permissions
+    → 工具的自声明权限级不被信任（压 ASK、auto_allowed 失效）——
+    permissions 是能力上限的声明（attestation），不声明则不授予信任。
     """
     timeout = DEFAULT_TIMEOUT
+    cap = False
     for info in kernel.inventory():
         if info.id == plugin_id:
             timeout = info.manifest.get("timeout") or DEFAULT_TIMEOUT
+            cap = not info.manifest.get("permissions")
             break
     tname = getattr(tool, "name", "") or "<unnamed>"
     return ProtectPluginTool(
         tool,
         timeout=timeout,
         on_trip=_make_trip(kernel, tname),
+        cap=cap,
     )
 
 
@@ -173,7 +212,10 @@ def collect_context_fragments(
 
     故障隔离（与插件调用防护同构）：单个 contribute 崩溃 -> 跳过 +
     注册表 warning，绝不炸主流程--对提示组装而言，插件异常与"没有
-    这条贡献"同构。``budget`` 为字符预算（可选）：**按 priority 顺序消耗**
+    这条贡献"同构。**超时隔离（S1d）**：contribute 在共享线程池里限时
+    执行（缺省 5s）——挂死的贡献不再拖住系统提示组装；连续超时/崩溃
+    达 3 次 → 本会话内永久跳过该贡献（镜像 UI 面板熔断）。
+    ``budget`` 为字符预算（可选）：**按 priority 顺序消耗**
     （高优先片段先占额度），超预算即停止征集，防止上下文类插件把提示撑爆。
     """
     fragments: list[str] = []
@@ -188,12 +230,27 @@ def collect_context_fragments(
     # priority 升序（小者先）；sorted 稳定 -> 同 priority 按注册序（内置恒首）
     entries.sort(key=lambda e: getattr(e.value, "priority", 100))
     for entry in entries:
+        fail_key = f"{entry.plugin}:{entry.name}"
+        if _CONTRIBUTE_FAILS.get(fail_key, 0) >= _CONTRIBUTE_MAX_FAILURES:
+            continue  # 熔断：连续失败/超时的贡献本会话内不再征集
         try:
-            out = call_with_payload(entry.value.contribute, payload)
+            out = _call_bounded(
+                call_with_payload, entry.value.contribute, payload,
+                timeout=_CONTRIBUTE_TIMEOUT,
+            )
+        except _FuturesTimeout:
+            _CONTRIBUTE_FAILS[fail_key] = _CONTRIBUTE_FAILS.get(fail_key, 0) + 1
+            reg.add_warning(
+                entry.name,
+                f"contribute timed out (>{_CONTRIBUTE_TIMEOUT:.0f}s); "
+                f"failures: {_CONTRIBUTE_FAILS[fail_key]}/{_CONTRIBUTE_MAX_FAILURES}",
+            )
+            continue
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             reg.add_warning(entry.name, f"contribute failed: {error}")
             continue
+        _CONTRIBUTE_FAILS[fail_key] = 0
         parts = [out] if isinstance(out, str) else list(out or [])
         for part in parts:
             text = str(part)
@@ -291,9 +348,15 @@ class UiPanelCollector:
         if cached is not None and now - cached[0] < interval:
             return cached[1]
         try:
-            rendered = slot.render()
+            # S1d：渲染限时（1s）——挂死的 render 不再拖住 5Hz 刷新帧；
+            # 超时按崩溃语义计入既有熔断。
+            rendered = _call_bounded(slot.render, timeout=UI_RENDER_TIMEOUT)
             raw = [rendered] if isinstance(rendered, str) else list(rendered or [])
             lines = [str(ln) for ln in raw if str(ln).strip()]
+        except _FuturesTimeout:
+            return self._fail(
+                reg, entry, f"render timed out (>{UI_RENDER_TIMEOUT:.0f}s)"
+            )
         except Exception as exc:
             return self._fail(reg, entry, f"{type(exc).__name__}: {exc}")
         # 资源限额：行数截断（不截字符宽——no_wrap/ellipsis 由渲染侧统一施加）

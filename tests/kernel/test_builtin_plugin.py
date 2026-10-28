@@ -11,7 +11,7 @@ import pytest
 
 from openx.kernel import BUILTIN_TOOLS_ID, get_kernel, reset_kernel
 
-from ._helpers import write_plugin
+from ._helpers import write_plugin, merge_settings
 
 
 class TestBuiltinMounted:
@@ -37,9 +37,7 @@ class TestBuiltinMounted:
 
     def test_builtin_immune_to_disable(self, kernel_env):
         ws, settings = kernel_env
-        settings.write_text(
-            json.dumps({"plugins": {"disabled": [BUILTIN_TOOLS_ID]}})
-        )
+        merge_settings(settings, {"plugins": {"disabled": [BUILTIN_TOOLS_ID]}})
         get_kernel().ensure_loaded(str(ws))
         info = next(i for i in get_kernel().inventory() if i.id == BUILTIN_TOOLS_ID)
         assert info.phase == "active"  # 禁用表对内置无效

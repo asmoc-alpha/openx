@@ -18,7 +18,7 @@ import json
 from openx.kernel import get_kernel
 from openx.kernel.assembly import composition
 
-from ._helpers import HELLO_SRC, write_plugin
+from ._helpers import HELLO_SRC, write_plugin, merge_settings
 
 # ── resolve：纯函数 ──────────────────────────────────────────────
 
@@ -181,7 +181,7 @@ def test_profile_retire_skips_scaffold(kernel_env):
     profiles = settings.parent / "profiles"
     profiles.mkdir(parents=True, exist_ok=True)
     (profiles / "m1.json").write_text(json.dumps({"name": "m1", "retire": ["hello"]}))
-    settings.write_text(json.dumps({"plugins": {"profile": "m1"}}))
+    merge_settings(settings, {"plugins": {"profile": "m1"}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     info = next(i for i in k.inventory() if i.id == "hello")

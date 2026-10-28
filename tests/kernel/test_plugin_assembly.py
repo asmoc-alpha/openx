@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import json
+
+from ._helpers import merge_settings
 import textwrap
 from pathlib import Path
 
@@ -127,7 +129,7 @@ def test_list_plugins_includes_metadata(kernel_env):
 def test_load_plugin_activates_disabled(kernel_env):
     ws, settings = kernel_env
     _write_plugin(ws, "vizplugin", PLUGIN_OK)
-    settings.write_text(json.dumps({"plugins": {"disabled": ["vizplugin"]}}))
+    merge_settings(settings, {"plugins": {"disabled": ["vizplugin"]}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     assert _catalog(ws)["vizplugin"]["phase"] == "disabled"
@@ -145,7 +147,7 @@ def test_load_plugin_activates_disabled(kernel_env):
 
 
 def test_load_plugin_retries_failed_with_preclean(kernel_env):
-    """failed 插件：先清残留注册（前次 apply 部分入库）再重试。"""
+    """failed 插件：失败即事务化清残（S1e），重试成功无残留冲突。"""
     ws, _ = kernel_env
     broken = PLUGIN_OK.replace(
         '    ctx.register_tool_factory("viz", factory)\n',
@@ -156,10 +158,10 @@ def test_load_plugin_retries_failed_with_preclean(kernel_env):
     k = get_kernel()
     k.ensure_loaded(str(ws))
     assert _catalog(ws)["vizplugin"]["phase"] == "failed"
-    # 前次 apply 已注册 viz（残留）
-    assert k.registry("tools").get("viz") is not None
+    # S1e 事务化：apply 半途失败 → 已注册的 viz 当场撤销（不再等重试清）
+    assert k.registry("tools").get("viz") is None
 
-    # 修复文件后重试：预清理残留 → 成功，viz 只出现一次、无冲突警告
+    # 修复文件后重试：成功，viz 只出现一次、无冲突警告
     _write_plugin(ws, "vizplugin", PLUGIN_OK)
     ok, msg = k.load_plugin("vizplugin")
     assert ok, msg
@@ -196,7 +198,7 @@ def test_load_plugin_not_found(kernel_env):
 def test_unload_plugin_session_plugin(kernel_env):
     ws, settings = kernel_env
     _write_plugin(ws, "vizplugin", PLUGIN_OK)
-    settings.write_text(json.dumps({"plugins": {"disabled": ["vizplugin"]}}))
+    merge_settings(settings, {"plugins": {"disabled": ["vizplugin"]}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     ok, _ = k.load_plugin("vizplugin")
@@ -256,7 +258,7 @@ def test_unload_records_ledger_events(kernel_env):
     """记账纪律：卸载先记 unregistered + plugin_unloaded（记账先于动作）。"""
     ws, settings = kernel_env
     _write_plugin(ws, "vizplugin", PLUGIN_OK)
-    settings.write_text(json.dumps({"plugins": {"disabled": ["vizplugin"]}}))
+    merge_settings(settings, {"plugins": {"disabled": ["vizplugin"]}})
     k = get_kernel()
     sink = Sink()
     k.attach_ledger(sink, session="s1")
@@ -293,7 +295,7 @@ class _RebuildAgent:
 async def test_meta_tools_execute(kernel_env):
     ws, settings = kernel_env
     _write_plugin(ws, "vizplugin", PLUGIN_OK)
-    settings.write_text(json.dumps({"plugins": {"disabled": ["vizplugin"]}}))
+    merge_settings(settings, {"plugins": {"disabled": ["vizplugin"]}})
     k = get_kernel()
     k.ensure_loaded(str(ws))
     agent = _RebuildAgent()

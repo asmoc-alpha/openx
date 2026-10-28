@@ -107,3 +107,19 @@ def write_user_plugin(settings: Path, name: str, src: str) -> None:
     d = Path(settings).parent / "plugins"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.py").write_text(src)
+
+
+def merge_settings(settings: Path, data: dict) -> None:
+    """合并写 settings.json（S1a 之后测试必经）——kernel_env 预先把工作区
+    信任写在 `trusted_dirs` 里，整写覆盖会把它抹掉、项目插件被信任门跳过。
+    测试改 disabled/profile 等键一律走这里。"""
+    import json
+
+    current: dict = {}
+    if settings.exists():
+        try:
+            current = json.loads(settings.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            current = {}
+    current.update(data)
+    settings.write_text(json.dumps(current), encoding="utf-8")

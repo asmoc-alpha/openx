@@ -33,6 +33,7 @@ import copy
 import inspect
 import logging
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .assembly import composition, loader
@@ -184,7 +185,7 @@ class PluginKernel:
             return (str(path), 0, 0)
 
     def _compose_key(self, workspace: str) -> tuple:
-        """加载键：目录 + 禁用表 + 组合输入签名（P6）。"""
+        """加载键：目录 + 禁用表 + 组合输入签名（P6）+ 信任态（S1a）。"""
         profile_name = composition.active_profile_name()
         return (
             str(loader.user_plugins_dir()),
@@ -194,11 +195,28 @@ class PluginKernel:
             self._file_sig(composition.project_overlay_path(workspace)),
             self._file_sig(composition.profile_path(profile_name)),
             profile_name,
+            # S1a：信任判定进键——用户把工作区加入信任后下次重组自动装载
+            loader.project_plugins_untrusted(workspace),
         )
 
     def _reload(self, workspace: str, key: tuple) -> None:
         disabled = set(key[2])
         retired = self._retired_of()   # E4：退场集合从全局账本折叠（惰性、一次）
+        # S1a boot 信任门：项目插件目录存在但工作区未信任 → 记账后跳过
+        # （loader 侧一个 spec 都不产出）。fail-closed：serve/headless 没有
+        # 人可问 = 不装载，与晋升门"无人可问 = 拒绝"同哲学；信任后（
+        # /trust 或 CLI 信任屏）键变化自动重组装载。
+        skipped_untrusted = loader.untrusted_project_plugin_ids(workspace)
+        if skipped_untrusted:
+            self.emit(
+                "plugin_skipped",
+                {
+                    "type": "plugin_skipped",
+                    "directory": str(loader.project_plugins_dir(workspace)),
+                    "trust": "untrusted",
+                    "plugins": skipped_untrusted,
+                },
+            )
         # P6 组合输入：overlay（用户/项目）+ 激活档案 → 应载清单
         user_overlay = composition.load_overlay(composition.user_overlay_path())
         project_overlay = composition.load_overlay(composition.project_overlay_path(workspace))
@@ -347,6 +365,17 @@ class PluginKernel:
         session 装载共用，无第二条加载路径（"同源同门"）。
         """
         try:
+            # S1b（D9 加载期 L2）：文件插件的**首次执行**（import）之前先过
+            # admission 子进程——模块代码 + self_test 在沙箱里跑，主进程只
+            # 在结论为绿后才真正 import。builtin（预导入模块）与 entry-point
+            # 豁免（pip install 是显式授权行为）。
+            if spec.path is not None and not spec.builtin:
+                from .sandbox.admission import admission_enabled, run_admission
+
+                if admission_enabled():
+                    verdict = run_admission(spec.path)
+                    if not verdict.ok:
+                        raise RuntimeError(f"admission failed: {verdict.error}")
             loaded = loader.load_module(spec)
             apply_fn = loader.extract_apply(loaded)
             if apply_fn is None:
@@ -363,8 +392,17 @@ class PluginKernel:
             if spec.builtin:  # 内置插件坏 = 产品坏，带病不该运行
                 _log.exception("builtin plugin %s failed; fatal", spec.id)
                 raise
+            # 事务化（S1e）：apply 半途失败时已注册的条目全部撤销——
+            # PHASE_FAILED 不留半载状态（此前残留要等下次 load_plugin
+            # 重试才被清）。注册表已按 provenance 清空，模块对象一并
+            # 摘除（重试 = 全新 import，不带旧模块状态）。
+            self._purge_plugin_entries(spec.id)
+            loader.unload_module(spec)
             info.phase = PHASE_FAILED  # 失败隔离：用户插件坏 ≠ 主进程死
             info.error = f"{type(exc).__name__}: {exc}"
+            for kinds in (info.tools, info.commands, info.providers,
+                          info.contexts, info.lifecycle, info.ui_slots):
+                kinds.clear()
             _log.error("plugin %s failed to load: %s", spec.id, info.error)
             self.emit(
                 "plugin_failed",
@@ -952,18 +990,29 @@ class PluginKernel:
             for p in self._plugins.values()
         ]
 
-    def load_plugin(self, name: str) -> tuple[bool, str]:
+    def load_plugin(self, name: str, path: Optional[Any] = None) -> tuple[bool, str]:
         """会话内动态装载一个插件（P-A）。
 
         fresh discover（可找到 boot 之后新写的插件文件）；**跳过 disabled
         表**、标记 ``scope="session"``、复用五阶段校验（同源同门）。failed
         重试前先清残留注册（前次 apply 可能已入库部分条目）。已 ACTIVE →
         ``(False, "already loaded")``。
+
+        ``path`` 直传（S1a）：调用方自己担保的文件（write_plugin 刚通过
+        admission + ASK 的产物）不走 discover 的信任过滤——信任门拦的是
+        "boot 期静默执行仓库自带代码"，不是"用户刚刚显式批准的这次装载"。
         """
-        specs = {s.id: s for s in loader.discover(self.workspace)}
-        spec = specs.get(name)
-        if spec is None:
-            return (False, f"plugin not found: {name}")
+        if path is not None:
+            spec = loader.PluginSpec(id=name, source=str(path), path=Path(path))
+        else:
+            specs = {s.id: s for s in loader.discover(self.workspace)}
+            spec = specs.get(name)
+            if spec is None:
+                hint = ""
+                if loader.project_plugins_untrusted(self.workspace) and \
+                        (loader.project_plugins_dir(self.workspace) / f"{name}.py").exists():
+                    hint = " (project plugins are untrusted here; run /trust to enable)"
+                return (False, f"plugin not found: {name}{hint}")
         if name in self._plugins and self._plugins[name].phase == PHASE_ACTIVE:
             return (False, f"plugin already loaded: {name}")
         # 预清理：重试 failed 时的残留注册 + 清空 info 注册项列表
@@ -1019,6 +1068,11 @@ class PluginKernel:
         # trigger_lifecycle 吞掉记账，绝不阻塞卸载。
         self.trigger_lifecycle("unload", plugin_id=name)
         self._purge_plugin_entries(name)
+        # S1e：模块对象一并摘除（此前只清注册项，模块级状态永久滞留——
+        # 卸载是名义的）。重载 = 全新 import。
+        specs = {s.id: s for s in loader.discover(self.workspace)}
+        if name in specs:
+            loader.unload_module(specs[name])
         del self._plugins[name]
         # K6：会话内插进来的贡献（mcp:* 等）卸载后从重放表注销——
         # "卸载 = 回滚"必须彻底，否则下次组合重组又冒出来。
