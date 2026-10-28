@@ -381,11 +381,22 @@ class PluginKernel:
             if apply_fn is None:
                 raise TypeError("plugin exports no apply(ctx)")
             self._apply_plugin_meta(info, loaded)
+            # S2b 依赖校验（装载期）：声明的 dependencies 须已 ACTIVE。
+            # 缺失/失败/环 → 就地明确失败（error 写明缺谁）；此前该字段
+            # 只查形状不消费，缺失无声。发现序（用户目录先、字典序）即
+            # 装载序——被依赖者放用户目录或 overlay enable 保序。
+            for dep in info.manifest.get("dependencies") or []:
+                dep_info = self._plugins.get(dep)
+                if dep_info is None or dep_info.phase != PHASE_ACTIVE:
+                    raise RuntimeError(
+                        f"missing dependency: {dep!r} is not loaded/active"
+                    )
             ctx = PluginContext(
                 self,
                 spec.id,
                 logging.getLogger(f"openx.plugin.{spec.id}"),
                 self.workspace,
+                plugin_dir=spec.root,
             )
             apply_fn(ctx)
         except Exception as exc:
@@ -1003,7 +1014,12 @@ class PluginKernel:
         "boot 期静默执行仓库自带代码"，不是"用户刚刚显式批准的这次装载"。
         """
         if path is not None:
-            spec = loader.PluginSpec(id=name, source=str(path), path=Path(path))
+            path = Path(path)
+            # S2a：入口文件名是 plugin.py → 目录插件（root = 所在目录），
+            # ctx.plugin_dir 由此可得
+            root = path.parent if path.name == "plugin.py" else None
+            spec = loader.PluginSpec(id=name, source=str(path), path=path,
+                                     root=root)
         else:
             specs = {s.id: s for s in loader.discover(self.workspace)}
             spec = specs.get(name)

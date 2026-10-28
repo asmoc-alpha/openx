@@ -4,6 +4,40 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.20 — Plugins get packaging: directories, dependencies, versions, git install
+
+### A plugin stops being a single .py file; the dead manifest fields grow teeth
+
+- **Directory plugins (S2a)**: `<plugins>/<name>/plugin.py` is now discovered
+  alongside single files (same trust gate, same loading pipeline; same-id
+  single file wins). The plugin root is exposed as **`ctx.plugin_dir`** —
+  data assets live next to `plugin.py` and resolve relatively. Single-file
+  plugins see `plugin_dir = None`; nothing about them changed
+- **`dependencies` finally mean something (S2b)**: the field was shape-checked
+  and never read. Now each declaration must be an ACTIVE plugin at load time —
+  a missing or failed dependency fails the plugin **loudly** (error names the
+  missing one; the skip shows in `composition_resolved`). Cycles fail both
+  sides naturally. Honest limitation: load order is discovery order (user
+  dir → project dir, alphabetical), so put depended-on plugins in the user
+  dir or pin them via overlay enable — no import-free topological sort at
+  boot
+- **`api` version + unknown-key warning (S2c)**: `__openx_meta__` may declare
+  `api: 1`; a mismatch with the kernel's supported version is a **refuse-load**
+  with the supported version in the message (previously a kernel upgrade
+  silently broke plugins into PHASE_FAILED mystery). Unknown **top-level**
+  manifest keys now warn instead of being silently ignored (a typo'd key used
+  to no-op invisibly). Plugins without `api` load unchanged
+- **`/plugin install <git-url>` (S2d)**: ASK confirm (serve/headless has no
+  approver → fail-closed) → `git clone --depth 1` to a temp dir → locate the
+  entry (`plugin.py` at repo root, one level down, or a top-level .py) →
+  **admission sandbox gate** (S1b; `file://` works for air-gapped installs,
+  the sandbox still runs) → copy into the user plugins dir (`.git` stripped,
+  existing target refuses) → session load + tool rebuild. No marketplace, no
+  dependency resolution — that's later
+- New tests: directory plugins (+ trust-gate interplay), dependency
+  satisfied/missing/cycle/session-reject, api gate + unknown-key warning,
+  and a full `file://` git-install flow with real admission children
+
 ## 0.1.19 — Plugin trust gate, admission sandbox, and a permission ceiling
 
 ### The five holes from the plugin audit close; two designed-but-unbuilt items land

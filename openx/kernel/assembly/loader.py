@@ -26,10 +26,11 @@ ENTRY_POINT_GROUP = "openx.plugins"
 class PluginSpec:
     id: str
     source: str                 # 展示用：目录路径 / entry-point 值
-    path: Optional[Path] = None          # 文件插件
+    path: Optional[Path] = None          # 文件插件（入口 .py）
     entry_point: Optional[object] = None  # importlib.metadata EntryPoint
     loaded: Optional[object] = None       # 已导入模块（base bundle 内置插件）
     builtin: bool = False                 # 内置：失败=致命，禁用表对其无效
+    root: Optional[Path] = None           # S2a：目录插件的根（数据资产相对它解析）
 
 
 def user_plugins_dir() -> Path:
@@ -72,6 +73,9 @@ def discover(workspace: str) -> list[PluginSpec]:
     """发现插件指定符；同 id 先见者赢（用户级先于项目级）。
 
     S1a：项目目录未获工作区信任 → 整目录跳过（一个 spec 都不产出）。
+    S2a：除单文件 ``*.py`` 外，还发现**目录插件**——``<dir>/<name>/plugin.py``
+    存在即一个插件（数据资产放同目录，经 ``ctx.plugin_dir`` 解析）；
+    同 id 单文件优先。
     """
     specs: list[PluginSpec] = []
     seen: set[str] = set()
@@ -98,6 +102,14 @@ def discover(workspace: str) -> list[PluginSpec]:
             if path.name.startswith("_"):
                 continue
             add(PluginSpec(id=path.stem, source=str(directory), path=path))
+        # S2a：目录插件（<name>/plugin.py）
+        for subdir in sorted(directory.iterdir()):
+            if not subdir.is_dir() or subdir.name.startswith("_"):
+                continue
+            entry = subdir / "plugin.py"
+            if entry.is_file():
+                add(PluginSpec(id=subdir.name, source=str(directory),
+                               path=entry, root=subdir))
 
     # 包插件：pip entry-points group openx.plugins（远期的市场入口，P1 先接通）
     try:

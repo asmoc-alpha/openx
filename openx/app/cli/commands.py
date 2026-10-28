@@ -29,7 +29,9 @@ if __name__ == "__main__" and not __package__:
     _sys.path.insert(0, str(_root))
     __package__ = ".".join(_file.relative_to(_root).parts[:-1])
 
+import asyncio
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
@@ -294,6 +296,138 @@ async def _cmd_trust(agent, console, args):
     if agent is not None:
         agent._rebuild_tools()
     console.print_success(f"✓ Workspace trusted: {ws}")
+    return True
+
+
+@register(
+    "plugin",
+    description="Plugin packaging tools: install <git-url> (S2d)",
+)
+async def _cmd_plugin(agent, console, args):
+    """插件打包面（S2d）——``/plugin install <git-url>``。
+
+    流程：URL 白名单（https:// 或 git@）→ **ASK 确认**（serve/headless 无
+    人可问 = fail-closed 拒绝，同晋升门哲学）→ ``git clone --depth 1`` 到
+    临时目录 → 定位 plugin.py（根目录或一级子目录）→ **admission 沙箱门**
+    （S1b）→ 拷入用户插件目录（已存在即拒）→ 会话装载。不 marketplace、
+    不做依赖解析——版本管理是远期事。
+    """
+    sub = args[0].lower() if args else ""
+    if sub == "install":
+        return await _plugin_install(agent, console, args[1:])
+    console.print_warning("usage: /plugin install <git-url>")
+    return True
+
+
+async def _plugin_install(agent, console, args) -> bool:
+    """install 执行体：clone → 定位 → 沙箱过闸 → 拷入 → 会话装载。"""
+    import shutil
+    import tempfile
+
+    from ...kernel import get_kernel
+    from ...kernel.assembly.loader import user_plugins_dir
+    from ...kernel.sandbox.admission import run_admission
+
+    if not args:
+        console.print_warning("usage: /plugin install <git-url>")
+        return True
+    url = args[0]
+    # file:// = 本地路径克隆（气隙/自托管场景合法；沙箱门照过）
+    if not (url.startswith("https://") or url.startswith("git@")
+            or url.startswith("file://")):
+        console.print_warning(f"only https://, git@ or file:// URLs are supported: {url}")
+        return True
+    repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
+    if not repo_name or not re.fullmatch(r"[A-Za-z0-9._-]+", repo_name):
+        console.print_warning(f"cannot derive a plugin name from: {url}")
+        return True
+    target = user_plugins_dir() / repo_name
+
+    # ASK：装第三方代码是高影响动作；无人可问 = 拒绝（fail-closed）
+    ask = getattr(console, "ask_permission", None)
+    if ask is None:
+        console.print_warning("no approver available; install refused (fail-closed)")
+        return True
+    approved, _ = await ask(
+        f"plugin install: {repo_name}",
+        f"Clone and admit third-party plugin code from {url}",
+        can_remember=False,
+    )
+    if not approved:
+        console.print_info("Install cancelled.")
+        return True
+    if target.exists():
+        console.print_warning(f"plugin already exists: {target}")
+        return True
+
+    tmp = Path(tempfile.mkdtemp(prefix="openx-plugin-install-"))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", url, str(tmp / repo_name),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            console.print_warning(
+                f"git clone failed: {stderr.decode('utf-8', 'replace').strip()[:300]}"
+            )
+            return True
+
+        src_root = tmp / repo_name
+        entry = src_root / "plugin.py"
+        if entry.is_file():
+            plugin_root = src_root          # 目录插件（数据资产同目录）
+        else:
+            py_files = [p for p in sorted(src_root.glob("*.py"))
+                        if not p.name.startswith("_")]
+            sub_dirs = [d / "plugin.py" for d in sorted(src_root.iterdir())
+                        if d.is_dir() and (d / "plugin.py").is_file()]
+            if sub_dirs:
+                plugin_root, entry = sub_dirs[0].parent, sub_dirs[0]
+            elif py_files:
+                plugin_root, entry = None, py_files[0]  # 单文件仓库
+            else:
+                console.print_warning(
+                    "no plugin entry found (expect plugin.py or a top-level .py)"
+                )
+                return True
+
+        # admission 沙箱门（S1b）：过不了就不落盘——clone 的代码一步都
+        # 不在主进程执行过。
+        verdict = await asyncio.to_thread(run_admission, entry)
+        if not verdict.ok:
+            console.print_warning(f"admission failed: {verdict.error}")
+            return True
+
+        # 拷入：目录插件整根（剥 .git）；单文件仓库落成 <name>.py。
+        # 目的地恒为 target（此前 target/<name> 嵌套会把入口埋两层深）。
+        if plugin_root is not None:
+            shutil.copytree(
+                plugin_root, target,
+                ignore=shutil.ignore_patterns(".git"),
+            )
+            load_path = target / "plugin.py"
+        else:
+            target = user_plugins_dir() / f"{repo_name}.py"
+            shutil.copy2(entry, target)
+            load_path = target
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    plugin_id = repo_name
+    kernel = get_kernel()
+    ok, msg = kernel.load_plugin(plugin_id, path=load_path)
+    if not ok:
+        console.print_warning(f"cloned but failed to load: {msg}")
+        return True
+    if agent is not None:
+        agent._rebuild_tools()
+    decl = (kernel.plugin_help(plugin_id) or {}).get("manifest") or {}
+    console.print_success(
+        f"✓ installed {plugin_id} → {load_path}\n"
+        f"  summary: {decl.get('summary', '')}  permissions: "
+        f"{decl.get('permissions') or '(none — tools capped to ASK)'}"
+    )
     return True
 
 

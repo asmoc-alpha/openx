@@ -121,11 +121,21 @@ class PluginCommand:
 class PluginContext:
     """传给插件 ``apply(ctx)`` 的上下文对象。"""
 
-    def __init__(self, kernel: Any, plugin_id: str, logger: Any, workspace: str):
+    def __init__(
+        self,
+        kernel: Any,
+        plugin_id: str,
+        logger: Any,
+        workspace: str,
+        plugin_dir: Optional[Any] = None,
+    ):
         self._kernel = kernel
         self.plugin_id = plugin_id
         self.logger = logger
         self.workspace = workspace  # 只读信息，非 fs 权限
+        # S2a：目录插件的根目录（数据资产相对它解析）；单文件/内置/
+        # entry-point 插件为 None。
+        self.plugin_dir = plugin_dir
 
     def register_tool(self, tool: Any) -> None:
         """注册一个工具实例（须自声明 permission，形状校验拒载记警告）。

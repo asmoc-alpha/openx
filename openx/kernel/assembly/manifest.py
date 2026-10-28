@@ -54,6 +54,18 @@ SCAFFOLD_REQUIRED = ("compensates", "exit_when")
 # fallback 词汇表（模型降级时脚手架如何回挂）——未知值只警告不拒（同 type/mount）
 KNOWN_SCAFFOLD_FALLBACKS = {"reinstall-on-regression"}
 
+# 插件 API 版本（S2c）：manifest 可声明 `api` 钉住目标版本；与内核支持
+# 版本不符 → 拒载（防"内核升级后插件悄悄坏"——此前失败只能落
+# PHASE_FAILED 靠猜）。未声明 = 随内核当前版本（兼容存量插件）。
+PLUGIN_API_VERSION = 1
+
+# manifest 顶层已知键（S2c）：键外 → 警告（此前顶层未知键被静默忽略，
+# 拼错的键无声失效，极难排查；沿用 P-B 哲学：警告不拒）。
+KNOWN_MANIFEST_KEYS = {
+    "type", "mount", "trust", "summary", "permissions", "cost",
+    "timeout", "dependencies", "scaffold", "api",
+}
+
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -120,6 +132,16 @@ def validate_manifest(meta: Any) -> tuple[list[str], list[str]]:
     trust = meta.get("trust")
     if trust is not None and trust not in KNOWN_TRUST:
         problems.append(f"manifest.trust {trust!r} not in {sorted(KNOWN_TRUST)}")
+    api = meta.get("api")
+    if api is not None and api != PLUGIN_API_VERSION:
+        problems.append(
+            f"manifest.api {api!r} not supported by this kernel "
+            f"(supported: {PLUGIN_API_VERSION})"
+        )
+    for key in meta:
+        if key not in KNOWN_MANIFEST_KEYS:
+            warnings.append(f"unknown manifest key {key!r}; "
+                            f"known: {sorted(KNOWN_MANIFEST_KEYS)}")
     ptype = meta.get("type")
     if ptype is not None and ptype not in KNOWN_TYPES:
         warnings.append(f"unknown manifest.type {ptype!r}; "
