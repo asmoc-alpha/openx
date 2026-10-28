@@ -89,6 +89,42 @@ class WebPermissionBridge:
         # 交互提问 / 计划审批的待决 future（P4.1 交互化；同 permission 纪律）
         self._pending_ask: dict[str, asyncio.Future] = {}
         self._pending_plan: dict[str, asyncio.Future] = {}
+        #: request_id → 系统侧归因（目前只有 "disconnected"）：关闭事件优先
+        #: 采用它，避免把断流记成用户裁决。
+        self._outcome_hint: dict[str, str] = {}
+
+    # ── 人工闸门的可观测性（任务流"卡在哪"的唯一真源）──────────────
+
+    def _emit(self, ev: dict) -> None:
+        """广播一条事件，并计入本轮 live 缓冲（迟到客户端 attach 可见）。
+
+        live 缓冲由会话持有（``_live_events``）；桥只做鸭子式追加——测试里
+        的假 session 没有该属性，getattr 兜底即跳过。
+        """
+        self._session.broadcast(ev)
+        live = getattr(self._session, "_live_events", None)
+        if isinstance(live, list):
+            live.append(ev)
+
+    def _interaction_open(
+        self, kind: str, request_id: str, tool: str = "", detail: str = ""
+    ) -> None:
+        """闸门已落下（弹窗已广播）——面板据此把回合标成"等待你处理"。
+
+        顺序：先请求事件、后本事件。请求是端的既有契约（老客户端只认
+        ``permission_request``），本事件是**增量可观测性**，不能抢在前头
+        改变"首个事件即请求"的顺序。
+        """
+        self._emit(protocol.interaction(
+            kind, "open", request_id, tool=tool, detail=detail,
+        ))
+
+    def _interaction_close(self, kind: str, request_id: str, outcome: str) -> None:
+        """闸门已解除：如实记结果（含超时/断流——系统行为不冒充人的决定）。"""
+        outcome = self._outcome_hint.pop(request_id, outcome)
+        self._emit(protocol.interaction(
+            kind, "close", request_id, outcome=outcome,
+        ))
 
     # ── 权限 ─────────────────────────────────────────────────────
 
@@ -106,6 +142,9 @@ class WebPermissionBridge:
         fail-closed：无客户端 → 立即 ``(False, False)``；超时 → ``(False,
         False)``；回合被打断（CancelledError）→ 向上传播，``finally`` 清理
         待决条目。返回 ``(approved, remember)``。
+
+        裁决结果同时经 ``interaction`` 事件下发（任务流留痕）——"拒绝"与
+        "超时拒绝"与"断流拒绝"在端上是三件不同的事，必须分得开。
         """
         if not self._session.has_clients():
             _log.info("permission denied: no web client attached")
@@ -118,17 +157,29 @@ class WebPermissionBridge:
             args_summary or details,
             can_remember=can_remember,
         ))
+        self._interaction_open(
+            "permission", request_id, tool=tool_name,
+            detail=args_summary or details or reason,
+        )
         fut = asyncio.get_event_loop().create_future()
         self._pending[request_id] = fut
+        outcome = "denied"
         try:
             allowed, remember = await asyncio.wait_for(fut, self._timeout)
+            outcome = "approved" if allowed else "denied"
             return (bool(allowed), bool(remember))
         except asyncio.TimeoutError:
             _log.info("permission %s timed out after %.0fs; denied",
                       request_id, self._timeout)
+            outcome = "timeout"
             return (False, False)
+        except asyncio.CancelledError:
+            # 回合被 Esc 打断 → 闸门随回合取消；如实记"取消"而非"拒绝"
+            outcome = "cancelled"
+            raise
         finally:
             self._pending.pop(request_id, None)
+            self._interaction_close("permission", request_id, outcome)
 
     def on_response(
         self, request_id: str, allowed: bool, remember: bool = False
@@ -147,16 +198,20 @@ class WebPermissionBridge:
 
         WS 收尾路径调用；已返回的裁决不受影响。ask_user 待决落空答
         （ask_user 侧转保守默认），plan 待决落 False。
+
+        **断流不是人的决定**：这里先给每个待决 id 打上 ``disconnected``
+        归因标记（``_outcome_hint``），关闭事件据此如实区分——否则面板会
+        把"最后一个标签页关了"记成"用户拒绝了"，那是栽赃。
         """
-        for fut in list(self._pending.values()):
-            if not fut.done():
-                fut.set_result((False, False))
-        for fut in list(self._pending_ask.values()):
-            if not fut.done():
-                fut.set_result([])
-        for fut in list(self._pending_plan.values()):
-            if not fut.done():
-                fut.set_result(False)
+        for pending, result in (
+            (self._pending, (False, False)),
+            (self._pending_ask, []),
+            (self._pending_plan, False),
+        ):
+            for request_id, fut in list(pending.items()):
+                if not fut.done():
+                    self._outcome_hint[request_id] = "disconnected"
+                    fut.set_result(result)
 
     # ── 交互提问 / 计划审批（P4.1 交互化，同 permission 的等待模式）──
 
@@ -179,20 +234,29 @@ class WebPermissionBridge:
         self._session.broadcast(protocol.serve_ask_user(
             request_id, question, options, multi_select,
         ))
+        self._interaction_open("ask_user", request_id, detail=question)
         fut = asyncio.get_event_loop().create_future()
         self._pending_ask[request_id] = fut
+        outcome = "answered"
         try:
             answers = await asyncio.wait_for(fut, self._timeout)
+            answers = [a for a in answers if a]
+            if not answers:
+                # 空答 = 端点了 Skip → 保守默认；留痕如实区分"跳过"与"超时"
+                outcome = "skipped"
+                return conservative_answer(options, multi_select)
+            return list(answers) if multi_select else str(answers[0])
         except asyncio.TimeoutError:
             _log.info("ask_user %s timed out after %.0fs; conservative default",
                       request_id, self._timeout)
+            outcome = "timeout"
             return conservative_answer(options, multi_select)
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         finally:
             self._pending_ask.pop(request_id, None)
-        answers = [a for a in answers if a]
-        if not answers:
-            return conservative_answer(options, multi_select)
-        return list(answers) if multi_select else str(answers[0])
+            self._interaction_close("ask_user", request_id, outcome)
 
     def on_ask_user_response(self, request_id: str, answers: list) -> None:
         """收到 ask_user_response：匹配到待决 future 才落答案。"""
@@ -208,16 +272,25 @@ class WebPermissionBridge:
             return False
         request_id = uuid.uuid4().hex
         self._session.broadcast(protocol.serve_plan_request(request_id, plan))
+        self._interaction_open("plan", request_id)
         fut = asyncio.get_event_loop().create_future()
         self._pending_plan[request_id] = fut
+        outcome = "rejected"
         try:
-            return bool(await asyncio.wait_for(fut, self._timeout))
+            approved = bool(await asyncio.wait_for(fut, self._timeout))
+            outcome = "approved" if approved else "rejected"
+            return approved
         except asyncio.TimeoutError:
             _log.info("plan approval %s timed out after %.0fs; rejecting",
                       request_id, self._timeout)
+            outcome = "timeout"
             return False
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         finally:
             self._pending_plan.pop(request_id, None)
+            self._interaction_close("plan", request_id, outcome)
 
     def on_plan_response(self, request_id: str, approved: bool) -> None:
         """收到 plan_response：匹配到待决 future 才落裁决。"""
@@ -389,6 +462,31 @@ if __name__ == "__main__":
         await asyncio.sleep(0.01)
         b4.deny_all()
         assert await fut == (False, False)
+        # 断流归因：关闭事件记 disconnected，绝不冒充"用户拒绝"
+        close4 = [e for e in s4.broadcasts
+                  if e["type"] == "interaction" and e["phase"] == "close"]
+        assert close4 and close4[-1]["outcome"] == "disconnected"
+
+        # ⑥ 人工闸门可观测：请求后紧跟 interaction open，裁决后 close 带 outcome
+        s5 = _FakeSession()
+        b5 = WebPermissionBridge(s5, timeout=1.0)
+
+        async def _respond5() -> None:
+            await asyncio.sleep(0.01)
+            req = s5.broadcasts[0]
+            b5.on_response(req["request_id"], False)
+            assert req["type"] == "permission_request"
+
+        t5 = asyncio.ensure_future(_respond5())
+        assert await b5.ask_permission("shell", "run") == (False, False)
+        await t5
+        kinds5 = [e["type"] for e in s5.broadcasts]
+        # 请求必须仍排在首位（老客户端的既有契约）
+        assert kinds5[0] == "permission_request", kinds5
+        assert s5.broadcasts[1]["phase"] == "open"
+        close5 = [e for e in s5.broadcasts
+                  if e["type"] == "interaction" and e["phase"] == "close"]
+        assert close5 and close5[-1]["outcome"] == "denied"
 
     asyncio.run(_self_check())
 

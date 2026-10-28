@@ -1294,6 +1294,8 @@ body.is-resizing #task-panel { transition: none; }
 .status-dot.done    { background: var(--green); }
 .status-dot.pending { background: var(--text-faint); }
 .status-dot.error   { background: var(--red); }
+/* 等待人工（权限 / 提问 / 计划审批）：琥珀色 + 慢脉冲，与"在跑"区分开 */
+.status-dot.waiting { background: var(--amber); animation: pulse 2s infinite; }
 
 .ct-title {
   margin: 8px 0 10px;
@@ -1330,6 +1332,19 @@ body.is-resizing #task-panel { transition: none; }
 @keyframes progress-sweep {
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(210%); }
+}
+
+/* 等待人工的横幅：只在有挂起交互时由 JS 插入（不占常驻空间） */
+.ct-await {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 /* 小节 */
@@ -1397,6 +1412,109 @@ body.is-resizing #task-panel { transition: none; }
   font-family: var(--mono);
   color: var(--text-faint);
 }
+
+/* ── 任务流增量（2026-10）───────────────────────────────────────
+   轮次分组 / 步骤双行 / 可展开输出 / 闸门夹注。一律只加不改：既有类名
+   （.step / .step-num / .step-meta …）保持原样，第三方样式不受影响。 */
+
+/* 轮次分隔：同一轮模型请求产出的工具调用聚在一条横线下 */
+.round-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+.round-head::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+
+/* 未返回结果的步骤（历史里调用没有对应结果）：虚线边——明确"不知道"，
+   而不是默认渲染成"完成了" */
+.step.pending { border-style: dashed; }
+/* 历史未记录成功/失败（消息里没有 is_error）：点线 + 收敛亮度，仍是"中性" */
+.step.unknown { border-style: dotted; }
+.step.unknown .step-num { color: var(--text-faint); }
+
+/* 步骤标题行：工具名在左、状态/耗时在右 */
+.step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.step-head .step-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.step-head .step-meta { flex: none; }
+
+/* 副标题：命令 / 路径（单行省略，悬停看全文） */
+.step-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 失败首行：不展开也能看到"为什么错" */
+.step-err {
+  margin-top: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+/* 可展开步骤：整行可点，展开后显示原始输出 */
+.step.clickable { cursor: pointer; }
+.step.clickable:hover { border-color: var(--border); }
+.step-out {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.step-trunc {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--text-faint);
+}
+
+/* 人工闸门夹注：权限 / 提问 / 计划的裁决留痕（时间线一行） */
+.step-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.step-note .note-icon { flex: none; font-family: var(--mono); }
+.step-note.approved .note-icon,
+.step-note.answered .note-icon { color: var(--green); }
+.step-note.timeout .note-icon,
+.step-note.disconnected .note-icon,
+.step-note.cancelled .note-icon { color: var(--amber); }
+.step-note.denied .note-icon,
+.step-note.rejected .note-icon { color: var(--red); }
+.step-note .note-text { min-width: 0; overflow-wrap: anywhere; }
 
 /* 执行计划（todo 清单）/ 子 agent 行（任务流 tab 快照）
    status-dot 复用上方状态点配色：pending/done 灰绿、running 主色脉冲 */

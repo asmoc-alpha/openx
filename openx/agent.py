@@ -217,10 +217,17 @@ class ToolStartEvent:
 
     REPL 把它渲染成 ``● <name>`` 暗色指示行；headless stream-json 模式
     直接序列化成 ``tool_use`` 事件——展示格式不再混进模型数据流。
+
+    ``call_id`` / ``round`` 是**配对与分组**的事实（serve 任务流消费）：
+    并行批次里同名工具会有多个，缺了 id 端只能按"同名后进先出"猜；
+    ``round`` 是本回合第几次模型请求产生这批调用。默认空/0——既有
+    消费方（REPL / fleet / stream-json）零改动。
     """
 
     name: str
     arguments: str = ""
+    call_id: str = ""
+    round: int = 0
 
 
 @dataclass
@@ -229,11 +236,15 @@ class ToolResultEvent:
 
     ``output`` 为完整结果文本（截断与着色由消费方按场景决定：REPL
     回显前 500 字符，stream-json 另设上限）。
+
+    ``call_id`` / ``round`` 与同批 ``ToolStartEvent`` 对齐（见上）。
     """
 
     name: str
     output: str
     is_error: bool = False
+    call_id: str = ""
+    round: int = 0
 
 
 class OpenXAgent:
@@ -2207,7 +2218,12 @@ class OpenXAgent:
                     # 结构化事件：展示格式由消费方决定（REPL 渲染暗色
                     # 指示行，headless stream-json 序列化为 tool_use 事件）
                     yield ToolStartEvent(
-                        name=fn["name"], arguments=fn.get("arguments", "")
+                        name=fn["name"],
+                        arguments=fn.get("arguments", ""),
+                        call_id=str(tc.get("id", "") or ""),
+                        # 本批调用由第几次模型请求产生（+1：tool_rounds 是
+                        # 已**收口**的轮数，本批尚未收口）
+                        round=state.tool_rounds + 1,
                     )
                     tool = self.tools.get(fn["name"])
                     prepared.append(await self.tool_executor.prepare(
@@ -2232,6 +2248,8 @@ class OpenXAgent:
                         # 模型历史走下方 state.messages 的 result_text。
                         output=result_text,
                         is_error=bool(tool_result.error),
+                        call_id=str(getattr(pc, "tc_id", "") or ""),
+                        round=state.tool_rounds + 1,   # 同批 same round
                     )
 
                     msg = {

@@ -34,8 +34,9 @@ code — with permission controls, sessions, subagents, workflows, and MCP suppo
 - 💾 Sessions — persistence and resume (`--continue` / `--resume`). Turn-level
   checkpoints persist the turn in flight, so `--recover` can pick up a turn killed by a
   crash, `kill` or Ctrl-C (opt-in, never automatic)
-- 🌐 Web UI — `openx serve` for browser chat, remote plan/permission approval and
-  session replay (needs `OPENX_EXTRAS=web`)
+- 🌐 Web UI — `openx serve` for browser chat, a live task-flow panel (per-step
+  timing, expandable output, "waiting for you" gates), remote plan/permission
+  approval and session replay (needs `OPENX_EXTRAS=web`)
 - 🌗 Background tasks · 🗜️ auto-compaction · 🧠 persistent memory
 - 📤 Headless JSON output for CI (`--output-format json` / `stream-json`)
 - 🖼️ Image analysis · 🎨 rich terminal UI with markdown and syntax highlighting —
@@ -110,7 +111,7 @@ All flags and slash commands: [docs/user/guide/commands.md](docs/user/guide/comm
 |---|---|
 | [User guides](docs/user/index.md) | commands, modes & permissions, configuration, sessions |
 | [Subsystem reference](docs/subsystems/README.md) | subagents, workflows, background tasks, hooks, MCP, scaffolds, offline analysis, experience distillation, recovery |
-| [Web UI (`openx serve`)](docs/openx-serve.md) | browser chat, remote approval, session replay |
+| [Web UI (`openx serve`)](docs/openx-serve.md) | browser chat, task-flow panel, remote approval, session replay |
 | [Architecture](docs/architecture.md) | module tree and runtime loop |
 | [Development](docs/development.md) | contributor setup, tests, lint |
 | [Cookbook](docs/cookbook/extending.md) | extending OpenX with custom tools |

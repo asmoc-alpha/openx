@@ -241,6 +241,98 @@ def test_taskpanel_renders_plan_and_agents_with_textcontent():
     assert "name.textContent = label" in js
 
 
+# ── 任务流增量：可观测性 + 诚实性纪律 ─────────────────────────────
+
+
+def test_taskpanel_has_no_fabricated_progress():
+    """进度条不得再出现写死的百分比（总步数未知时那是编的）。"""
+    js = _read("task-panel.js")
+    # 旧 STATUS 表带 bar:"35%" / bar:"60%" / bar:"85%"——全部移除
+    assert "bar:" not in js
+    assert "进度" not in js or "不猜百分比" in js  # 只允许注释里出现"进度"
+    assert 'fill.style.width = settled ? "100%" : "0%"' in js
+    assert "indeterminate" in js
+
+
+def test_taskpanel_step_pairing_and_round_grouping():
+    """步骤按 call_id 配对、按 round 分组（并行同名工具不再错配）。"""
+    js = _read("task-panel.js")
+    assert "onToolUse(ev) {" in js and "onToolResult(ev) {" in js
+    assert "callId" in js and "s.callId === callId" in js
+    assert "round:" in js and "round-head" in js
+    # 耗时为服务端实测：缺就不写（durationMs == null 分支必须存在）
+    assert "durationMs == null" in js
+    # 输出可展开、失败默认展开
+    assert "step-out" in js and "s.open = true" in js
+    assert "firstMeaningfulLine" in js
+
+
+def test_taskpanel_await_and_interaction_notes():
+    """等待人工的状态与裁决留痕（"卡在哪 / 谁批的 / 超时 / 断流"）。"""
+    js = _read("task-panel.js")
+    assert 'blocked:' in js and "等待你处理" in js
+    assert 'status-dot.waiting' in _read("style.css")
+    assert "onAwait(kind, ev) {" in js
+    assert "onInteraction(ev) {" in js
+    assert "ct-await" in js and ".ct-await {" in _read("style.css")
+    for outcome in ("approved", "denied", "timeout", "disconnected", "cancelled"):
+        assert f"{outcome}:" in js, f"缺 outcome 文案：{outcome}"
+
+
+def test_taskpanel_history_fallback_from_api_flow():
+    """刷新 / 回放后不再是空面板：历史最后一轮从 /api/flow 重建。"""
+    js = _read("task-panel.js")
+    assert "loadHistory(sessionId)" in js
+    assert 'OX.get("/api/flow" + q)' in js
+    assert "_stepSource()" in js and '"上一轮"' in js
+    # 历史里没有 is_error（null）→ unknown：绝不把"不知道"渲染成"完成了"
+    assert '"unknown"' in js and "成败未记录" in js
+    app = _read("app.js")
+    assert "TaskPanel.loadHistory(sessionId)" in app      # 回放
+    assert "TaskPanel.loadHistory(AppState.sessionId)" in app  # 启动回填
+
+
+def test_appjs_dispatches_interaction_and_await():
+    """reducer 把闸门事件交给面板；三个弹窗请求同时标等待（兜底）。"""
+    app = _read("app.js")
+    assert 'case "interaction":' in app
+    assert "TaskPanel.onInteraction(ev)" in app
+    assert 'TaskPanel.onAwait("permission", ev)' in app
+    assert 'TaskPanel.onAwait("ask_user", ev)' in app
+    assert 'TaskPanel.onAwait("plan", ev)' in app
+    # 工具事件整包下发（面板要 args_summary / call_id / duration_ms）
+    assert "TaskPanel.onToolUse(ev)" in app and "TaskPanel.onToolResult(ev)" in app
+
+
+def test_flow_endpoint_registered():
+    """新增 /api/flow（任务流历史），与 /api/trace 同源派生。"""
+    api = (Path(__file__).resolve().parents[2]
+           / "openx" / "app" / "serve" / "api.py").read_text(encoding="utf-8")
+    assert '"/api/flow"' in api and "flow_get" in api
+    assert "def _flow_turns(" in api
+    # 单一派生源：flow 复用 trace 的回合分组函数
+    assert "_trace_rounds(messages)" in api
+
+
+def test_transcript_pairs_parallel_tools_by_call_id():
+    """对话区的工具卡也按 call_id 配对（并行同名工具各归各位，不乱填）。"""
+    chat = _read("chat.js")
+    assert "appendToolStart(name, desc, callId)" in chat
+    assert "appendToolResult(name, isError, output, callId)" in chat
+    # 按 id 索引配对，而不是只认"最近一个"
+    assert "toolIndex" in chat and "index[callId]" in chat
+    app = _read("app.js")
+    assert "ev.call_id" in app
+
+
+def test_taskpanel_truncation_reports_original_size():
+    """截断要说清少看了多少：output_chars 来自服务端，缺就不编。"""
+    js = _read("task-panel.js")
+    assert "s.outputChars" in js and "原始 ${s.outputChars} 字符" in js
+    # 状态迁移在等待人工期间归闸门管（文本/思考不得顺手改掉 blocked）
+    assert "_status(status)" in js and "if (this.awaiting) return;" in js
+
+
 def test_chat_input_and_send_present():
     """中栏输入区关键控件：textarea、send-btn、turn-bar。"""
     html = _read("index.html")

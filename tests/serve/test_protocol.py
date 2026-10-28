@@ -227,6 +227,54 @@ def test_permission_request_can_remember():
     assert protocol.permission_request("r2", "shell", "run")["can_remember"] is True
 
 
+# ── 任务流增量：配对键 / 轮次 / 实测耗时 / 人工闸门 ──────────────
+
+
+def test_tool_use_carries_pairing_and_round():
+    """tool_use 带 call_id + round；缺省为空/0（存量消费者零改动）。"""
+    ev = protocol.tool_use("read_file", "a.py", "a.py", call_id="c1", round=2)
+    assert ev["call_id"] == "c1" and ev["round"] == 2
+    assert ev["args_summary"] == "a.py" and ev["target"] == "a.py"
+    bare = protocol.tool_use("read_file")
+    assert bare["call_id"] == "" and bare["round"] == 0
+
+
+def test_tool_result_duration_omitted_when_unknown():
+    """测不到耗时 → 键不出现：绝不填 0 冒充"瞬间完成"。"""
+    ev = protocol.tool_result("read_file", False, "body")
+    assert "duration_ms" not in ev
+    assert ev["output_chars"] == 0 and ev["truncated"] is False
+    timed = protocol.tool_result(
+        "read_file", True, "boom", call_id="c1", round=3,
+        duration_ms=42, output_chars=9000, truncated=True,
+    )
+    assert timed["duration_ms"] == 42 and timed["is_error"] is True
+    assert timed["output_chars"] == 9000 and timed["truncated"] is True
+    assert timed["call_id"] == "c1" and timed["round"] == 3
+
+
+def test_interaction_open_and_close_shape():
+    """人工闸门的可观测性：open 带"等谁批什么"，close 带 outcome。"""
+    opened = protocol.interaction(
+        "permission", "open", "req-1", tool="shell", detail="rm -rf build"
+    )
+    assert opened == {
+        "type": "interaction", "kind": "permission", "phase": "open",
+        "request_id": "req-1", "tool": "shell", "detail": "rm -rf build",
+        "outcome": "",
+    }
+    closed = protocol.interaction("permission", "close", "req-1",
+                                  outcome="disconnected")
+    assert closed["phase"] == "close" and closed["outcome"] == "disconnected"
+    assert closed["tool"] == "" and closed["detail"] == ""
+
+
+def test_turn_interrupted_carries_kind():
+    ev = protocol.turn_interrupted()
+    assert ev == {"type": "interrupted", "kind": "client"}
+    assert protocol.turn_interrupted("signal")["kind"] == "signal"
+
+
 # ── P4.1 交互化下行：serve_ask_user / serve_plan_request ─────────
 
 

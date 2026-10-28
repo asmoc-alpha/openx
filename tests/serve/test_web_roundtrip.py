@@ -97,8 +97,14 @@ class FakeAgent:
     async def stream_run(self, text):
         yield "rep"
         yield "ly"
-        yield ToolStartEvent(name="read_file", arguments="{}")
-        yield ToolResultEvent(name="read_file", output="file contents", is_error=False)
+        # call_id / round 是 serve 任务流的配对与分组事实（agent 侧填充）
+        yield ToolStartEvent(
+            name="read_file", arguments="{}", call_id="c1", round=1
+        )
+        yield ToolResultEvent(
+            name="read_file", output="file contents", is_error=False,
+            call_id="c1", round=1,
+        )
 
 
 @pytest.fixture
@@ -231,11 +237,19 @@ async def test_trace_replay_with_tool_round(server, workspace):
     r = rounds[0]
     assert r["user"] == "read the file"
     assert r["assistant"] == "done"
-    # 工具调用：入参只派生短串（target = a.py），绝不原样回传
-    assert r["steps"] == [{"name": "read_file", "args_summary": "a.py", "target": "a.py"}]
-    # 工具输出：按 tool_call_id 回配名称
+    # 工具调用：入参只派生短串（target = a.py），绝不原样回传；
+    # call_id / round 是配对与分组键（serve 任务流用，不引入入参正文）
+    assert r["steps"] == [{
+        "name": "read_file",
+        "args_summary": "a.py",
+        "target": "a.py",
+        "call_id": "call-1",
+        "round": 1,
+    }]
+    # 工具输出：按 tool_call_id 回配名称；is_error 历史未持久化 → None（未知）
     assert r["tool_outputs"] == [
-        {"name": "read_file", "output": "file body", "truncated": False},
+        {"name": "read_file", "output": "file body", "truncated": False,
+         "call_id": "call-1", "is_error": None},
     ]
 
 
@@ -268,6 +282,70 @@ async def test_trace_404(server):
     assert data["ok"] is False
 
 
+# ── 任务流（GET /api/flow）：与 trace 同源、输出合进步骤 ──────────
+
+
+async def test_flow_replay_merges_outputs_by_call_id(server, workspace):
+    """回放会话：工具输出按 call_id 合进步骤（任务面板一步一行 + 折叠输出）。"""
+    store = SessionStore.create(workspace, "test-model", session_id="sess-flow")
+    store.append_messages([
+        {"role": "user", "content": "read it"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "function": {"name": "read_file",
+                                      "arguments": json.dumps({"path": "a.py"})}},
+            {"id": "c2", "function": {"name": "shell",
+                                      "arguments": json.dumps({"command": "ls -la"})}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "file body"},
+        {"role": "tool", "tool_call_id": "c2", "content": "total 0"},
+        {"role": "assistant", "content": "done"},
+    ])
+    resp = await server.get("/api/flow?session=sess-flow")
+    assert resp.status == 200
+    data = (await resp.json())["data"]
+    assert data["session_id"] == "sess-flow"
+    turn = data["turns"][0]
+    assert turn["live"] is False
+    assert turn["rounds"] == 1           # 一条带 tool_calls 的 assistant = 一轮
+    steps = turn["steps"]
+    assert [s["call_id"] for s in steps] == ["c1", "c2"]
+    assert steps[0]["output"] == "file body"
+    assert steps[1]["output"] == "total 0"
+    # shell 摘要给完整命令（不是"前三词"那种等于没说的截断）
+    assert steps[1]["args_summary"] == "ls -la"
+    # 历史不持久化失败标记 → None（未知），绝不冒充成功
+    assert steps[0]["is_error"] is None and "pending" not in steps[0]
+
+
+async def test_flow_replay_marks_unanswered_step_pending(server, workspace):
+    """调用没有对应 tool 消息（中断/崩在结果前）：如实标 pending，不编结果。"""
+    store = SessionStore.create(workspace, "test-model", session_id="sess-pend")
+    store.append_messages([
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "x1", "function": {"name": "shell",
+                                      "arguments": json.dumps({"command": "sleep 99"})}},
+        ]},
+    ])
+    data = (await (await server.get("/api/flow?session=sess-pend")).json())["data"]
+    step = data["turns"][0]["steps"][0]
+    assert step["pending"] is True and step["output"] == ""
+
+
+async def test_flow_live_reads_agent_history(server):
+    """缺 session 参数 = 当前实时会话（读 agent 内存历史，零 session 文件）。"""
+    data = (await (await server.get("/api/flow")).json())["data"]
+    assert data["session_id"] == "sess-live"
+    assert data["turns"][0]["user"] == "hi"
+    assert data["turns"][0]["live"] is True
+
+
+async def test_flow_404(server):
+    resp = await server.get("/api/flow?session=no-such-id")
+    assert resp.status == 404
+    assert (await resp.json())["ok"] is False
+
+
 # ── WebSocket 往返 ──────────────────────────────────────────────
 
 
@@ -289,6 +367,16 @@ async def test_ws_attach_and_message_roundtrip(server):
     assert types[0] == "user_message"
     assert "text_delta" in types and "tool_use" in types and "tool_result" in types
     assert types[-1] == "result"
+    # 配对键 + 服务端实测耗时 + 轮次（任务流据此分组/配对，不靠猜）
+    tool = next(e for e in events if e["type"] == "tool_use")
+    assert tool["call_id"] == "c1" and tool["round"] == 1
+    res = next(e for e in events if e["type"] == "tool_result")
+    assert res["call_id"] == "c1" and res["round"] == 1
+    assert isinstance(res["duration_ms"], int) and res["duration_ms"] >= 0
+    assert res["output_chars"] == len("file contents") and res["truncated"] is False
+    # 终局 usage 带上缓存与插件预算（累计口径，缺省 0）
+    assert events[-1]["usage"]["cached_tokens"] == 0
+    assert events[-1]["usage"]["plugin_tokens"] == 0
     await ws.close()
 
 
@@ -346,6 +434,12 @@ async def test_ws_permission_roundtrip(server):
     assert req["type"] == "permission_request"
     assert req["tool"] == "shell"
     assert req["request_id"]
+    # 请求之后紧跟"闸门已落下"——任务面板据此显示「等待你批准」。
+    # 顺序不能颠倒：老客户端只认 permission_request，首个事件必须还是它。
+    opened = await ws.receive_json(timeout=5)
+    assert opened["type"] == "interaction" and opened["phase"] == "open"
+    assert opened["kind"] == "permission" and opened["tool"] == "shell"
+    assert opened["request_id"] == req["request_id"]
 
     await ws.send_json({
         "type": "permission_response",
@@ -355,6 +449,10 @@ async def test_ws_permission_roundtrip(server):
     })
     approved, _remember = await fut
     assert approved is True
+    # 裁决后关闭事件带结果（approved / denied / timeout / disconnected 分得开）
+    closed = await ws.receive_json(timeout=5)
+    assert closed["type"] == "interaction" and closed["phase"] == "close"
+    assert closed["outcome"] == "approved"
     await ws.close()
 
 

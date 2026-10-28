@@ -884,7 +884,7 @@ const Chat = {
     this.autoscroll();
   },
 
-  appendToolStart(name, desc) {
+  appendToolStart(name, desc, callId) {
     if (!this.lastAssistant) this.createAssistantCard();
     this._ensureToolFold();
     const tools = this.lastAssistant.tools;
@@ -895,6 +895,7 @@ const Chat = {
     nm.textContent = name;
     const ds = el("span", "tool-desc");
     ds.textContent = desc || "执行中…";
+    ds.title = desc || "";      // 长命令/路径：省略显示，悬停看全文
     head.append(dot, nm, ds);
     const status = el("span", "tool-status");
     status.textContent = "运行中";
@@ -904,17 +905,30 @@ const Chat = {
     out.hidden = true;
     wrap.append(head, out);
     tools.appendChild(wrap);
-    this.lastTool = { name, wrap, status, out };
+    // call_id 配对键：并行批次里同名工具会有多个，按名字配会张冠李戴。
+    // 索引挂在当前 assistant 卡上——卡片就是配对作用域，换卡即失效。
+    this.lastTool = { name, callId: callId || "", wrap, status, out };
+    if (callId) {
+      const a = this.lastAssistant;
+      if (a) (a.toolIndex || (a.toolIndex = {}))[callId] = this.lastTool;
+    }
     this.autoscroll();
   },
 
-  appendToolResult(name, isError, output) {
-    // 配对到上次起始；找不到就现场合成一条
-    let t = this.lastTool && this.lastTool.name === name ? this.lastTool : null;
-    if (!t) {
-      this.appendToolStart(name);
+  appendToolResult(name, isError, output, callId) {
+    // 优先按 call_id 配对（并行批次里同名工具也能各归各位）；
+    // 无 id（存量服务端）才退回"同名后进先出"
+    const a = this.lastAssistant;
+    const index = (a && a.toolIndex) || {};
+    let t = callId ? (index[callId] || null) : null;
+    if (!t && !callId && this.lastTool && this.lastTool.name === name) {
       t = this.lastTool;
     }
+    if (!t) {
+      this.appendToolStart(name, "", callId || "");
+      t = this.lastTool;
+    }
+    if (callId && index[callId]) delete index[callId];   // 已收，不再配对
     const dot = t.wrap.querySelector(".dot");
     dot.className = "dot " + (isError ? "error" : "done");
     t.status.textContent = isError ? "失败" : "完成";

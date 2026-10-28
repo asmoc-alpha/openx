@@ -259,12 +259,18 @@ function applyEvent(ev) {
       break;
     case "tool_use":
       // target 由服务端从工具入参派生（绝不原样回传入参）；无目标时退回摘要
-      Chat.appendToolStart(ev.name || "tool", ev.target || ev.args_summary || "");
-      TaskPanel.onToolUse(ev.name || "tool", ev.target || "");
+      Chat.appendToolStart(
+        ev.name || "tool",
+        ev.target || ev.args_summary || "",
+        ev.call_id || ""
+      );
+      TaskPanel.onToolUse(ev);
       break;
     case "tool_result":
-      Chat.appendToolResult(ev.name || "tool", Boolean(ev.is_error), ev.output || "");
-      TaskPanel.onToolResult(ev.name || "tool", Boolean(ev.is_error));
+      Chat.appendToolResult(
+        ev.name || "tool", Boolean(ev.is_error), ev.output || "", ev.call_id || ""
+      );
+      TaskPanel.onToolResult(ev);
       break;
     case "artifact":
       if (typeof Artifacts !== "undefined") Artifacts.push(ev.path || "", ev.tool || "");
@@ -300,16 +306,24 @@ function applyEvent(ev) {
       showTurnBar(false);
       Chat.appendMeta("⏹ Interrupted");
       Chat.finalizeTurn();
-      TaskPanel.onInterrupted();
+      TaskPanel.onInterrupted(ev);
       if (typeof Trace !== "undefined" && Trace.visible()) Trace.load(Trace.sessionId);
       break;
+    case "interaction":
+      // 人工闸门（权限 / 提问 / 计划审批）的开关与结果：面板据此显示
+      // 「等待你处理」并把结果留成夹注（谁批的 / 超时 / 断流分得开）
+      TaskPanel.onInteraction(ev);
+      break;
     case "permission_request":
+      TaskPanel.onAwait("permission", ev);
       Modals.showPermission(ev);
       break;
     case "ask_user":
+      TaskPanel.onAwait("ask_user", ev);
       Modals.showAsk(ev);
       break;
     case "plan_request":
+      TaskPanel.onAwait("plan", ev);
       Modals.showPlan(ev);
       break;
     case "panels":
@@ -477,6 +491,8 @@ AppState.openReplay = async function (sessionId) {
   }
   // 路径面板随之切到被回放的会话（系统 prompt 如实显示"未记录"）
   if (typeof Trace !== "undefined") Trace.load(sessionId);
+  // 任务面板同理：回放会话的历史回合从 /api/flow 重建（否则整片空态）
+  if (typeof TaskPanel !== "undefined") TaskPanel.loadHistory(sessionId);
 };
 
 function applyReplayEvent(ev) {
@@ -517,6 +533,9 @@ async function loadInfo() {
   updateBreadcrumb();
   Sidebar.renderAll();    // 工作区树 + 环境卡（同一批真实事实）
   TaskPanel.renderStats();
+  // 刷新后回填「上一轮」：WS 只覆盖进行中的回合，历史步骤走 /api/flow。
+  // live 会话传空串（服务端读 agent 内存历史），不必先知道 session_id。
+  TaskPanel.loadHistory(AppState.sessionId);
   // 启动即空态：输入框居中 + 填充目录/模型选择（进入会话态时会自动贴底）
   if (typeof Chat !== "undefined" && Chat.enterEmpty) Chat.enterEmpty();
 }

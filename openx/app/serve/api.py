@@ -227,10 +227,14 @@ def _shorten(text: str) -> str:
 def tool_display(name: str, arguments: Any) -> tuple[str, str]:
     """一次工具调用 → ``(args_summary, target)``：给右栏的**派生**短串。
 
-    - ``args_summary``：一行人类可读摘要（shell 取命令前三词，其余优先取
+    - ``args_summary``：一行人类可读摘要（shell 取完整命令，其余优先取
       搜索模式、其次路径）——任务流步骤的副标题；
     - ``target``：路径型目标（读 / 写 / glob / 列目录），非路径型工具为空串
       ——上下文面板据此收录「本会话碰过哪些文件」。
+
+    shell 为什么给完整命令而不是"前三个词"：``git commit -m "..."`` 的三
+    个词是 ``git commit -m``，那等于没告诉你它要干什么。截断上限由
+    ``_DISPLAY_LIMIT`` 兜底（120 字），端侧再按宽度省略并留 title 全文。
 
     与 ``_paths_from_tool_calls`` 的分工：那里是**产物**（只认写工具、可能
     多路径、单发 artifact 事件）；这里是**上下文**（读过也算、只取主目标、
@@ -241,8 +245,8 @@ def tool_display(name: str, arguments: Any) -> tuple[str, str]:
     """
     args = _tool_arguments(arguments)
     if name == "shell":
-        words = str(args.get("command", "") or "").strip().split()
-        return (_shorten(" ".join(words[:3])), "")
+        command = str(args.get("command", "") or "").strip()
+        return (_shorten(command), "")
 
     summary = ""
     target = ""
@@ -1169,7 +1173,8 @@ def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     回合边界 = 每条 ``user`` 消息；回合内：
     - ``steps``：assistant 的 ``tool_calls`` 逐个展开——入参只经
       ``tool_display`` 派生短串（``write_file`` 的 content 可能含整个
-      文件，绝不原样回传）；
+      文件，绝不原样回传）；带 ``call_id``（配对键）与 ``round``（回合内
+      第几次模型请求产生的这批调用）；
     - ``tool_outputs``：``role=tool`` 消息按 ``tool_call_id`` 回配步骤名
       （消息本身不带工具名）；
     - ``assistant``：无工具调用的 assistant 消息 = 本轮最终回复。
@@ -1180,6 +1185,7 @@ def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     rounds: list[dict[str, Any]] = []
     id2name: dict[str, str] = {}
+    round_no = 0
 
     def current() -> dict[str, Any] | None:
         return rounds[-1] if rounds else None
@@ -1189,6 +1195,7 @@ def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         role = msg.get("role")
         if role == "user":
+            round_no = 0
             text, _ = _clip(_content_text(msg.get("content")))
             rounds.append({
                 "index": len(rounds) + 1,
@@ -1196,14 +1203,19 @@ def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "steps": [],
                 "tool_outputs": [],
                 "assistant": "",
+                "rounds": 0,
             })
         elif role == "assistant":
             round_ = current()
             if round_ is None:
                 round_ = {"index": 1, "user": "", "steps": [],
-                          "tool_outputs": [], "assistant": ""}
+                          "tool_outputs": [], "assistant": "", "rounds": 0}
                 rounds.append(round_)
             calls = msg.get("tool_calls") or []
+            if calls:
+                # 一条带 tool_calls 的 assistant 消息 = 一次模型请求的产出
+                round_no += 1
+                round_["rounds"] = round_no
             for call in calls:
                 if not isinstance(call, dict):
                     continue
@@ -1217,6 +1229,8 @@ def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "name": name,
                     "args_summary": summary,
                     "target": target,
+                    "call_id": call_id,
+                    "round": round_no,
                 })
             if not calls:
                 # 最终回复（一轮可能有多段：如触顶收尾），拼接保留全文
@@ -1230,16 +1244,96 @@ def _trace_rounds(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if round_ is None:
                 continue
             output, truncated = _clip(_content_text(msg.get("content")))
-            name = id2name.get(
-                str(msg.get("tool_call_id") or ""),
-                str(msg.get("name") or "tool"),
-            )
+            call_id = str(msg.get("tool_call_id") or "")
+            name = id2name.get(call_id, str(msg.get("name") or "tool"))
             round_["tool_outputs"].append({
                 "name": name,
                 "output": output,
                 "truncated": truncated,
+                "call_id": call_id,
+                # 历史消息**不持久化**失败标记（tool 消息只有正文）——这里
+                # 如实给 None（未知），绝不用 False 冒充"没出错"。
+                "is_error": None,
             })
     return rounds
+
+
+def _flow_turns(messages: list[dict[str, Any]], live: bool) -> list[dict[str, Any]]:
+    """消息序列 → 任务流视图（**与 trace 同源**，只是把输出合进步骤）。
+
+    trace 与 flow 是同一份派生的两种投影：trace 面向"路径复盘"（步骤与
+    输出分块、逐段全文），flow 面向"任务面板"（一步一行、输出折在行内）。
+    共用 :func:`_trace_rounds` 是刻意的——两处口径必须一致，否则同一个
+    回合在"实时面板"和"回头复盘"里会长得不一样。
+
+    合并在**读侧**做：``tool_outputs`` 按 ``call_id`` 回配到步骤（无 id
+    的存量会话退化为按工具名 + 先后顺序配对），不新增存储格式。
+    """
+    turns = _trace_rounds(messages)
+    for turn in turns:
+        outputs = list(turn.get("tool_outputs") or [])
+        used: set[int] = set()
+        for step in turn.get("steps") or []:
+            match = None
+            cid = step.get("call_id") or ""
+            if cid:
+                for i, out in enumerate(outputs):
+                    if i not in used and out.get("call_id") == cid:
+                        match = i
+                        break
+            if match is None:
+                for i, out in enumerate(outputs):
+                    if i not in used and out.get("name") == step.get("name"):
+                        match = i
+                        break
+            if match is not None:
+                used.add(match)
+                out = outputs[match]
+                step["output"] = out.get("output", "")
+                step["truncated"] = bool(out.get("truncated"))
+                # None = 历史未持久化失败标记（未知），不是"没出错"
+                step["is_error"] = out.get("is_error")
+            else:
+                # 没有回配到结果：如实标"未返回"，绝不编一个空成功
+                step["output"] = ""
+                step["truncated"] = False
+                step["is_error"] = None
+                step["pending"] = True
+        turn["live"] = live
+    return turns
+
+
+async def flow_get(request: web.Request) -> web.Response:
+    """GET /api/flow?session=<id> → 任务流视图（右栏「任务流」的历史/回放源）。
+
+    为什么单开一个端点：WS 增量只覆盖"正在发生的这一轮"，刷新页面或点
+    侧栏回放时面板会整片空掉（``_live_events`` 在回合一收尾就被清）。
+    本端点从**同一份**消息派生（:func:`_trace_rounds`），让"实时看到的"
+    与"回头看到的"是同一口径。
+
+    ``session`` 缺省 = 当前实时会话（读 agent 内存历史）；给了就从会话
+    文件读（可跨工作区，同 ``/api/trace`` 的定位规则）。
+    """
+    session_id = request.rel_url.query.get("session", "").strip()
+    if session_id:
+        from ...orchestration.sessions import SessionStore
+
+        meta = SessionStore.resolve_anywhere(session_id)
+        if meta is None or meta.path is None:
+            return _fail(f"session not found: {session_id}", status=404)
+        _meta, messages = SessionStore.load(meta.path)
+        return _ok({
+            "session_id": session_id,
+            "turns": _flow_turns(messages, live=False),
+        })
+
+    agent = _agent(request)
+    history = getattr(agent, "history", None)
+    messages = list(getattr(history, "messages", None) or [])
+    return _ok({
+        "session_id": str(getattr(agent, "session_id", "") or ""),
+        "turns": _flow_turns(messages, live=True),
+    })
 
 
 async def trace_get(request: web.Request) -> web.Response:
@@ -1318,3 +1412,4 @@ def register_api(app: web.Application, session: Any, workspace: str) -> None:
     app.router.add_get("/api/files/raw", files_raw)
     app.router.add_get("/api/artifacts", artifacts_get)
     app.router.add_get("/api/trace", trace_get)
+    app.router.add_get("/api/flow", flow_get)

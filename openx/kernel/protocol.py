@@ -133,16 +133,25 @@ def thinking_delta(text: str) -> dict[str, Any]:
     return {"type": "thinking_delta", "text": text}
 
 
-def tool_use(name: str, args_summary: str = "", target: str = "") -> dict[str, Any]:
+def tool_use(
+    name: str,
+    args_summary: str = "",
+    target: str = "",
+    call_id: str = "",
+    round: int = 0,
+) -> dict[str, Any]:
     """一次工具调用开始（可选携带**派生**的展示字段）。
 
-    - ``args_summary``：一行人类可读摘要（shell 前三词 / 路径 / 搜索模式）；
+    - ``args_summary``：一行人类可读摘要（shell 完整命令 / 路径 / 搜索模式）；
     - ``target``：目标型工具的主要路径（读、写、glob、列目录等），供 Web
       右栏「上下文」面板收录；非目标型工具为空串。
+    - ``call_id``：模型给的 tool_call id（配对键）。**并行批次里同名工具
+      会有多个**，缺了它端只能按"同名后进先出"猜，耗时会张冠李戴。
+    - ``round``：本回合第几次模型请求产生的调用（任务流按它分组）。
 
-    两字段由 serve 从工具入参**派生**后下发，**不原样回传入参**——
+    展示字段由 serve 从工具入参**派生**后下发，**不原样回传入参**——
     ``write_file`` 的 ``content`` 可能含整个文件，会把每条下行事件撑大；
-    产物路径另走 ``artifact`` 单发事件。可选、默认空串——既有 NDJSON
+    产物路径另走 ``artifact`` 单发事件。可选、默认空/0——既有 NDJSON
     消费者零改动（headless stream-json 不传即不带信息）。
     """
     return {
@@ -150,6 +159,8 @@ def tool_use(name: str, args_summary: str = "", target: str = "") -> dict[str, A
         "name": name,
         "args_summary": args_summary,
         "target": target,
+        "call_id": call_id,
+        "round": int(round),
     }
 
 
@@ -163,8 +174,76 @@ def artifact(path: str, tool: str) -> dict[str, Any]:
     return {"type": "artifact", "path": path, "tool": tool}
 
 
-def tool_result(name: str, is_error: bool, output: str) -> dict[str, Any]:
-    return {"type": "tool_result", "name": name, "is_error": is_error, "output": output}
+def tool_result(
+    name: str,
+    is_error: bool,
+    output: str,
+    call_id: str = "",
+    round: int = 0,
+    duration_ms: Optional[int] = None,
+    output_chars: int = 0,
+    truncated: bool = False,
+) -> dict[str, Any]:
+    """一次工具调用结束（serve 增量：配对键 + 服务端实测耗时）。
+
+    - ``call_id`` / ``round``：与同批 ``tool_use`` 对齐的配对键与轮次；
+    - ``duration_ms``：**服务端**实测（tool_use 到达 → tool_result 到达）。
+      未知时**不出现该键**——绝不填 0 冒充"瞬间完成"，端据此区分
+      "很快"和"没测到"；
+    - ``output_chars``：截断前的原始字符数（``output`` 已按传输上限截断）；
+    - ``truncated``：``output`` 是否被截断。
+
+    后四项可选、默认不带（``duration_ms=None`` 时省略），既有 NDJSON
+    消费者零改动。
+    """
+    ev: dict[str, Any] = {
+        "type": "tool_result",
+        "name": name,
+        "is_error": is_error,
+        "output": output,
+        "call_id": call_id,
+        "round": int(round),
+        "output_chars": int(output_chars),
+        "truncated": bool(truncated),
+    }
+    if duration_ms is not None:
+        ev["duration_ms"] = int(duration_ms)
+    return ev
+
+
+def interaction(
+    kind: str,
+    phase: str,
+    request_id: str = "",
+    tool: str = "",
+    detail: str = "",
+    outcome: str = "",
+) -> dict[str, Any]:
+    """一次**需要人处理**的交互（serve 扩展）：打开 / 关闭 + 结果。
+
+    任务面板最缺的一格信息是"卡在哪、为什么停"。轮次状态机只看
+    stream_run 事件时，权限弹窗挂着与"工具正在跑"长得一模一样；本事件
+    让人工闸门成为**可观测事实**而非隐含状态：
+
+    - ``phase="open"``：开始等待（弹窗已广播）；
+    - ``phase="close"``：等待结束，``outcome`` 如实记结果
+      （approved / denied / timeout / answered / skipped / rejected /
+      cancelled / disconnected）。``disconnected`` = 最后一个客户端断流
+      导致 fail-closed、``cancelled`` = 回合被 Esc 取消——两者都是**系统
+      行为**，与"用户主动拒绝"必须区分。
+
+    kind：``permission`` / ``ask_user`` / ``plan``。``tool`` / ``detail``
+    只在 open 时有意义（给面板显示"在等谁批什么"）。
+    """
+    return {
+        "type": "interaction",
+        "kind": kind,
+        "phase": phase,
+        "request_id": request_id,
+        "tool": tool,
+        "detail": detail,
+        "outcome": outcome,
+    }
 
 
 def permission_request(
@@ -323,6 +402,16 @@ def result_event(
         "usage": usage,
         **({"error": error} if error else {}),
     }
+
+
+def turn_interrupted(kind: str = "client") -> dict[str, Any]:
+    """serve 下行：回合被**外部**打断（Web 的 Esc / 停止钮）。
+
+    与账本控制族的 ``interrupt_event`` 分工：那个记"落没落成 checkpoint"
+    （审计用），这个是给端的状态翻转。``kind`` 目前恒为 ``client``——
+    serve 只会因客户端打断而取消回合并广播本事件；进程信号走 CLI 路径。
+    """
+    return {"type": "interrupted", "kind": kind}
 
 
 # ── 容灾（recovery）：回合级 checkpoint 与控制事件（内核第六件）─────
@@ -722,6 +811,27 @@ if __name__ == "__main__":
     assert _e["subtype"] == "error" and _e["error"] == "boom"
     _pr = permission_request("r2", "shell", "run", can_remember=False)
     assert _pr["can_remember"] is False and _pr["type"] == "permission_request"
+    # 工具事件的展示/配对增量（serve 任务流）：缺省不引入噪声键
+    _tu0 = tool_use("read_file")
+    assert _tu0["call_id"] == "" and _tu0["round"] == 0
+    _tu1 = tool_use("read_file", "a.py", "a.py", call_id="c1", round=2)
+    assert _tu1["call_id"] == "c1" and _tu1["round"] == 2
+    _tr0 = tool_result("read_file", False, "body")
+    # duration_ms 未测到 → 键不出现（绝不填 0 冒充"瞬间完成"）
+    assert "duration_ms" not in _tr0
+    assert _tr0["call_id"] == "" and _tr0["output_chars"] == 0
+    _tr1 = tool_result("read_file", False, "bo", call_id="c1", round=2,
+                       duration_ms=12, output_chars=9999, truncated=True)
+    assert _tr1["duration_ms"] == 12 and _tr1["output_chars"] == 9999
+    assert _tr1["truncated"] is True and _tr1["call_id"] == "c1"
+    # 人工闸门（permission / ask_user / plan）：open 带"等谁批什么"，close 带结果
+    _ia = interaction("permission", "open", "req1", tool="shell", detail="rm -rf x")
+    assert _ia["type"] == "interaction" and _ia["phase"] == "open"
+    assert _ia["tool"] == "shell" and _ia["outcome"] == ""
+    _ic = interaction("permission", "close", "req1", outcome="disconnected")
+    assert _ic["phase"] == "close" and _ic["outcome"] == "disconnected"
+    _ti = turn_interrupted()
+    assert _ti == {"type": "interrupted", "kind": "client"}
     # 执行计划 / 子 agent 快照（serve 右栏任务面板）
     _td = serve_todos([{"content": "x", "activeForm": "x", "status": "pending"}])
     assert _td["type"] == "todos" and _td["todos"][0]["status"] == "pending"

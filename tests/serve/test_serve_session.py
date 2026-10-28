@@ -39,6 +39,8 @@ class FakeAgent:
     last_tool_rounds = 2
     total_input_tokens = 10
     total_output_tokens = 4
+    total_cached_tokens = 3
+    total_plugin_tokens = 7
     sleep = 0.0  # 秒；>0 模拟慢回合（供 live-attach / interrupt 测试）
 
     class _Cfg:
@@ -51,8 +53,14 @@ class FakeAgent:
         if self.sleep:
             await asyncio.sleep(self.sleep)
         yield "lo"
-        yield ToolStartEvent(name="read_file", arguments='{"path": "x"}')
-        yield ToolResultEvent(name="read_file", output="contents", is_error=False)
+        # call_id / round 由 agent 填充（serve 任务流的配对键与分组键）
+        yield ToolStartEvent(
+            name="read_file", arguments='{"path": "x"}', call_id="c1", round=1
+        )
+        yield ToolResultEvent(
+            name="read_file", output="contents", is_error=False,
+            call_id="c1", round=1,
+        )
         yield "\n\n[dim]● Compacting conversation…[/dim]\n"
 
 
@@ -138,12 +146,25 @@ async def test_turn_streams_events_and_result(agent):
     # 工具事件
     tool = next(e for e in ws.sent if e["type"] == "tool_use")
     assert tool["name"] == "read_file"
+    # 任务流增量：配对键 + 轮次（并行同名工具靠 call_id 才不会错配）
+    assert tool["call_id"] == "c1" and tool["round"] == 1
+    assert tool["target"] == "x"           # 派生目标（上下文面板收录用）
     result = next(e for e in ws.sent if e["type"] == "tool_result")
     assert result["output"] == "contents" and not result["is_error"]
+    assert result["call_id"] == "c1" and result["round"] == 1
+    # 耗时是**服务端**实测（不是端侧到达时间差）：整数毫秒
+    assert isinstance(result["duration_ms"], int) and result["duration_ms"] >= 0
+    assert result["output_chars"] == len("contents")
+    assert result["truncated"] is False
     # 终局
     assert ws.sent[-1]["type"] == "result"
     assert ws.sent[-1]["subtype"] == "success"
     assert ws.sent[-1]["num_turns"] == 2
+    # 成本字段：缓存命中 / 插件预算是累计口径（与 CLI result 同源）
+    assert ws.sent[-1]["usage"] == {
+        "input_tokens": 10, "output_tokens": 4,
+        "cached_tokens": 3, "plugin_tokens": 7,
+    }
     session.stop()
 
 
@@ -200,6 +221,9 @@ async def test_interrupt_broadcasts_and_worker_survives(agent):
     session.interrupt()
     await asyncio.sleep(0.05)
     assert "interrupted" in [e["type"] for e in ws.sent]
+    # 打断来源如实下发（Web 的 Esc/停止钮 = client；信号路径不在 serve）
+    inter = next(e for e in ws.sent if e["type"] == "interrupted")
+    assert inter["kind"] == "client"
 
     # worker 未毒死：下一条消息照常跑完
     agent.sleep = 0.0
@@ -488,6 +512,68 @@ async def test_permission_bridge_last_client_disconnect_denies(agent):
     session.detach(client)     # 唯一客户端断开 → deny_all
     assert await fut == (False, False)
     session.stop()
+
+
+async def test_permission_bridge_reports_interaction_lifecycle(agent):
+    """人工闸门可观测：请求事件之后有 interaction(open)，裁决后 close 带 outcome。
+
+    这是任务面板"卡在哪"的唯一真源——只看 stream_run 事件时，等审批与
+    "工具正在跑"长得一模一样。
+    """
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    async def _ask():
+        return await session.bridge.ask_permission("shell", "rm -rf x")
+
+    fut = asyncio.ensure_future(_ask())
+    await asyncio.sleep(0.01)
+    kinds = [e["type"] for e in ws.sent]
+    # 请求仍在首位（老客户端契约），open 紧随其后
+    assert kinds[0] == "permission_request", kinds
+    assert kinds[1] == "interaction"
+    opened = ws.sent[1]
+    assert opened["phase"] == "open" and opened["kind"] == "permission"
+    assert opened["tool"] == "shell" and "rm -rf" in opened["detail"]
+
+    req = ws.sent[0]
+    session.bridge.on_response(req["request_id"], True)
+    assert await fut == (True, False)
+    await asyncio.sleep(0)
+    closed = [e for e in ws.sent if e["type"] == "interaction" and e["phase"] == "close"]
+    assert closed and closed[-1]["outcome"] == "approved"
+    session.stop()
+
+
+def test_tool_duration_unknown_when_start_missing():
+    """测不到起点 → None：协议侧不出现 duration_ms，端不显示耗时（不当 0）。"""
+    session = ServeSession(FakeAgent())
+    assert session._note_tool_result("no-such-id", "read_file") is None
+
+
+def test_tool_duration_matches_by_name_when_id_missing():
+    """缺 call_id 的存量 agent：按工具名 FIFO 配对（近似，但比没有好）。"""
+    session = ServeSession(FakeAgent())
+    session._note_tool_start("", "shell")
+    session._note_tool_start("", "shell")
+    first = session._note_tool_result("", "shell")
+    second = session._note_tool_result("", "shell")
+    assert isinstance(first, int) and isinstance(second, int)
+    assert session._note_tool_result("", "shell") is None   # 队列已空
+
+
+def test_tool_duration_prefers_call_id():
+    """有 call_id 时按 id 精确配对——并行同名工具不会张冠李戴。"""
+    session = ServeSession(FakeAgent())
+    session._note_tool_start("a", "read_file")
+    session._note_tool_start("b", "read_file")
+    assert isinstance(session._note_tool_result("b", "read_file"), int)
+    assert isinstance(session._note_tool_result("a", "read_file"), int)
+    assert session._tool_starts == {}
 
 
 # ── P4.1 交互弹窗桥：ask_user / confirm_plan 的 fail-closed ──────

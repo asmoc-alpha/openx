@@ -208,6 +208,11 @@ class ServeSession:
         # 是上帧指纹（变化才广播）
         self._fleet_task: Optional[asyncio.Task] = None
         self._fleet_sig: Optional[tuple] = None
+        # 工具耗时实测表：call_id → monotonic 起点（缺 id 时按工具名入队，
+        # FIFO 配对）。回合开始清空——耗时是**服务端**事实，不能让端按
+        # 到达时间差去猜（迟到客户端 attach 时重放会把耗时算成 0ms）。
+        self._tool_starts: dict[str, float] = {}
+        self._tool_starts_by_name: dict[str, list[float]] = {}
 
     # ── 生命周期 ─────────────────────────────────────────────────
 
@@ -628,6 +633,10 @@ class ServeSession:
         text = pending.text
         started = time.monotonic()
         self._live_events = []
+        # 回合级工具计时表归零：call_id 跨回合复用是小概率事件，但脏起点
+        # 会让耗时变成"上一轮到这个点"的胡话，宁可清空重记。
+        self._tool_starts.clear()
+        self._tool_starts_by_name.clear()
         # 带附件/多模态时广播 content（端据此渲染缩略图与文件 chip）；
         # 纯文本事件不含 content 键（与存量逐字节一致）
         event = (
@@ -718,7 +727,7 @@ class ServeSession:
                 self.agent.flush_checkpoint("client")
             except Exception:
                 _log.debug("checkpoint flush on interrupt failed", exc_info=True)
-            self.broadcast({"type": "interrupted"})
+            self.broadcast(protocol.turn_interrupted("client"))
             _log.info("turn interrupted by client")
         except Exception as e:
             _log.exception("turn failed")
@@ -790,10 +799,17 @@ class ServeSession:
         return con
 
     def _result_event(self, started: float, error: str = "") -> dict:
-        """终局事件：镜像 single_shot 的 result 形状（同 schema）。"""
+        """终局事件：镜像 single_shot 的 result 形状（同 schema）。
+
+        ``usage`` 是**会话累计**口径（与 CLI 一致）；serve 额外带上缓存与
+        插件预算两个累计字段——任务流要能回答"这轮花了多少"，而 only
+        input/output 会漏掉缓存命中与装配预算。
+        """
         usage = {
             "input_tokens": getattr(self.agent, "total_input_tokens", 0),
             "output_tokens": getattr(self.agent, "total_output_tokens", 0),
+            "cached_tokens": getattr(self.agent, "total_cached_tokens", 0),
+            "plugin_tokens": getattr(self.agent, "total_plugin_tokens", 0),
         }
         return protocol.result_event(
             None if error else "",
@@ -810,7 +826,8 @@ class ServeSession:
     def _project(self, ev: Any) -> Optional[dict]:
         """stream_run 事件 → 协议下行事件；不可展示者返回 None。
 
-        文本 token 剥 rich 标签（压缩提示等）；tool 事件截断输出上限。
+        文本 token 剥 rich 标签（压缩提示等）；tool 事件截断输出上限，
+        并补**服务端实测**的配对键与耗时（任务流据此分组/配对/报耗时）。
         """
         from ...agent import ToolResultEvent, ToolStartEvent
         from ...llm import StreamReasoning
@@ -821,10 +838,28 @@ class ServeSession:
             from .api import tool_display
 
             summary, target = tool_display(ev.name, ev.arguments)
-            return protocol.tool_use(ev.name, summary, target)
+            call_id = str(getattr(ev, "call_id", "") or "")
+            self._note_tool_start(call_id, ev.name)
+            return protocol.tool_use(
+                ev.name, summary, target,
+                call_id=call_id,
+                round=int(getattr(ev, "round", 0) or 0),
+            )
         if isinstance(ev, ToolResultEvent):
+            output = ev.output or ""
+            full = len(output)
+            clipped = output[:_STREAM_TOOL_OUTPUT_LIMIT]
             return protocol.tool_result(
-                ev.name, ev.is_error, ev.output[:_STREAM_TOOL_OUTPUT_LIMIT]
+                ev.name,
+                ev.is_error,
+                clipped,
+                call_id=str(getattr(ev, "call_id", "") or ""),
+                round=int(getattr(ev, "round", 0) or 0),
+                duration_ms=self._note_tool_result(
+                    str(getattr(ev, "call_id", "") or ""), ev.name
+                ),
+                output_chars=full,
+                truncated=full > len(clipped),
             )
         if isinstance(ev, StreamReasoning):
             return protocol.thinking_delta(ev.text)
@@ -833,6 +868,31 @@ class ServeSession:
             if text:
                 return protocol.text_delta(text)
         return None
+
+    def _note_tool_start(self, call_id: str, name: str) -> None:
+        """记一次工具开始的时刻（测耗时用）；键缺 id 时退化为工具名队列。"""
+        now = time.monotonic()
+        if call_id:
+            self._tool_starts[call_id] = now
+        else:
+            self._tool_starts_by_name.setdefault(name, []).append(now)
+
+    def _note_tool_result(self, call_id: str, name: str) -> Optional[int]:
+        """取本次工具耗时（毫秒）。测不到起点 → None（协议侧不出现该键）。
+
+        缺 ``call_id`` 的存量 agent 按工具名 FIFO 配对——同批并行同名
+        工具可能错配，故只在没有 id 时才走这条路，宁可近似也不留空。
+        """
+        start: Optional[float] = None
+        if call_id:
+            start = self._tool_starts.pop(call_id, None)
+        if start is None:
+            queue = self._tool_starts_by_name.get(name) or []
+            if queue:
+                start = queue.pop(0)
+        if start is None:
+            return None
+        return max(0, int((time.monotonic() - start) * 1000))
 
     def _artifacts_of(self, ev: Any) -> list[tuple[str, str]]:
         """写类工具事件 → ``[(tool, path), ...]``；非写工具返回 ``[]``。

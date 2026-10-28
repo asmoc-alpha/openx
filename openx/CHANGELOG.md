@@ -4,6 +4,48 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.24 — The task panel stops guessing
+
+### Pairing by id, measured time, and human gates as observable events
+
+- **Pairing by id, not by name**: `tool_use` / `tool_result` now carry the
+  model's `call_id` and the `round` (which model request produced the batch)
+  end to end — `ToolStartEvent` / `ToolResultEvent` → protocol → panel. Parallel
+  calls of the same tool used to be matched "same name, last in first out", so
+  two `read_file`s in one batch swapped results and durations. The chat
+  transcript pairs on the id too
+- **Durations are server-measured** (`tool_result.duration_ms`: tool_use →
+  tool_result on the server, per turn): a client that attaches late would
+  otherwise time every replayed step at 0ms. Unknown start → the key is absent
+  and no duration is shown — never `0ms`, which reads as "instant"
+- **No fabricated progress**: the hardcoded bar widths (35% / 60% / 85%) are
+  gone. Total steps are unknown until the turn ends, so the bar is
+  indeterminate while running and settles at 100% only when the turn does. The
+  subline reports facts — step number, round number, elapsed, "no new events
+  for Ns" — never an ETA
+- **Human gates become events**: an `interaction` (open → close + outcome)
+  follows every `permission_request` / `ask_user` / `plan_request`, so "waiting
+  for you" stops looking identical to "a tool is running". Outcomes separate
+  `approved` / `denied` / `timeout` / `answered` / `skipped` / `rejected` /
+  `cancelled` (Esc took the turn down) / `disconnected` (last client left,
+  fail-closed) — system behaviour never masquerades as the user's decision. The
+  request event still comes first: old clients only know that one
+- **`interrupted` says who** (`kind`), in the panel too
+- **The transcript survives a refresh**: `GET /api/flow` projects the same
+  `_trace_rounds` source as `/api/trace`, with outputs merged into steps by
+  `call_id`; the panel loads the last turn from it on boot, on replay and when
+  the tab opens — no more blank rail after F5
+- **Honest history**: session messages don't persist `is_error` or per-step
+  timing, so archived turns show no duration and leave the status unknown
+  rather than claiming success; calls with no result are marked "not returned"
+- Also: `shell` summaries carry the whole command (the first three words of
+  `git commit -m "…"` are `git commit -m`, which tells you nothing); step rows
+  expand to the raw output (failures open by default with the first error line
+  inline); `result.usage` adds cumulative `cached_tokens` / `plugin_tokens`
+- 18 tests: pairing/rounding, duration-unknown honesty, interaction ordering
+  and outcomes incl. disconnect attribution, flow merge/pending/404, and the
+  panel's three honesty rules
+
 ## 0.1.23 — `--auto-approve` / `/auto-approve` actually stop the prompts
 
 ### The flag toggled the switch but not the mode the switch depends on

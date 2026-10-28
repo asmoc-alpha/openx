@@ -24,7 +24,7 @@ OpenX 是一个用 Python 构建的开源终端 agent runtime，目标是一个*
 - 🪝 Hooks——Claude-Code 兼容的 shell hooks，按会话阶段插入（SessionStart/UserPromptSubmit/工具前后/子代理收尾/PreCompact/Stop/SessionEnd）
 - 🔌 MCP——stdio servers，零额外依赖
 - 💾 会话——持久化与恢复（`--continue` / `--resume`）；回合级 checkpoint 会在每个工具轮落盘，`--recover` 可接回被崩溃、`kill` 或 Ctrl-C 打断的那一轮（需显式开启，绝不自动恢复）
-- 🌐 Web 端——`openx serve` 提供浏览器对话、远程计划/权限审批与会话回放（需 `OPENX_EXTRAS=web`）
+- 🌐 Web 端——`openx serve` 提供浏览器对话、实时任务流面板（单步耗时、可展开输出、「等待你处理」闸门）、远程计划/权限审批与会话回放（需 `OPENX_EXTRAS=web`）
 - 🌗 后台任务 · 🗜️ 自动压缩（compaction） · 🧠 持久记忆
 - 📤 面向 CI 的 headless JSON 输出（`--output-format json` / `stream-json`）
 - 🖼️ 图片分析 · 🎨 带 markdown 与语法高亮的 rich 终端 UI——连续只读工具调用折成一行摘要（`Ctrl+T` 展开）
@@ -87,7 +87,7 @@ openx "fix the failing test" --output-format json   # headless / CI
 |---|---|
 | [用户指南](docs/user/index.zh.md) | 命令、模式与权限、配置、会话 |
 | [子系统参考](docs/subsystems/README.zh.md) | subagents、workflows、后台任务、hooks、MCP、脚手架、离线分析、经验沉淀、容灾 |
-| [Web 端（openx serve）](docs/openx-serve.md) | 浏览器对话、远程审批、会话回放 |
+| [Web 端（openx serve）](docs/openx-serve.md) | 浏览器对话、任务流面板、远程审批、会话回放 |
 | [架构](docs/architecture.zh.md) | 模块树与运行时循环 |
 | [开发指南](docs/development.zh.md) | 贡献者环境、测试、lint |
 | [Cookbook](docs/cookbook/extending.zh.md) | 用自定义 tool 扩展 OpenX |
