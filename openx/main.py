@@ -375,7 +375,14 @@ def main(argv: Optional[list[str]] = None) -> None:
     console = Console(config)
     workspace_abs = str(Path(config.workspace).resolve())
 
-    if not OpenXConfig.is_trusted(workspace_abs):
+    if args.auto_approve and not OpenXConfig.is_trusted(workspace_abs):
+        # -y = 全程无交互：不问信任，也**不默默授予**——未信任工作区按
+        # S1a fail-closed 跳过其项目插件（用户目录不受影响）。
+        console._console.print(
+            "  [yellow]Workspace not trusted; project plugins are skipped "
+            "in --auto-approve mode (run interactively once, or /trust).[/yellow]"
+        )
+    elif not OpenXConfig.is_trusted(workspace_abs):
         # Show a minimal trust screen — no logo yet, that comes after trust
         trusted = console.ask_trust_directory(workspace_abs)
         console._console.print()
@@ -438,6 +445,13 @@ def main(argv: Optional[list[str]] = None) -> None:
     # add_signal_handler，两边各管一段、互不干扰。
     agent.enable_interrupts()
 
+    # --auto-approve/-y 必须落 **auto 模式**：agent 默认 manual，manual 的
+    # forced 检查（Guard station ⑤）会压过 auto_approve——只切开关不动
+    # 模式，-y 等于没开（interactive/single-shot/serve 三路同理；危险命令
+    # 闸门仍生效，见 is_high_risk）。
+    if args.auto_approve:
+        agent.set_mode("auto")
+
     # Run（Phase 7：无论正常返回、KeyboardInterrupt 还是异常，finally 里
     # best-effort 清理所有后台任务——绝不因清理失败影响退出）
     exit_code = 0
@@ -445,8 +459,6 @@ def main(argv: Optional[list[str]] = None) -> None:
         if serve_entry is not None:
             # serve 默认 manual（写工具逐项经 web 批准）；--auto-approve
             # 显式切 auto，跳过批准（仍受危险命令闸门约束）
-            if args.auto_approve:
-                agent.set_mode("auto")
             exit_code = asyncio.run(
                 serve_entry(
                     agent, agent_console, args.host, args.port, workspace_abs

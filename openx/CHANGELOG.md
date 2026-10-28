@@ -4,6 +4,31 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.23 — `--auto-approve` / `/auto-approve` actually stop the prompts
+
+### The flag toggled the switch but not the mode the switch depends on
+
+- **The bug**: `agent._mode` defaults to **manual**, and in manual mode the
+  Guard's force-prompt station overrides `auto_approve` by design (manual's
+  contract is per-call confirmation). `--auto-approve`/`-y` and the
+  `/auto-approve` toggle only set `executor.auto_approve` — never the mode —
+  so every ASK-level call (which, since the S1c permission ceiling, includes
+  every plugin tool whose manifest declares no `permissions`) kept prompting.
+  Serve made this the default experience: it starts in manual mode
+- **The fix**: `--auto-approve`/`-y` now lands all three entry paths
+  (interactive, single-shot, serve) in **auto mode** (`agent.set_mode`), and
+  `/auto-approve` ON flips manual → auto too (with an explanatory line);
+  OFF leaves the mode alone — in auto, ASK-level calls return to the normal
+  asking flow. Dangerous-command / high-risk tools still always ask (their
+  contract is unchanged and documented)
+- **Trust screen aligned with its own docstring**: the code promised single-shot
+  `-y` skips the trust prompt but never did. Now `-y` in an untrusted
+  workspace asks nothing **and grants nothing** — project plugins are
+  skipped fail-closed (user dir unaffected); run interactively once or use
+  `/trust` to trust
+- 3 regression tests through the real Guard stack (manual+toggle → auto,
+  toggle off resumes prompting, toggle in auto mode is quiet)
+
 ## 0.1.22 — Protocol pinning becomes part of the plugin contract
 
 ### `find()` gets its consumer; the Skills line is drawn in writing

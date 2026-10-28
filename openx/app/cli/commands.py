@@ -1096,8 +1096,19 @@ async def _cmd_workspace(agent, console, args):
 
 @register("auto-approve", description="Toggle auto-approve mode")
 async def _cmd_auto_approve(agent, console, args):
+    """切换 auto-approve。
+
+    ON 时若当前处于 **manual 模式**，同步退到 auto：manual 的契约是逐项
+    弹窗（Guard station ⑤ ``forced`` 压过 auto_approve）——只切开关不动
+    模式，开关形同虚设（serve 默认 manual，正是"开了还在问"的来源）。
+    OFF 不动模式：auto 模式下 ASK 级本就走正常询问流程。
+    """
     agent.config.auto_approve = not agent.config.auto_approve
     agent.tool_executor.auto_approve = agent.config.auto_approve
+    if agent.config.auto_approve and agent._mode == "manual":
+        agent.set_mode("auto")
+        console.print_info("Mode: manual → auto (manual forces per-call "
+                           "prompts; auto-approve cannot apply there)")
     status = "ON" if agent.config.auto_approve else "OFF"
     console.print_info(f"Auto-approve: {status}")
     return True
