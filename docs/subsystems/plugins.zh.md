@@ -65,6 +65,7 @@ def self_test():
 | `api` | int | 目标内核插件 API（当前 1）；不符拒载 |
 | `protocol` | str | 显式协议钉扎（如 `tool/v1`），与 type 强校验 |
 | `scaffold` | dict | E1 退场声明（`compensates`/`exit_when` 必答）——见 [scaffolds.zh.md](scaffolds.zh.md) |
+| `config` | dict | 用户配置的 JSON Schema（settings.json 的 `plugins.config.<id>`）；装载期校验，`ctx.config` 注入（归并 default） |
 
 顶层未知键**警告**（拼错的键绝不静默失效）；形状错误**拒载**。
 
@@ -79,6 +80,7 @@ def self_test():
 | `ctx.register_lifecycle(name, on_session_start=, on_checkpoint=, on_resume=, on_unload=)` | 会话生命周期钩子 |
 | `ctx.register_ui_slot(name, render, refresh_hz)` | 状态 deck 面板（≤8 行；渲染 1s 超时；3 次熔断） |
 | `ctx.plugin_dir` | 目录插件的根——数据资产相对它解析（单文件/内置为 `None`） |
+| `ctx.config` | 本插件的用户配置：按 schema 校验 + default 归并（经 `/plugin config <name> [json|reset]` 读写） |
 
 ## 安全模型
 

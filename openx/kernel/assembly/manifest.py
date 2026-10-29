@@ -59,11 +59,11 @@ KNOWN_SCAFFOLD_FALLBACKS = {"reinstall-on-regression"}
 # PHASE_FAILED 靠猜）。未声明 = 随内核当前版本（兼容存量插件）。
 PLUGIN_API_VERSION = 1
 
-# manifest 顶层已知键（S2c/S4a）：键外 → 警告（此前顶层未知键被静默忽略，
-# 拼错的键无声失效，极难排查；沿用 P-B 哲学：警告不拒）。
+# manifest 顶层已知键（S2c/S4a/S5a）：键外 → 警告（此前顶层未知键被静默
+# 忽略，拼错的键无声失效，极难排查；沿用 P-B 哲学：警告不拒）。
 KNOWN_MANIFEST_KEYS = {
     "type", "mount", "trust", "summary", "permissions", "cost",
-    "timeout", "dependencies", "scaffold", "api", "protocol",
+    "timeout", "dependencies", "scaffold", "api", "protocol", "config",
 }
 
 
@@ -78,6 +78,16 @@ def scaffold_of(meta: Any) -> dict:
     免得每处重判类型。
     """
     block = meta.get("scaffold") if isinstance(meta, dict) else None
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def config_schema_of(meta: Any) -> dict:
+    """取 manifest 的 ``config`` 声明块（S5a 插件配置的 JSON Schema）。
+
+    非 dict 或缺省 → ``{}``（无配置面）。消费方（装载校验、/plugin config、
+    plugin_inspect）读它的统一入口。
+    """
+    block = meta.get("config") if isinstance(meta, dict) else None
     return dict(block) if isinstance(block, dict) else {}
 
 
@@ -179,6 +189,10 @@ def validate_manifest(meta: Any) -> tuple[list[str], list[str]]:
                             f"vocabulary: {sorted(PERMISSION_VOCAB)}")
     if "scaffold" in meta:
         _validate_scaffold(meta["scaffold"], problems, warnings)
+    # S5a：config 声明必须是 dict（JSON Schema 的子集校验在装载期对
+    # 用户配置做，这里只管 manifest 自身形状）。
+    if "config" in meta and not isinstance(meta["config"], dict):
+        problems.append("manifest.config must be a dict (JSON Schema)")
     return problems, warnings
 
 

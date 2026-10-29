@@ -4,6 +4,33 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.25 — Plugins get a config system (Cordis `Config` parity)
+
+### A plugin can declare what it accepts; the user configures it; it's validated at load
+
+- **`manifest.config` (JSON Schema subset)**: a plugin declares its
+  configurable surface in `__openx_meta__.config` — `type`/`properties`/
+  `required`/`enum`/`items`/`minimum`/`maximum`/`default`. Zero new
+  dependencies: the validator (`kernel/assembly/plugin_config.py`) implements
+  this subset itself and says so — anything outside it is "not validated",
+  never silently trusted
+- **Storage and injection**: user values live in settings.json under
+  `plugins.config.<plugin_id>` (`OpenXConfig.load/save_plugin_config`).
+  At load the values are validated against the schema — a violation **refuses
+  load** with the offending keys named (Cordis validates at activation; so do
+  we) — then `default`s are merged and the result is injected as
+  **`ctx.config`**. Plugins without a schema get the raw dict; builtins get
+  `{}`
+- **`/plugin config <name>`** shows the schema plus current values;
+  `/plugin config <name> <json>` validates and saves (bad JSON or schema
+  violations name the problem and change nothing); `reset` clears. The
+  config section is part of the composition key, so a save rebuilds the
+  bundle on the next turn — the command also force-reloads to make it live
+  immediately
+- Docs updated (manifest reference + `ctx.config` in both languages);
+  6 tests (gate, validate/merge, injection-with-defaults, fail-load,
+  no-schema passthrough, command view/set/reset)
+
 ## 0.1.24 — The task panel stops guessing
 
 ### Pairing by id, measured time, and human gates as observable events

@@ -39,7 +39,7 @@ from typing import Any, Callable, Optional
 
 from .assembly import composition, loader
 from .assembly.context import PluginCommand, PluginContext, call_with_payload
-from .assembly.manifest import scaffold_of, validate_manifest
+from .assembly.manifest import config_schema_of, scaffold_of, validate_manifest
 from .assembly.protocols import PROTOCOLS, route
 from .assembly.registrations import HOTPLUG_SESSION, REGISTRATIONS
 from .assembly.registry import PluginRegistry
@@ -207,6 +207,14 @@ class PluginKernel:
             # S1a：信任判定进键——用户把工作区加入信任后下次重组自动装载
             loader.project_plugins_untrusted(workspace),
         )
+        # S5a：插件配置段进键——/plugin config 写入后下一轮自动重组生效
+        try:
+            from ..config import OpenXConfig as _cfg
+
+            cfg_section = _cfg.load_plugin_settings().get("config", {})
+            key += (json.dumps(cfg_section, sort_keys=True, default=str),)
+        except Exception:
+            key += ("",)
         # S3b 开发期自动重载（OPENX_PLUGIN_AUTORELOAD=1，默认关）：插件
         # 文件签名进键——保存后下一轮 ensure_loaded 自动整体重组。代价是
         # 每次键比较都 stat 一遍插件文件，故只对显式开启者生效。
@@ -409,12 +417,30 @@ class PluginKernel:
                     raise RuntimeError(
                         f"missing dependency: {dep!r} is not loaded/active"
                     )
+            # S5a 插件配置：manifest 声明 config schema → 用户配置对照
+            # 校验（不过关 = 拒载，对标 Cordis 激活校验）+ default 归并，
+            # 经 ctx.config 注入 apply。
+            from .. import config as config_mod
+
+            user_config = config_mod.OpenXConfig.load_plugin_config(spec.id) \
+                if spec.path is not None else {}
+            schema = config_schema_of(info.manifest)
+            if schema:
+                from .assembly.plugin_config import merge_defaults, validate_config
+
+                problems_ = validate_config(user_config, schema, plugin=spec.id)
+                if problems_:
+                    raise RuntimeError(
+                        "plugin config rejected: " + "; ".join(problems_)
+                    )
+                user_config = merge_defaults(schema, user_config)
             ctx = PluginContext(
                 self,
                 spec.id,
                 logging.getLogger(f"openx.plugin.{spec.id}"),
                 self.workspace,
                 plugin_dir=spec.root,
+                config=user_config,
             )
             apply_fn(ctx)
         except Exception as exc:

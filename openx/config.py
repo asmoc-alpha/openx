@@ -225,6 +225,36 @@ class OpenXConfig:
         """
         return OpenXConfig._load_full_settings().get("plugins", {})
 
+    @staticmethod
+    def load_plugin_config(plugin_id: str) -> dict:
+        """某个插件的用户配置（S5a）：``plugins.config.<plugin_id>``。
+
+        缺席/形状非法 → ``{}``。校验由装载期对照 manifest ``config``
+        schema 做——本方法只取数。
+        """
+        section = OpenXConfig.load_plugin_settings().get("config", {})
+        value = section.get(plugin_id) if isinstance(section, dict) else None
+        return dict(value) if isinstance(value, dict) else {}
+
+    @staticmethod
+    def save_plugin_config(plugin_id: str, config: dict) -> None:
+        """写回某插件的用户配置（整块替换，不深合并——与 Cordis patch
+        同语义：config 是声明，不是补丁）。"""
+        data = OpenXConfig._load_full_settings()
+        plugins = data.get("plugins") or {}
+        if not isinstance(plugins, dict):
+            plugins = {}
+        config_section = plugins.get("config") or {}
+        if not isinstance(config_section, dict):
+            config_section = {}
+        if config:
+            config_section[plugin_id] = dict(config)
+        else:
+            config_section.pop(plugin_id, None)
+        plugins["config"] = config_section
+        data["plugins"] = plugins
+        OpenXConfig._save_full_settings(data)
+
     # ── MCP server management ──────────────────────────────────────
 
     @staticmethod

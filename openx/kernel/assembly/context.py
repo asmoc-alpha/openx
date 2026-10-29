@@ -128,6 +128,7 @@ class PluginContext:
         logger: Any,
         workspace: str,
         plugin_dir: Optional[Any] = None,
+        config: Optional[Mapping[str, Any]] = None,
     ):
         self._kernel = kernel
         self.plugin_id = plugin_id
@@ -136,6 +137,9 @@ class PluginContext:
         # S2a：目录插件的根目录（数据资产相对它解析）；单文件/内置/
         # entry-point 插件为 None。
         self.plugin_dir = plugin_dir
+        # S5a：本插件的用户配置（manifest `config` schema 校验 + default
+        # 归并后的快照；未声明 schema 时是 settings 里的原样 dict 或 {}）。
+        self.config: Mapping[str, Any] = dict(config or {})
 
     def register_tool(self, tool: Any) -> None:
         """注册一个工具实例（须自声明 permission，形状校验拒载记警告）。

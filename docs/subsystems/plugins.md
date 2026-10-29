@@ -67,6 +67,7 @@ Scaffold one without typing it: `/plugin new <name>`.
 | `api` | int | Target kernel plugin API (currently 1); mismatch refuses load |
 | `protocol` | str | Explicit protocol pin (e.g. `tool/v1`), type-checked |
 | `scaffold` | dict | E1 retirement declaration (`compensates`/`exit_when` required) — see [scaffolds.md](scaffolds.md) |
+| `config` | dict | JSON Schema for user config (`plugins.config.<id>` in settings.json); validated at load, injected as `ctx.config` (defaults merged) |
 
 Unknown top-level keys **warn** (a typo'd key never silently no-ops). Shape
 errors **refuse load**.
@@ -82,6 +83,7 @@ errors **refuse load**.
 | `ctx.register_lifecycle(name, on_session_start=, on_checkpoint=, on_resume=, on_unload=)` | Session lifecycle hooks |
 | `ctx.register_ui_slot(name, render, refresh_hz)` | Status-deck panel (max 8 lines; 1s render timeout; 3-strike breaker) |
 | `ctx.plugin_dir` | Root of a directory plugin — resolve data assets against it (`None` for single-file/builtin) |
+| `ctx.config` | User config for this plugin: schema-validated with `default`s merged (read/write via `/plugin config <name> [json|reset]`) |
 
 ## Security model
 

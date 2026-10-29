@@ -313,7 +313,10 @@ async def _cmd_plugin(agent, console, args):
       卸了重装，boot 插件原地刷新（scope 保持）；
     - ``/plugin test <name>``：在 admission 沙箱里重跑 self_test（S3c），
       输出 PASS/FAIL + 插件自己的 print。另见
-      ``OPENX_PLUGIN_AUTORELOAD=1``（文件改动自动重组，默认关）。
+      ``OPENX_PLUGIN_AUTORELOAD=1``（文件改动自动重组，默认关）；
+    - ``/plugin config <name> [json]``：查看/设置插件配置（S5a）——manifest
+      ``config`` schema 校验，写 ``plugins.config.<id>``，下一轮重组生效；
+      传 ``reset`` 清空。
     """
     sub = args[0].lower() if args else ""
     if sub == "install":
@@ -324,8 +327,69 @@ async def _cmd_plugin(agent, console, args):
         return await _plugin_reload(agent, console, args[1:])
     if sub == "test":
         return await _plugin_test(agent, console, args[1:])
+    if sub == "config":
+        return _plugin_config(agent, console, args[1:])
     console.print_warning("usage: /plugin install <git-url> | new <name> "
-                          "| reload <name> | test <name>")
+                          "| reload <name> | test <name> "
+                          "| config <name> [json|reset]")
+    return True
+
+
+def _plugin_config(agent, console, args) -> bool:
+    """/plugin config：查看（schema + 当前值）/ 设置（校验 + 落盘）。"""
+    import json as _json
+
+    from ...config import OpenXConfig
+    from ...kernel import get_kernel
+    from ...kernel.assembly.manifest import config_schema_of
+    from ...kernel.assembly.plugin_config import validate_config
+
+    if not args:
+        console.print_warning("usage: /plugin config <name> [json|reset]")
+        return True
+    name = args[0]
+    kernel = get_kernel()
+    kernel.ensure_loaded(str(agent.workspace))
+    schema = ((kernel.plugin_help(name) or {}).get("manifest") or {}).get("config")
+    if schema is None:
+        # 未装载/未知名时也允许按发现路径找 manifest（配置可先于装载）
+        schema = None
+    if len(args) == 1:
+        current = OpenXConfig.load_plugin_config(name)
+        console.raw.print(f"[bold]{name}[/bold] config")
+        if schema:
+            from rich.markup import escape
+
+            console.raw.print(escape(_json.dumps(schema, ensure_ascii=False, indent=2)))
+        else:
+            console.raw.print("  [dim](no schema declared)[/dim]")
+        console.raw.print("  current: "
+                          + _json.dumps(current, ensure_ascii=False))
+        return True
+
+    raw = args[1]
+    if raw.lower() == "reset":
+        OpenXConfig.save_plugin_config(name, {})
+        kernel._force_reload()
+        console.print_success(f"✓ config reset for {name}")
+        return True
+    try:
+        config = _json.loads(raw)
+    except _json.JSONDecodeError as exc:
+        console.print_warning(f"invalid JSON: {exc}")
+        return True
+    if not isinstance(config, dict):
+        console.print_warning("config must be a JSON object")
+        return True
+    if schema:
+        problems = validate_config(config, schema, plugin=name)
+        if problems:
+            for p in problems:
+                console.print_warning(p)
+            return True
+    OpenXConfig.save_plugin_config(name, config)
+    kernel._force_reload()  # 配置段在组合键里：显式触发，立即生效
+    console.print_success(f"✓ config saved for {name} (reload applied)")
     return True
 
 
