@@ -180,6 +180,22 @@ const Modals = {
     for (const p of panels) {
       const node = el("div", "panel");
       for (const line of (p.lines || [])) {
+        // svg: 行 = 插件资产引用（S5b）→ 经资产端点渲染 <img>；SVG 自带
+        // 的 CSS/SMIL 动画照常播放。src 只由 panel.plugin + 声明的文件名
+        // 构造（端点侧有 ACTIVE/白名单/穿越校验），行内容本身不进 HTML。
+        if (typeof line === "string" && line.startsWith("svg:")) {
+          const file = line.slice(4).trim();
+          if (file && /^[A-Za-z0-9._-]+$/.test(file) && p.plugin) {
+            const row = el("div", "panel-line panel-svg");
+            const img = document.createElement("img");
+            img.src = `/api/plugin-asset/${encodeURIComponent(p.plugin)}/${encodeURIComponent(file)}`;
+            img.alt = "";
+            img.height = 48;
+            row.appendChild(img);
+            node.appendChild(row);
+            continue;
+          }
+        }
         const row = el("div", "panel-line");
         row.textContent = String(line); // 纯文本渲染
         node.appendChild(row);

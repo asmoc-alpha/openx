@@ -285,6 +285,57 @@ async def session_info(request: web.Request) -> web.Response:
     })
 
 
+async def plugin_asset_get(request: web.Request) -> web.Response:
+    """GET /api/plugin-asset/{plugin}/{path} → ACTIVE 目录插件的资产文件。
+
+    为 ui.panel 的 ``svg:<file>`` 行供图（web 端渲染成 <img>，SVG 自带的
+    CSS/SMIL 动画照常播放）。安全面：
+
+    - 只服务**ACTIVE** 目录插件（信任门/admission 的既有关卡之后）；
+    - ``resolve`` 后必须仍在插件根内（穿越/软链逃逸 404）；
+    - 后缀白名单（svg/png/jpg/jpeg/webp/gif）+ 单文件 ≤256KiB
+      （对标 Cordis 图标上限）。
+    """
+    plugin = request.match_info.get("plugin", "")
+    rel = request.match_info.get("path", "")
+    if not plugin or not rel or "\\" in rel:
+        raise web.HTTPNotFound()
+    from ...kernel import get_kernel
+    from ...kernel.inventory import PHASE_ACTIVE
+    from ...kernel.assembly import loader
+
+    kernel = get_kernel()
+    info = next((i for i in kernel.inventory()
+                 if i.id == plugin and i.phase == PHASE_ACTIVE), None)
+    root = None
+    if info is not None:
+        for spec in loader.discover(str(_workspace(request))):
+            if spec.id == plugin and spec.root is not None:
+                root = spec.root
+                break
+    if root is None:
+        raise web.HTTPNotFound()
+
+    target = (root / rel).resolve()
+    if not str(target).startswith(str(root.resolve())) or not target.is_file():
+        raise web.HTTPNotFound()
+    if target.suffix.lower() not in (".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        raise web.HTTPNotFound()
+    if target.stat().st_size > 256 * 1024:
+        raise web.HTTPNotFound()
+
+    import mimetypes
+
+    ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    if target.suffix.lower() == ".svg":
+        ctype = "image/svg+xml"
+    return web.Response(
+        body=target.read_bytes(),
+        content_type=ctype,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def commands_get(request: web.Request) -> web.Response:
     """GET /api/commands → 斜杠命令清单（web 输入框 "/" 菜单数据源）。
 
@@ -1386,6 +1437,7 @@ def register_api(app: web.Application, session: Any, workspace: str) -> None:
     app[SESSION_KEY] = session
     app.router.add_get("/api/info", session_info)
     app.router.add_get("/api/commands", commands_get)
+    app.router.add_get("/api/plugin-asset/{plugin}/{path:.+}", plugin_asset_get)
     app.router.add_post("/api/session/new", session_new)
 
     app.router.add_get("/api/models", models_get)

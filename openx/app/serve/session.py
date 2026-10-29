@@ -374,9 +374,11 @@ class ServeSession:
         return [
             {
                 "name": name,
+                # S5b+：归属插件——端解析 svg: 行的资产引用要用它定位
+                "plugin": plugin,
                 "lines": [_RICH_TAG.sub("", ln) for ln in lines],
             }
-            for name, lines in raw
+            for name, plugin, lines in raw
         ]
 
     # ── 执行计划 / 子 agent 广播（右栏任务面板数据源）──────────────

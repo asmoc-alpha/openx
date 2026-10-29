@@ -665,7 +665,7 @@ def _panel_agent(collector) -> FakeAgent:
 async def test_attach_snapshot_includes_panels():
     """attach 快照含面板（行剥 rich 标签），宠物 attach 即可见。"""
     agent = _panel_agent(
-        FakePanels([[("pet", ["[dim](=^··^=)  pet is happy[/dim]"])]])
+        FakePanels([[("pet", "petplug", ["[dim](=^··^=)  pet is happy[/dim]"])]])
     )
     session = ServeSession(agent)
     session.start()
@@ -675,7 +675,7 @@ async def test_attach_snapshot_includes_panels():
 
     ev = [e for e in ws.sent if e["type"] == "panels"]
     assert ev and ev[0]["panels"] == [
-        {"name": "pet", "lines": ["(=^··^=)  pet is happy"]}
+        {"name": "pet", "plugin": "petplug", "lines": ["(=^··^=)  pet is happy"]}
     ]
     session.stop()
 
@@ -686,9 +686,9 @@ async def test_panel_ticker_broadcasts_on_change_only(monkeypatch):
 
     monkeypatch.setattr(session_mod, "_PANEL_TICK", 0.02)
     agent = _panel_agent(FakePanels([
-        [("pet", ["frame 0"])],
-        [("pet", ["frame 1"])],
-        [("pet", ["frame 1"])],
+        [("pet", "petplug", ["frame 0"])],
+        [("pet", "petplug", ["frame 1"])],
+        [("pet", "petplug", ["frame 1"])],
     ]))
     session = ServeSession(agent)
     session.start()
@@ -700,7 +700,7 @@ async def test_panel_ticker_broadcasts_on_change_only(monkeypatch):
     await asyncio.sleep(0.15)  # 数拍：frame0 -> frame1 变化一次后静止
     events = [e for e in ws.sent if e["type"] == "panels"]
     assert len(events) == 1, [e["panels"] for e in events]
-    assert events[0]["panels"] == [{"name": "pet", "lines": ["frame 1"]}]
+    assert events[0]["panels"] == [{"name": "pet", "plugin": "petplug", "lines": ["frame 1"]}]
     session.stop()
 
 
@@ -728,7 +728,7 @@ async def test_panel_ticker_stops_with_last_client(monkeypatch):
     import openx.app.serve.session as session_mod
 
     monkeypatch.setattr(session_mod, "_PANEL_TICK", 0.02)
-    agent = _panel_agent(FakePanels([[("pet", ["frame"])]]))
+    agent = _panel_agent(FakePanels([[("pet", "petplug", ["frame"])]]))
     session = ServeSession(agent)
     session.start()
     ws = FakeWS()

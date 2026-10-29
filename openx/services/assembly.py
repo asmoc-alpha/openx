@@ -323,9 +323,14 @@ class UiPanelCollector:
         self._fails: dict[str, int] = {}      # 面板名 -> 连续崩溃计数
         self._cache: dict[str, tuple[float, list[str]]] = {}  # 节流缓存
 
-    def panels(self) -> list[tuple[str, list[str]]]:
-        """征集本帧全部面板 → ``[(name, deck 行列表), ...]``（注册序）。"""
-        out: list[tuple[str, list[str]]] = []
+    def panels(self) -> list[tuple[str, str, list[str]]]:
+        """征集本帧全部面板 → ``[(name, plugin, deck 行列表), ...]``（注册序）。
+
+        ``plugin`` 供 serve 端解析插件资产引用（``svg:<file>`` 行 →
+        ``/api/plugin-asset/<plugin>/<file>``）；终端 deck 忽略该字段并
+        跳过 ``svg:`` 行（终端渲染不了 SVG，插件应自带 ASCII 回退行）。
+        """
+        out: list[tuple[str, str, list[str]]] = []
         reg = self._kernel.registry("ui_slots")
         if reg is None:
             return out
@@ -333,7 +338,7 @@ class UiPanelCollector:
         for entry in reg.entries():
             lines = self._render_entry(reg, entry, now)
             if lines is not None:
-                out.append((entry.name, lines))
+                out.append((entry.name, entry.plugin, lines))
         return out
 
     # ── internals ───────────────────────────────────────────────

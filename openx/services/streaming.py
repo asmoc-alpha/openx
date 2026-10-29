@@ -2132,9 +2132,14 @@ class StreamingService:
             return None, 0
         rows: list = []
         dropped = 0
-        for _name, lines in panel_list:
+        for _name, _plugin, lines in panel_list:
             try:
-                panel_rows = [self._deck_markup(ln) for ln in lines]
+                # svg: 行是插件资产引用（serve 端渲染为图）；终端渲染不了
+                # SVG → 本帧跳过（插件应自带 ASCII 回退行）
+                panel_rows = [
+                    self._deck_markup(ln) for ln in lines
+                    if not ln.startswith("svg:")
+                ]
             except Exception:
                 continue  # 坏 markup（未闭合标签等）→ 该面板本帧缺席
             for row in panel_rows:

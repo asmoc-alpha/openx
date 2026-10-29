@@ -140,7 +140,7 @@ def test_hanging_render_trips_circuit_breaker(monkeypatch):
 def test_normal_render_unaffected():
     reg = _Reg([_Entry("clock", "p1", _Slot(lambda: ["12:00"]))])
     collector = UiPanelCollector(_Kernel({"ui_slots": reg}))
-    assert collector.panels() == [("clock", ["12:00"])]
+    assert collector.panels() == [("clock", "p1", ["12:00"])]
 
 
 # ── S1c：manifest permissions = 能力上限 ──────────────────────────

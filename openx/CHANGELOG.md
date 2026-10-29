@@ -4,6 +4,34 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.27 — ui.panel learns SVG: image pets in the web task panel
+
+### `svg:<file>` lines render as plugin assets on the web; the terminal gets the fallback
+
+- **The line convention**: a ui.panel `render()` may return lines like
+  `svg:pet.svg` — a reference to a file in the plugin's own root. The web
+  task panel renders it as `<img src="/api/plugin-asset/<plugin>/<file>">`;
+  **CSS/SMIL animations inside the SVG play for free** (tail wag, blink —
+  zero frame-rate cost). The terminal deck skips `svg:` lines (it cannot
+  draw SVG), so a panel that wants both surfaces ships an ASCII fallback
+  line alongside
+- **`/api/plugin-asset/<plugin>/<path>`**: serves the file from that
+  plugin's root — ACTIVE plugins only (behind the trust gate and admission),
+  `resolve()` prefix guard against traversal/symlink escape, extension
+  whitelist (svg/png/jpg/jpeg/webp/gif), 256 KiB cap (Cordis' icon limit).
+  The web builds `<img>` src from the panel's owning plugin + the declared
+  filename only — the line content never enters HTML
+- **Panels now carry their owner**: `UiPanelCollector.panels()` yields
+  `(name, plugin, lines)` — serve projects `plugin` into the broadcast so
+  the client can resolve assets; terminal deck ignores it
+- **The desktop pet is a directory plugin now**: `desktop_pet/plugin.py` +
+  three mood SVGs (idle `pet.svg` with tail-wag/blink CSS animation, happy
+  `pet-happy.svg` in green with hopping hearts, hungry `pet-hungry.svg` in
+  grey) — the web panel switches the whole SVG by mood while the terminal
+  keeps the ASCII fallback and `pet_feed`
+- Tests: asset endpoint (serve/traversal/whitelist/unknown/inactive),
+  3-tuple collector projection, deck `svg:` skip
+
 ## 0.1.26 — `plugin_manager` / `plugin_inspect`: the model gets the console
 
 ### Cordis `plugin_manager` / `cordis_inspect` parity, plus MCP bundles

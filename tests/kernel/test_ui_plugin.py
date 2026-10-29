@@ -78,7 +78,7 @@ def test_ui_plugin_registers(kernel_env):
     # 面板可征集
     collector = UiPanelCollector(k)
     panels = collector.panels()
-    assert panels == [("pet", ["[dim](=^-^=)  pet is happy[/dim]"])]
+    assert panels == [("pet", "pet", ["[dim](=^-^=)  pet is happy[/dim]"])]
 
 
 def test_ui_registration_validates_shape(kernel_env):
@@ -135,7 +135,7 @@ def test_collector_crash_isolation_and_breaker(kernel_env):
     collector = UiPanelCollector(k)
     # 3 帧内：坏面板缺席、好面板照常；第 3 次崩溃触发熔断摘除
     for i in range(3):
-        panels = dict(collector.panels())
+        panels = {n: l for n, _p, l in collector.panels()}
         assert "pet" in panels
         assert "badpanel" not in panels
     # 熔断已摘除 + 记账（unregistered 事件 + 注册表警告）
@@ -145,7 +145,7 @@ def test_collector_crash_isolation_and_breaker(kernel_env):
     entry = k.registry("ui_slots").get("pet")
     assert entry is not None  # 好面板不受牵连
     # 摘除后征集只剩好面板
-    assert [name for name, _ in collector.panels()] == ["pet"]
+    assert [name for name, _p, _l in collector.panels()] == ["pet"]
 
 
 def test_collector_line_cap(kernel_env):
@@ -164,7 +164,7 @@ def test_collector_line_cap(kernel_env):
     k = get_kernel()
     k.ensure_loaded(str(ws))
 
-    panels = dict(UiPanelCollector(k).panels())
+    panels = {name: lines for name, _pl, lines in UiPanelCollector(k).panels()}
     assert len(panels["many"]) == 8  # UI_PANEL_MAX_LINES
 
 
@@ -185,9 +185,9 @@ def test_collector_throttle(kernel_env):
     k.registry("ui_slots").register("slow", _SlowSlot(), "builtin-tools")
 
     collector = UiPanelCollector(k)
-    first = dict(collector.panels())["slow"]
+    first = {n: l for n, _p, l in collector.panels()}["slow"]
     for _ in range(5):
-        again = dict(collector.panels())["slow"]
+        again = {n: l for n, _p, l in collector.panels()}["slow"]
     assert counter["n"] == 1  # 只渲染了一次
     assert again == first
 
@@ -304,9 +304,9 @@ async def test_write_plugin_generates_ui_plugin(kernel_env):
     import time
 
     collector = UiPanelCollector(k)
-    frames = [dict(collector.panels())["auto_pet"]]
+    frames = [{n: l for n, _p, l in collector.panels()}["auto_pet"]]
     time.sleep(0.01)  # 跨过 refresh_hz 周期（1ms）
-    frames.append(dict(collector.panels())["auto_pet"])
+    frames.append({n: l for n, _p, l in collector.panels()}["auto_pet"])
     assert frames[0] != frames[1]
     # unload → 面板消失
     ok, _ = k.unload_plugin("auto-pet")
