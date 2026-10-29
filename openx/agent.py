@@ -122,6 +122,7 @@ from .tools.write_plugin_tools import (
     TestPluginTool,
     WritePluginTool,
 )
+from .tools.plugin_manager_tool import PluginInspectTool, PluginManagerTool
 from .tools.subagent_tool import TaskTool
 from .tools.workflow_tool import WorkflowTool
 from .tools.skill_tool import SkillTool
@@ -783,6 +784,10 @@ class OpenXAgent:
                 WritePluginTool(kernel, self),
                 TestPluginTool(kernel),
                 PromotePluginTool(kernel),
+                # S5b 插件管理面（对标 DSH plugin_manager / cordis_inspect）：
+                # manager（ASK：install/set_enabled/list）+ inspect（ALLOW 只读）。
+                PluginManagerTool(kernel, self),
+                PluginInspectTool(kernel),
                 # 渐进披露的模型侧入口（skill）：按需加载 skill 正文。
                 SkillTool(self),
             ):
@@ -985,6 +990,23 @@ class OpenXAgent:
         if self._started:
             return
         self._started = True
+        # S5b MCP bundle：目录插件可捆绑 mcp.json。先保证插件集装载
+        # （ACTIVE 是捆绑的准入面——信任门/沙箱语义由装载层把关），再把
+        # 捆绑的 server 并入配置，connect_all 一并连接（失败降级警告）。
+        try:
+            from .kernel import get_kernel
+            from .mcp.manager import load_plugin_bundles
+
+            kernel = get_kernel()
+            kernel.ensure_loaded(str(self.workspace))
+            active = {i.id for i in kernel.inventory() if i.phase == "active"}
+            bundles = load_plugin_bundles(str(self.workspace), active)
+            if bundles and self.mcp.merge_servers(bundles):
+                self.console.print_info(
+                    f"MCP bundle: merged {len(bundles)} server(s) from plugins"
+                )
+        except Exception:
+            _log.warning("plugin mcp bundle merge failed", exc_info=True)
         await self.mcp.connect_all(self.console)
         # K6 pilot：已连接的 MCP 工具经晋升门注册进内核（session 作用域），
         # 再由注册表统一实例化——不再直并 self.tools。

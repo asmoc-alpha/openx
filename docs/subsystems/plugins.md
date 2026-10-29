@@ -85,6 +85,15 @@ errors **refuse load**.
 | `ctx.plugin_dir` | Root of a directory plugin — resolve data assets against it (`None` for single-file/builtin) |
 | `ctx.config` | User config for this plugin: schema-validated with `default`s merged (read/write via `/plugin config <name> [json|reset]`) |
 
+Model-facing meta-tools (in addition to the `/plugin` slash family):
+`plugin_manager` (ASK — install from a directory, set_enabled via the
+disabled table, list) and `plugin_inspect` (read-only — registered entries
+by kind, one entry's owner/schema/permissions, a plugin's config schema and
+current values). A directory plugin can also bundle MCP servers: a
+`mcp.json` (same shape as settings `mcpServers`, stdio) next to `plugin.py`
+is merged at startup for ACTIVE plugins; settings-declared same-name servers
+win.
+
 ## Security model
 
 - **Trust gate (boot)**: `<ws>/.openx/plugins` loads only if the workspace is

@@ -4,6 +4,31 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.26 — `plugin_manager` / `plugin_inspect`: the model gets the console
+
+### Cordis `plugin_manager` / `cordis_inspect` parity, plus MCP bundles
+
+- **`plugin_manager` (ASK)** — the model-facing packaging tool: `install`
+  (absolute dir with `plugin.py`, or a single `.py` → admission sandbox →
+  user plugins dir → session load, refuses over existing, cleans up on load
+  failure), `set_enabled` (writes the settings disabled table + recomposes —
+  builtins refuse), `list` (installed with phases + discoverable-but-unloaded).
+  Every mutating action asks, matching DSH's "each `plugin_manager` action
+  needs approval"
+- **`plugin_inspect` (read-only)** — the model reads the contract before
+  writing code: `list` registered entries per kind with their owning plugin;
+  `query` one entry (owner, summary, trust, permissions, config schema,
+  warnings); `config` a plugin's schema plus current user values. This is
+  the OpenX answer to `cordis_inspect_list`/`query` — registration is
+  introspectable instead of guessed
+- **MCP bundles**: a directory plugin may ship `mcp.json` (same shape as
+  settings `mcpServers`, stdio). At startup the agent ensures the plugin set
+  is loaded, collects bundles from ACTIVE plugins only (trust gate and
+  sandbox semantics already gate that set), and merges them — settings-declared
+  same-name servers win. Failures degrade to warnings, as MCP always does
+- Docs updated in both languages (meta-tools + the `mcp.json` convention);
+  4 new tests incl. a real end-to-end dir-plugin install through the sandbox
+
 ## 0.1.25 — Plugins get a config system (Cordis `Config` parity)
 
 ### A plugin can declare what it accepts; the user configures it; it's validated at load

@@ -93,6 +93,28 @@ class MCPManager:
                     merged[str(name)] = cfg  # 项目条目后写入 → 覆盖全局同名项
         return cls(merged)
 
+    # ── 插件捆绑的 server（S5b MCP bundle）──────────────────────
+
+    def merge_servers(self, servers: dict) -> int:
+        """合并插件捆绑的 server 配置（connect_all 之前调用）。
+
+        只**新增**：settings.json 已声明的同名项以用户配置为准（用户显式
+        配置压过插件捆绑）。返回实际新增数。校验同 ``__init__``
+        （``command`` 非空串；坏条目丢弃）。
+        """
+        added = 0
+        for name, cfg in (servers or {}).items():
+            if name in self._servers_config:
+                continue
+            if (
+                isinstance(cfg, dict)
+                and isinstance(cfg.get("command"), str)
+                and cfg["command"].strip()
+            ):
+                self._servers_config[str(name)] = cfg
+                added += 1
+        return added
+
     # ── connections ─────────────────────────────────────────────
 
     async def connect_all(self, console=None) -> int:
@@ -182,6 +204,31 @@ class MCPManager:
             except Exception:
                 pass
         self._clients.clear()
+
+
+def load_plugin_bundles(workspace: str, active_ids: set[str]) -> dict[str, dict]:
+    """收集**已装载目录插件**捆绑的 MCP server（S5b MCP bundle）。
+
+    约定：目录插件根下的 ``mcp.json``，形状与 settings 的 ``mcpServers``
+    一致（``{name: {command, args?, env?}}``，仅 stdio）。只读 ACTIVE
+    插件的（未装载/失败插件不贡献——信任门/沙箱语义由装载层把关）。
+    同名冲突由 ``MCPManager.merge_servers`` 裁决（settings 优先）。
+    """
+    from ..kernel.assembly import loader
+
+    merged: dict[str, dict] = {}
+    for spec in loader.discover(workspace):
+        if spec.root is None or spec.id not in active_ids:
+            continue
+        servers = _read_json(spec.root / "mcp.json").get("mcpServers")
+        if not isinstance(servers, dict):
+            continue
+        for name, cfg in servers.items():
+            if isinstance(cfg, dict) and name not in merged:
+                entry = dict(cfg)
+                entry["plugin"] = spec.id  # 归因：inventory/日志可见
+                merged[str(name)] = entry
+    return merged
 
 
 if __name__ == "__main__":

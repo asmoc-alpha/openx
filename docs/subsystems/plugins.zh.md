@@ -82,6 +82,12 @@ def self_test():
 | `ctx.plugin_dir` | 目录插件的根——数据资产相对它解析（单文件/内置为 `None`） |
 | `ctx.config` | 本插件的用户配置：按 schema 校验 + default 归并（经 `/plugin config <name> [json|reset]` 读写） |
 
+模型侧元工具（`/plugin` 斜杠命令族之外）：`plugin_manager`（ASK——从目录
+安装、经禁用表启停、清单）与 `plugin_inspect`（只读——按 kind 列注册项、
+查单条目的归属/schema/权限、查插件配置 schema 与当前值）。目录插件还可捆绑
+MCP server：`plugin.py` 旁放 `mcp.json`（形状同 settings 的 `mcpServers`，
+仅 stdio），启动时对 ACTIVE 插件合并；settings 同名 server 以用户配置为准。
+
 ## 安全模型
 
 - **boot 信任门**：`<ws>/.openx/plugins` 只在工作区受信任时装载（交互 CLI
