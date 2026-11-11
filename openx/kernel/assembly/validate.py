@@ -43,6 +43,11 @@ def validate_tool(name: str, tool: object) -> list[str]:
         problems.append("tool.permission declaration missing (required)")
     if not callable(getattr(tool, "execute", None)):
         problems.append("tool.execute not callable")
+    # ProtectPluginTool 全量委托 Tool 表面；缺 to_openai_schema 的鸭子工具
+    # 能过上面各站，却会在 agent 装配 _compute_tool_schemas 时炸启动——
+    # 在此拒载记警告。
+    if not callable(getattr(tool, "to_openai_schema", None)):
+        problems.append("tool.to_openai_schema not callable")
     return problems
 
 

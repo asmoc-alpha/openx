@@ -82,6 +82,24 @@ class TestValidators:
         problems = validate_tool("np", NoPerm())
         assert any("permission" in p for p in problems)
 
+    def test_tool_missing_to_openai_schema(self):
+        # 鸭子工具缺 to_openai_schema：过 name/permission/execute 各站，
+        # 却会在 agent._compute_tool_schemas 炸启动 —— 校验须拒载记警告。
+        class NoSchema:
+            name = "ns"
+            description = "d"
+            parameters = {}
+
+            @property
+            def permission(self):
+                return Permission(level=PermissionLevel.ALLOW)
+
+            async def execute(self, **kw):
+                return ToolResult()
+
+        problems = validate_tool("ns", NoSchema())
+        assert any("to_openai_schema" in p for p in problems)
+
     def test_command_ok(self):
         contrib = PluginCommand(_handler, "d", ["al"])
         assert validate_command("my-cmd", contrib) == []

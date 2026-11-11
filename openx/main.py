@@ -152,6 +152,17 @@ them interactively with /model and /config. Environment:
         help="Show version and exit",
     )
     parser.add_argument(
+        "--tui",
+        action="store_true",
+        help=(
+            "[experimental] Full-screen TUI (Textual) instead of the inline "
+            "REPL. Stage 0: thinking/tool blocks are collapsible (click the "
+            "title or focus it and press Enter); turns run non-streaming "
+            "until the streaming pipeline lands, and inline dialogs are not "
+            "migrated yet — pair it with -y / auto mode"
+        ),
+    )
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Start a long-lived web server (Web 端) instead of the REPL",
@@ -293,6 +304,25 @@ def _import_serve() -> tuple:
     return ServeConsole, run_serve
 
 
+def _run_tui(agent: OpenXAgent, console: Console) -> None:
+    """``--tui`` 入口：惰性导入 Textual，依赖缺失时给安装指引而非栈。
+
+    ``run_tui`` 内部把 app 与既有 REPL 协程放进同一个 loop 并发跑（见
+    ``openx/tui/app.py``），因此这里只是普通的 ``asyncio.run``。
+    """
+    try:
+        from .tui.app import run_tui
+    except ImportError as e:  # textual 未安装 / 版本不满足
+        print(
+            "Error: --tui requires the 'textual' package.\n"
+            "  Install with:  pip install 'textual'\n"
+            f"  ({e})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    asyncio.run(run_tui(agent, console))
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     """CLI entry point."""
     # argv=None（console 入口）→ 取 sys.argv[1:]；再经 serve 子命令改写。
@@ -332,6 +362,23 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
         args.resume = None
 
+    # --tui 守卫：全屏界面必须独占一个真终端；与 serve / 单次查询互斥
+    # （那两个路径的输出去向不同，混用只会产出半截界面）。
+    if args.tui:
+        if args.serve or args.prompt:
+            print(
+                "Error: --tui cannot be combined with --serve or a prompt.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print(
+                "Warning: --tui needs an interactive terminal; "
+                "falling back to the inline REPL.",
+                file=sys.stderr,
+            )
+            args.tui = False
+
     # ── First-run check: modelGroups ─────────────────────────────
     # 模型/凭据只来自 settings.json 的 modelGroups；未配置（无激活组）→
     # 启动交互向导（env/CLI 不再被当作"已配置"）。
@@ -368,6 +415,10 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.auto_approve:
         config.auto_approve = True
     config.stream = not args.no_stream
+    if args.tui:
+        # 阶段 0：行内 StreamingService 的 Rich Live 与 Textual 争同一个
+        # 终端，流式 widget 管线（迁移 Stage 2）落地前先走非流式回合。
+        config.stream = False
 
     # ── Trust check ──────────────────────────────────────────────
     # Ask user to trust the workspace before OpenX can access it.
@@ -476,7 +527,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
         else:
             try:
-                asyncio.run(run_interactive(agent, console))
+                if args.tui:
+                    _run_tui(agent, console)
+                else:
+                    asyncio.run(run_interactive(agent, console))
             except KeyboardInterrupt:
                 console.print_goodbye(agent.session_token_usage())
     finally:

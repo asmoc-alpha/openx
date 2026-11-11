@@ -109,6 +109,36 @@ class Console(
         # 永久锁定窗口路径——tail 已部分在 scrollback、部分被窗口擦除，
         # 整块重印会二次打印 scrollback 行（见 prompt._replay_toggle）。
         self._replay_windowed = False
+        # ── 全屏 TUI（--tui，阶段 0）──────────────────────────────
+        # 非 None 时：``_console`` 已被换成 TuiSink（输出投递成 widget）、
+        # 输入行交给 Textual app（见 prompt.print_user_prompt 早退分支）。
+        # ``_raw_console`` 留住原 Rich Console，``detach_tui`` 原样还原。
+        # 不加类型注解：避免成为 dataclass 字段（同 on_dialog_start 约定）。
+        self._tui = None
+        self._raw_console = None
+
+    # ── 全屏 TUI 接线（阶段 0）──────────────────────────────────
+
+    def attach_tui(self, app) -> None:
+        """把输出/输入两条缝切到 Textual app。
+
+        行内实现整套留在原地：``detach_tui`` 一条调用即完全还原，这正是
+        迁移期的逃生门（``--inline`` 语义）。
+        """
+        from ..tui.sink import TuiSink
+
+        if self._raw_console is None:
+            self._raw_console = self._console
+        sink = TuiSink(self._raw_console, app.sink_queue)
+        self._console = sink
+        self._tui = app
+        app.install_sink(sink)
+
+    def detach_tui(self) -> None:
+        if self._raw_console is not None:
+            self._console = self._raw_console
+        self._raw_console = None
+        self._tui = None
 
     # ── state accessors ─────────────────────────────────────────
 

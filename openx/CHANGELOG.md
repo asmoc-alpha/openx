@@ -4,6 +4,38 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.28 — `--tui`: the full-screen surface, stage 0
+
+### A Textual widget tree replaces cursor arithmetic for the two things inline rendering cannot do
+
+- **`openx --tui`** runs a full-screen interface (`openx/tui/`) while the inline
+  REPL stays the default. The screen is a widget tree, so folding a block is a
+  property of a control rather than a redraw state machine
+- **Three seams, no agent rewrite**: output (`Console._console` → `TuiSink`,
+  which enqueues Rich renderables for the app to mount — bounded queue, single
+  consumer, stray writes land in a `StringIO` measure console), input
+  (`print_user_prompt` → `app.ask()`, returning the same `None` the inline path
+  returns on EOF), and session (app + the same `run_interactive` coroutine
+  concurrently in one event loop, either side ending stops both)
+- **Collapsible blocks**: `ThinkingBlock` / `ToolBlock` default to collapsed;
+  click the title bar, or focus it and press Enter. `ctrl+r` toggles thinking
+  blocks, `ctrl+t` expands/collapses all. A **frozen** thinking block stays
+  foldable — in the inline path freezing commits it to scrollback permanently
+- **Escape hatch**: `Console.detach_tui()` restores the original Rich console and
+  the inline input path, so the inline implementation keeps working untouched
+  until stage 6 deletes it
+- **`python -m openx.tui`** offline demo (no model, no network) drives the same
+  widget operations the streaming pipeline will use
+- **Stage 0 limits, stated in the docs**: turns are non-streaming (`Live` and
+  Textual cannot share a terminal), inline dialogs are not migrated (run with
+  `-y` / auto mode), the input line is single-line, `Esc` does not interrupt yet
+- **`validate_tool` gained a real station**: a duck-typed tool without
+  `to_openai_schema` used to pass every check and then crash startup in
+  `agent._compute_tool_schemas`; it is now rejected with a warning
+- Dependency `textual>=8,<9` (requires `rich>=14.2`, compatible with `rich>=14,<16`);
+  `tests/tui/` asserts widget state through `App.run_test()` + `Pilot` and skips
+  when textual is absent. Docs: `docs/subsystems/tui.md` (+ zh), architecture tree
+
 ## 0.1.27 — ui.panel learns SVG: image pets in the web task panel
 
 ### `svg:<file>` lines render as plugin assets on the web; the terminal gets the fallback

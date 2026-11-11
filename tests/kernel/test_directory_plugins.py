@@ -24,11 +24,13 @@ PLUGIN_SRC = '''
 import json
 from pathlib import Path
 
+from openx.tools.base import Tool, ToolResult
+
 __openx_meta__ = {"summary": "目录插件", "trust": "user"}
 
 _DATA = Path(__file__).parent / "assets" / "greeting.json"
 
-class HiTool:
+class HiTool(Tool):
     name = "dirhi"
     description = "hi from dir plugin"
     parameters = {"type": "object", "properties": {}}
@@ -39,7 +41,6 @@ class HiTool:
         return Permission(level=PermissionLevel.ASK)
 
     async def execute(self, **kw):
-        from openx.tools.base import ToolResult
         return ToolResult(output=_DATA.read_text(encoding="utf-8"))
 
 def apply(ctx):

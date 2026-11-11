@@ -447,7 +447,14 @@ class PromptMixin:
         ``async``：ptk 的同步 ``prompt()`` 在运行中的事件循环内会
         RuntimeError（其内部 ``asyncio.run``）——必须走 ``prompt_async``；
         全部调用点（interactive / commands）均在 async 上下文。
+
+        全屏 TUI（``--tui``）：输入行由 Textual app 托管，本方法直接转交
+        ``app.ask()``——框线/留屏复用/ptk 一律不参与（两套 TUI 争同一个
+        终端必炸）。返回 ``None`` 的语义与行内 EOF 一致（app 已关闭）。
         """
+        tui = getattr(self, "_tui", None)
+        if tui is not None:
+            return await tui.ask()
         self._refresh_terminal_size()
         out = sys.stdout
         tw = self._terminal_width

@@ -8,6 +8,7 @@ in [user/](../user/index.md); step-by-step how-tos in [cookbook/](../cookbook/ex
 | Subsystem | Page | One-liner |
 |---|---|---|
 | Plugins | [plugins.md](plugins.md) | Code extensions registering tools/commands/context/UI via `apply(ctx)`: trust gate, admission sandbox, permission ceiling, directory plugins, git install |
+| Full-screen TUI | [tui.md](tui.md) | `openx --tui`: Textual surface over the same agent — sink/input/session seams, collapsible thinking & tool blocks, stage-0 limits |
 | Subagents | [subagents.md](subagents.md) | The `task` tool: builtin and custom agent types, structured output, live status deck |
 | Workflows | [workflows.md](workflows.md) | Deterministic multi-agent orchestration in Python scripts |
 | Background tasks | [background-tasks.md](background-tasks.md) | Detached shell commands with log tailing and stop control |
