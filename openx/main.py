@@ -156,10 +156,9 @@ them interactively with /model and /config. Environment:
         action="store_true",
         help=(
             "[experimental] Full-screen TUI (Textual) instead of the inline "
-            "REPL. Stage 0: thinking/tool blocks are collapsible (click the "
-            "title or focus it and press Enter); turns run non-streaming "
-            "until the streaming pipeline lands, and inline dialogs are not "
-            "migrated yet — pair it with -y / auto mode"
+            "REPL: collapsible thinking/tool blocks (click the title or focus "
+            "it and press Enter), streaming answers, Esc to interrupt. Inline "
+            "dialogs are not migrated yet — pair it with -y / auto mode"
         ),
     )
     parser.add_argument(
@@ -415,10 +414,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.auto_approve:
         config.auto_approve = True
     config.stream = not args.no_stream
-    if args.tui:
-        # 阶段 0：行内 StreamingService 的 Rich Live 与 Textual 争同一个
-        # 终端，流式 widget 管线（迁移 Stage 2）落地前先走非流式回合。
-        config.stream = False
 
     # ── Trust check ──────────────────────────────────────────────
     # Ask user to trust the workspace before OpenX can access it.

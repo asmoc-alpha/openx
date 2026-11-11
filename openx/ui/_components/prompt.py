@@ -418,7 +418,12 @@ class PromptMixin:
         Used when a queued follow-up is sent without a fresh prompt: the
         cursor sits just below the frame (left by ``Live``), so move up
         four rows to the top rule and clear to the end of the screen.
+
+        用 ``Console._frame_on_screen``（由流式服务 ``done()`` 置位）判断。
         """
+        # 全屏 TUI：没有行内框可擦，且本方法直写 stdout——一条都别走。
+        if getattr(self, "_tui", None) is not None:
+            return
         if self._frame_on_screen:
             sys.stdout.write("\033[4A\033[J")
             sys.stdout.flush()

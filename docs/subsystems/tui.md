@@ -13,9 +13,10 @@ program does not own.
 Textual): the screen is a widget tree, so folding a block is a widget property
 rather than a state machine, and the framework owns layout, focus and scrolling.
 
-> **Status: stage 0 (experimental).** The surface exists and is tested, but the
-> inline REPL is still the default and still the source of truth for anything not
-> listed below. Turns run **non-streaming** in `--tui` (see [Limits](#limits)).
+> **Status: experimental, streaming.** Answers stream, thinking and tool blocks are
+> collapsible, and `Esc` interrupts a turn. The inline REPL is still the default and
+> still the source of truth for dialogs, input editing and the fleet/plugin panels
+> (see [Limits](#limits)).
 
 ```bash
 openx --tui                     # full-screen interface
@@ -93,16 +94,57 @@ most cursor arithmetic on:
 Ns`. Unlike the inline implementation, a frozen block **stays foldable** — the
 widget is still there to re-render.
 
+## Streaming
+
+The inline implementation renders a turn into a Rich `Live` region and pays for
+it with a viewport budget, a line-commit watermark and cursor arithmetic. The
+full-screen pipeline keeps the **same event stream** and none of that machinery:
+`TuiStream` (`openx/tui/stream.py`) has the same surface as `StreamingService`
+(`start` / `feed` / `done` / `cancel` / `pause` / `set_cancel_target` /
+`esc_interrupted`), so `interactive.py` picks a backend in one place and the
+wiring below it is unchanged.
+
+`feed()` only classifies and enqueues; `StreamView` (`openx/tui/view.py`) applies
+the events to widgets, and it is driven exclusively by the app's 30 Hz drain —
+the same single-consumer rule as the output sink.
+
+| Chunk from `agent.stream_run` | Widget result |
+|---|---|
+| `str` | appended to the current answer entry as Rich `Markdown` (math pre-rendered), re-rendered at most 10×/s |
+| `StreamReasoning(text)` | a `ThinkingBlock`, mounted on the first token; frozen to `● Thought for Ns` by the first non-reasoning chunk |
+| `ToolStartEvent(name, arguments, call_id)` | a `ToolBlock`, title = state dot + name + argument summary |
+| `ToolResultEvent(name, output, is_error, call_id)` | the matching block flips to done/error and shows the output |
+
+A tool block **closes the current answer segment**: text after a tool call starts
+a new entry, mirroring the inline text/tool alternation — otherwise new text would
+be spliced into the old Markdown around the block.
+
+Tool results pair by `call_id` when the provider supplies one, falling back to
+"first running block with that name" (the inline rule). Parallel calls to the same
+tool therefore land in the right block, which the inline implementation cannot do.
+
+Interrupting: `Esc` is an app binding (priority, so it works while typing). It
+calls `TuiStream.interrupt`, which is the inline `_interrupt` semantics point for
+point — a per-turn latch, cancelling **only** the registered stream-consumer
+subtask, `loop.call_soon_threadsafe` for the actual cancel, and `esc_interrupted`
+so `interactive.py` can decide between swallowing the cancellation (back to the
+prompt) and re-raising. The handler is unbound on `done()`/`cancel()`, so a stray
+`Esc` after a turn cannot touch the next one.
+
+Enter during a turn **queues** the message instead of sending it: it goes into
+`console._input_queue`, the channel the inline REPL already drains between turns,
+and the transcript echoes `↳ queued: …` so the user sees what is waiting.
+
 ## Keys
 
 | Key | Action |
 |---|---|
-| `Enter` | submit the input line |
+| `Enter` | submit the input line (during a turn: queue it for the next turn) |
 | `Ctrl+Q` | quit (wakes a pending input with EOF) |
 | `Ctrl+R` | toggle every thinking block |
 | `Ctrl+T` | expand all blocks, or collapse all if any is collapsed |
 | `Tab` / `Shift+Tab` | move focus between block titles and the input line |
-| `Esc` | reserved for interrupting a turn — **not wired yet** (stage 2) |
+| `Esc` | interrupt the running turn (no-op when idle) |
 
 Clicking a block's title bar toggles it; the vertical scrollbar and mouse wheel
 scroll the transcript, and the view stops following the bottom while you are
@@ -110,11 +152,6 @@ reading history.
 
 ## Limits
 
-- **Turns are non-streaming.** The inline `StreamingService` drives a Rich `Live`
-  region, which would fight Textual for the same terminal. `--tui` therefore
-  forces `config.stream = False`; the streaming widget pipeline is stage 2.
-  Consequences you will notice: no token-by-token answers, no live thinking
-  block, and `Esc` does not interrupt.
 - **Dialogs are not migrated.** Permission ASK prompts, plan approval,
   `ask_user`, and the settings overlay still come from the inline implementation,
   which switches the tty to raw mode and writes escape sequences directly —
@@ -127,9 +164,13 @@ reading history.
   falls back to the inline REPL; `python -m openx.tui` exits 2 instead.
 - `--tui` is mutually exclusive with `--serve` and with a one-shot prompt
   argument — those surfaces own stdout in ways a full-screen app cannot share.
-- Plugin UI panels (`ctx.register_ui_slot`) and the subagent fleet deck are
-  inline-only for now: their renderers write through `Console`, so their output
-  shows up in the transcript as text rather than as a pinned panel.
+- Plugin UI panels (`ctx.register_ui_slot`), the subagent fleet deck and the
+  plan/queue deck are inline-only for now: their renderers write through
+  `Console`, so their output shows up in the transcript as text rather than as a
+  pinned panel. `--tui` carries the to-do/fleet/panel arguments in the
+  `TuiStream` constructor and ignores them.
+- Long answers re-render as Markdown at 10 Hz while streaming; a very long answer
+  on a slow terminal is correspondingly heavier than the inline line-commit path.
 
 ## Testing
 
@@ -138,9 +179,17 @@ Enter-toggle, `Ctrl+T`, thinking content staying plain text, tool result states,
 Rich/Markdown/math fidelity inside `Static`, sink delivery, attach/detach, and
 the `ask()` contract (submitted text, or `None` on quit).
 
+`tests/tui/test_streaming.py` drives the pipeline with **real event objects**
+(`StreamReasoning`, `ToolStartEvent`, `ToolResultEvent`): segment splitting,
+parallel same-name pairing by `call_id`, orphan results not being dropped,
+`task` start suppression plus result echo, the done/interrupted lines, the
+`Esc` latch and its unbinding, queued input routing, and one end-to-end run of
+`_stream_response` that asserts widgets are fed **and** that no inline
+`InputCapture` is started (cbreak would fight Textual for stdin).
+
 Textual's `App.run_test()` + `Pilot` assert **widget state** directly, which is
 what the inline implementation cannot do — there, stream rendering is verified
-through `pyte` screen snapshots. The file is `pytest.importorskip("textual")`-
+through `pyte` screen snapshots. Both files are `pytest.importorskip("textual")`-
 guarded, so the default path never goes red for a missing optional dependency.
 
 Dependency: `textual>=8,<9` (it requires `rich>=14.2`, compatible with this

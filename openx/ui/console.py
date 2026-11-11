@@ -133,6 +133,9 @@ class Console(
         self._console = sink
         self._tui = app
         app.install_sink(sink)
+        # 回填 console 本体：流式期回车排队的消息要落进 _input_queue
+        # （行内主循环已有的排队通道，见 tui/app.py on_input_submitted）
+        app.attach_console(self)
 
     def detach_tui(self) -> None:
         if self._raw_console is not None:

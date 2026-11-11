@@ -4,6 +4,49 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.29 — `--tui` streams: the event stream gets a second renderer
+
+### Same chunks, same seam, none of the cursor arithmetic
+
+- **`TuiStream` has the same surface as `StreamingService`** (`start` / `feed` /
+  `done` / `cancel` / `pause` / `set_cancel_target` / `esc_interrupted`) and
+  renders into widgets instead of a Rich `Live` region. `interactive.py` picks a
+  backend in one function (`_make_display`); every line of wiring below it —
+  permission/dialog hooks, the `_StreamInterrupted` path, checkpoint flushing on
+  interrupt — is unchanged
+- **`--tui` turns are streaming now**: string tokens build one Markdown entry
+  (re-rendered at most 10×/s), `StreamReasoning` mounts a `ThinkingBlock` that
+  freezes to `● Thought for Ns` on the first non-reasoning chunk,
+  `ToolStartEvent`/`ToolResultEvent` drive `ToolBlock` from running to done/error.
+  A tool block **closes the answer segment** — later text opens a new entry, the
+  inline text/tool alternation
+- **Tool results pair by `call_id`** when the provider supplies one (falling back
+  to "first running block with that name"): parallel calls to the same tool land
+  in the right block, which the inline name-matching rule cannot do. Orphan
+  results are never dropped; `task` starts stay suppressed and only the result
+  is echoed (with its description)
+- **`Esc` really interrupts**: a priority binding (works while typing) calls
+  `TuiStream.interrupt` — per-turn latch, cancels only the registered
+  stream-consumer subtask via `loop.call_soon_threadsafe`, `esc_interrupted`
+  decides swallow-vs-raise, handler unbound on `done()`/`cancel()` so a stray
+  press cannot touch the next turn
+- **Enter during a turn queues instead of sending**: it goes into
+  `console._input_queue` — the channel the inline REPL already drains between
+  turns — and the transcript echoes `↳ queued: …`
+- Two silent-failure bugs fixed on the way: `RichEntry.update` now swaps
+  `source` alongside the renderable (`Static.update` does not, so the streaming
+  answer's current source was stale), and the app's drain/spinner timers are
+  shutdown-safe (a timer firing after the widget tree is gone used to raise
+  `NoMatches` out of the exit path)
+- `python -m openx.tui` drives the demo through `TuiStream` with real event
+  objects — the demo is a self-check of the production pipeline, not a parallel
+  mock of it
+- Docs: `docs/subsystems/tui.md` (+ zh) gains a Streaming section, real `Esc`
+  semantics and the honest limits (dialogs and single-line input are still on
+  the inline implementation); `tests/tui/test_streaming.py` adds 30 tests
+  incl. one end-to-end `_stream_response` run that asserts no inline
+  `InputCapture` is started
+
 ## 0.1.28 — `--tui`: the full-screen surface, stage 0
 
 ### A Textual widget tree replaces cursor arithmetic for the two things inline rendering cannot do

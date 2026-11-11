@@ -197,6 +197,34 @@ def _clear_interrupt(agent: Any) -> None:
             pass
 
 
+def _make_display(agent: OpenXAgent, console: Console):
+    """流式显示后端的选择：全屏 TUI（``--tui``）或行内 ``Live``。
+
+    两者**接口同面**（``start/feed/done/cancel/pause/resume*pause_capture/
+    set_cancel_target/set_interrupt_notice/esc_interrupted``），所以下方
+    接线代码不需要为界面分叉——迁移期两套并存，靠这一处切换。
+
+    行内实现的判据是 ``console._tui``：``attach_tui`` 期间非 None（见
+    ``ui/console.py``）；未挂载（默认 REPL / 测试替身）时该属性可能不存在，
+    故用 ``getattr`` 兜底。
+    """
+    app = getattr(console, "_tui", None)
+    common = dict(
+        input_tokens=agent.total_input_tokens,
+        todos_provider=lambda: agent.todos,
+        fleet=agent.fleet,
+        panels=getattr(agent, "ui_panels", None),
+        # 展示层：文本操作块经此对工具调只读 preview_diff（执行前）取变更
+        # 前后内容 → 转录内联多语言高亮 diff + create/update/delete 分类
+        tool_lookup=lambda name: agent.tools.get(name),
+    )
+    if app is not None:
+        from ...tui.stream import TuiStream
+
+        return TuiStream(console, app=app, **common)
+    return StreamingService(console, **common)
+
+
 async def _stream_response(
     agent: OpenXAgent,
     console: Console,
@@ -258,14 +286,7 @@ async def _stream_response(
             )
             return
 
-        display = StreamingService(
-            console, agent.total_input_tokens,
-            todos_provider=lambda: agent.todos, fleet=agent.fleet,
-            panels=getattr(agent, "ui_panels", None),
-            # 展示层：文本操作块经此对工具调只读 preview_diff（执行前）取
-            # 变更前后内容 → 转录内联多语言高亮 diff + create/update/delete 分类
-            tool_lookup=lambda name: agent.tools.get(name),
-        )
+        display = _make_display(agent, console)
         display.start()
         # Bug 10: during streaming the InputCapture thread owns stdin
         # (cbreak). A permission prompt raised from inside stream_run needs

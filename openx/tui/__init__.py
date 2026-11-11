@@ -1,23 +1,31 @@
-"""OpenX 全屏 TUI（Textual）—— **阶段 0 脚手架**。
+"""OpenX 全屏 TUI（Textual）。
 
 本包只在 ``openx --tui`` / ``python -m openx.tui`` 路径被导入；默认的
 行内 REPL 完全不经此包（``textual`` 缺失也不影响默认路径）。
 
-阶段分工（见迁移计划）：
+组成：
 
-- **阶段 0（本包现状）**：输出缝（:mod:`openx.tui.sink`）+ 可折叠块
-  （:mod:`openx.tui.blocks`）+ 最小 app（转录 / 状态行 / 输入框）；
-  ``--tui`` 下跑**非流式**回合（``config.stream = False``）——流式管线
-  在阶段 2 接入，弹窗在阶段 5 接入。
-- 阶段 1–6：sink 全量落地 → 流式 widget 管线 → 输入/历史 → 交互块 →
-  ModalScreen 弹窗 → 删行内死代码并翻转默认。
+- :mod:`openx.tui.sink` —— 输出缝：``Console._console`` 的替身，``print()``
+  投递 renderable，由 app 挂成 widget。
+- :mod:`openx.tui.stream` —— 流式事件与原语 + ``TuiStream``（与行内
+  ``StreamingService`` 同面的显示服务，只入队、不碰终端）。
+- :mod:`openx.tui.view` —— 事件 → widget 的管线（只在 app 定时器里驱动）。
+- :mod:`openx.tui.blocks` —— 可折叠块：thinking / 工具调用 / 状态行。
+- :mod:`openx.tui.app` —— app 主体：排空、输入缝、按键、演示脚本。
+
+已落地：输出/输入/会话三缝、可折叠块、流式答案与思考、Esc 打断、排队输入。
+仍未迁移（均以行内实现为准）：**弹窗**（权限 ASK / 计划批准 / ``ask_user`` /
+设置浮层，直写 tty 的 raw 模式弹窗与 Textual 不兼容——在 modal screen 落地
+前用 ``-y`` / auto 模式跑）、**输入行历史与多行编辑**、**fleet 面板与插件
+``ui.panel`` 的 widget 化**。
 
 设计纪律（沿既有架构约定）：
 
 1. **textual 只在需要时导入**：本 ``__init__`` 不 import textual，
    :func:`available` 才会探测——非 TUI 路径的 import 成本与失败面为零。
-2. **调用方永不触碰 widget**：所有写屏都经 :class:`openx.tui.sink.SinkQueue`
-   投递，由 app 在主事件循环的定时器里排空（跨线程安全）。
+2. **调用方永不触碰 widget**：所有写屏都经 ``SinkQueue`` / ``stream_queue``
+   投递，由 app 在主事件循环的定时器里排空（跨线程安全，且改 widget 的
+   永远只有单一消费者）。
 """
 
 from __future__ import annotations

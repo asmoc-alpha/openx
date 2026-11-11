@@ -79,7 +79,7 @@ class ThinkingBlock(Collapsible):
     def _body_or_none(self) -> Optional[Static]:
         """正文 widget；尚未挂载（mount 是异步的）时返 None。
 
-        流式喂 token 与 mount 之间本来就没有顺序保证（Stage 2 的
+        流式喂 token 与 mount 之间本来就没有顺序保证（流式管线的
         ``feed()`` 来自网络事件、mount 来自消息队列），所以写入必须容忍
         "体还没长出来"——``on_mount`` 会把缓冲补写一次。
         """
