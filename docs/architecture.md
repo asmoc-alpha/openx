@@ -83,7 +83,7 @@ openx/
 │   │   ├── eval_export.py # Trajectory → eval JSONL export (cost fields; /export-eval)
 │   │   └── exploration.py # Project overview detection
 │   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
-│   ├── tui/               # Full-screen TUI (`--tui`, Textual): app, collapsible blocks, output sink
+│   ├── tui/               # Full-screen TUI (`--tui`, Textual): app, collapsible blocks, sink, modal dialogs
 │   └── utils/             # Path, text, and error helpers
 ├── tests/                 # Subdirs mirror the openx/ layout (orchestration/ kernel/ serve/ llm/ services/ tools/ ui/ tui/ mcp/)
 ├── docs/

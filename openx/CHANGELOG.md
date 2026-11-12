@@ -4,6 +4,52 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.30 — `--tui` dialogs: the blocking questions become modal screens
+
+### Two screens instead of raw-mode cursor arithmetic
+
+- **Permission ASK, plan approval and `ask_user` are `ModalScreen`s**
+  (`openx/tui/modals.py`): one `ChoiceScreen` plus one `TextScreen` cover all
+  three — the difference is data (title, body renderable, option table), so a
+  fourth dialog will not need a third screen. The inline implementations put the
+  tty into raw mode and position the cursor by counting lines, which is
+  incompatible with the app owning stdin *and* the screen
+- **Cancellation is fail-closed**: `Esc`, app shutdown or a lost screen all
+  resolve to the conservative answer — deny, do not execute, unanswered. A
+  dismissed dialog can never become an implicit authorization, and the permission
+  option order stays *allow once / don't ask again / reject* so an extra `↓` lands
+  on the narrower grant
+- **Tool code needed no edits**: `Console.ask_permission` checks `_tui` and hands
+  over to the app; `ask_user`/`confirm_plan` ride the **async-first** entries
+  (`ask_user_question_async` / `confirm_plan_async`) that `tools/console_dialog.py`
+  already prefers — the same pair the `--serve` browser surface uses. Detach, and
+  they delegate to the inline implementations verbatim
+- **No dangling `await`**: every modal resolves a `Future`; `App._close()`
+  resolves all pending ones with their defaults before exiting, and a dialog
+  requested after shutdown returns its default immediately. A tool blocked in
+  `ask_permission` used to be able to outlive the interface — that is a deadlock,
+  not an exit. The status line says `Waiting for you…` while a dialog is up
+  instead of `Answering…`
+- **Unmigrated entries fail loudly instead of garbling the screen**: slash-command
+  menus (`/config`, `/model`, `/mcp add`, `/skill create`, `/resume`, …) still use
+  the inline selectors, so under `--tui` they raise `TuiInputNeeded` — caught by
+  `handle_slash_command` / `_stream_response` and shown as one warning (command
+  dropped, session continues, screen untouched)
+- **`Esc` is an app binding without `priority` now**: a priority binding would be
+  evaluated before the *modal screen's* binding and make dialogs uncancellable.
+  The input line has no `Esc` binding, so the key still bubbles up and interrupts
+  a turn; screen bindings win over app bindings — exactly the layering both
+  meanings need
+- **A naming landmine fixed**: the app's teardown flag was called `_closed`, which
+  is `MessagePump._closed` — Textual's own "queue is closed" switch that makes
+  `post_message` **silently drop** messages. `_close()` therefore swallowed the
+  `ExitApp` posted right after it and the app sat in `_process_messages` forever
+  (the test suite hung instead of failing); it is `_tui_closed` now
+- Docs: `docs/subsystems/tui.md` (+ zh) gains a Dialogs section, the revised key
+  table, the honest remaining limits (slash menus and single-line input) and the
+  `_closed` footnote; `tests/tui/test_dialogs.py` adds 34 tests including the
+  bounded "closing really ends the app" regression probe
+
 ## 0.1.29 — `--tui` streams: the event stream gets a second renderer
 
 ### Same chunks, same seam, none of the cursor arithmetic

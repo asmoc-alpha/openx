@@ -10,13 +10,12 @@ thinking"、"窗口大小变了重排"、"显示实时 subagent 面板"统统变
 `openx --tui` 改为跑**全屏界面**（`openx/tui/`，基于 Textual）：屏幕是
 widget 树，折叠一个块只是控件属性而非状态机，布局、焦点、滚动都交给框架。
 
-> **状态：实验性，已流式。** 答案逐字流式、thinking 与工具块可折叠、`Esc` 可
-> 打断回合。默认仍是行内 REPL，且弹窗、输入编辑、fleet 与插件面板仍以行内实现
-> 为准（见[限制](#限制)）。
+> **状态：实验性，已流式，弹窗已迁移。** 答案逐字流式、thinking 与工具块可折叠、
+> `Esc` 可打断回合，权限审批 / 计划批准 / `ask_user` 已是真正的模态屏。默认仍是
+> 行内 REPL，它仍拥有输入编辑、slash 命令菜单、fleet 与插件面板（见[限制](#限制)）。
 
 ```bash
 openx --tui                     # 全屏界面
-openx --tui --auto-approve      # ……且不弹 ASK 弹窗（见「限制」）
 openx --tui --continue          # 照常恢复会话
 python -m openx.tui             # 离线演示：不起模型、不联网
 ```
@@ -49,6 +48,7 @@ python -m openx.tui             # 离线演示：不起模型、不联网
 | 输出 | `Console._console` 是写 stdout 的 Rich `Console` | `Console._console` 是 `TuiSink`：`print()` 投递 renderable，由 app 挂成 widget |
 | 输入 | `print_user_prompt` 画输入框、跑 prompt_toolkit 编辑器 | `print_user_prompt` 转交 `app.ask()`——等 `Input` 控件的下一次提交 |
 | 会话 | `asyncio.run(run_interactive(...))` | `run_tui` 让 app 与**同一个** REPL 协程在**一个事件循环**里并发跑 |
+| 弹窗 | tty 上的 raw 模式菜单（`ui/_components/dialogs.py`） | 浮在转录上的 `ModalScreen`（`openx/tui/modals.py`） |
 
 **输出。** `TuiSink`（`openx/tui/sink.py`）让整个渲染层零改动：约 90 处
 `console.print_*` 调用点照旧交出 Rich renderable，每一条变成一个 `Static`。
@@ -115,6 +115,45 @@ text/tool 交替——否则新文本会被拼进旧 Markdown、把工具块埋�
 流式期回车**排队**而不是立刻发送：行进 `console._input_queue`——行内 REPL 本
 就在每轮之间弹的那个通道——转录同时回显 `↳ queued: …`，让用户看见排了什么。
 
+## 弹窗
+
+行内提示框是旧界面里 widget 树**无法共用**的那部分：`ui/_components/dialogs.py`
+把 tty 切进 raw 模式、直接写转义序列、靠数行数定位光标。stdin 与屏幕都归
+Textual 之后，这套等于必然花屏。于是 agent 真正会阻塞等待的三个问题变成了
+`ModalScreen`（`openx/tui/modals.py`）。
+
+| 问题 | 屏 | 取消（`Esc`） |
+|---|---|---|
+| 权限审批（`Console.ask_permission`） | `ChoiceScreen` | `(False, False)`——不运行 |
+| 计划批准（`confirm_plan`） | `ChoiceScreen`（Markdown 正文） | `False`——不执行 |
+| `ask_user` 提问（`ask_user_question`） | `ChoiceScreen`（可多选）/ `TextScreen`（"Other"） | `""` / `[]`——未作答 |
+
+三种弹窗只由两个控件覆盖：一个选择屏、一个文本屏。差异全是数据（标题、正文
+renderable、选项表）——加第四种弹窗不该需要写第三个屏。
+
+**工具侧接线零改动。** `Console.ask_permission` 先看 `_tui`，命中就转交
+`app.ask_permission`；`ask_user` / `confirm_plan` 走**异步优先**入口
+（`ask_user_question_async` / `confirm_plan_async`）——`tools/console_dialog.py`
+本来就优先探这两个名字，浏览器（`--serve`）面用的是同一对。工具代码一行没改；
+没挂 app 时这两个方法逐字委托回同步的行内实现。
+
+**取消一律 fail-closed**，且取的是屏自身的值而非调用方的猜测：`Esc`、app 关闭、
+屏丢失，三者都解析成最保守的答案（拒绝 / 不执行 / 未作答）。被关掉的弹窗绝不
+可能变成一次隐式授权。权限选项次序也与行内一致：*允许一次 / 不再询问 / 拒绝*，
+多按一次 `↓` 落到的是**更窄**的授权，而不是把拒绝按成永久放行。
+
+**弹窗绝不留悬空的 `await`。** 每个模态屏 resolve 一个调用方 await 的 `Future`；
+`App._close()` 在退出前把所有挂起的 future 按默认值 resolve，收摊之后再来问一句
+也立刻返回默认值。没有这一条，卡在 `ask_permission` 里的工具会比界面活得久
+（那是死锁，不是退出）。
+
+弹窗期间状态行改说 `Waiting for you…` 而不是 `Answering…`：回合正停在工具结果
+上，继续显示"在回答"会被读成"已经答完了"。
+
+`Esc` 刻意**不再**是 app 级 priority 绑定：输入行没有 `Esc` 绑定，按键照样冒泡
+上来打断回合；而模态屏自己的绑定天然优先于 app 级绑定——这正是两种含义共存所需
+的分层。
+
 ## 按键
 
 | 按键 | 动作 |
@@ -124,17 +163,21 @@ text/tool 交替——否则新文本会被拼进旧 Markdown、把工具块埋�
 | `Ctrl+R` | 切换所有 thinking 块 |
 | `Ctrl+T` | 全部展开；若已有折叠则全部折叠 |
 | `Tab` / `Shift+Tab` | 在块标题与输入行之间移动焦点 |
-| `Esc` | 打断当前回合（空闲时无动作） |
+| `Esc` | 打断当前回合（空闲时无动作）；关掉当前弹窗 |
+
+弹窗内：`↑`/`↓` 移动、`space` 勾选（仅多选）、`Enter` 确认、`Esc` 按最保守的
+答案取消。
 
 点击块标题栏即可切换折叠；竖向滚动条与滚轮滚动转录，回看历史时视图不再
 追底。
 
 ## 限制
 
-- **弹窗尚未迁移。** 权限 ASK、计划批准、`ask_user`、设置浮层仍来自行内实现，
-  它会把 tty 切到 raw 模式并直接写转义序列——与"app 独占屏幕"不兼容。
-  在阶段 5 的 modal screen 落地前，请用 `-y` / `--auto-approve`（或 auto 模式）
-  跑 `--tui`，让流程不需要弹窗。
+- **slash 命令菜单尚未迁移。** `/config`、`/model`、`/mcp add`、`/hooks`、
+  `/skill create`、`/resume` 等仍走行内选择器与自由输入框——那是对 tty 做 raw
+  模式操作，app 无法共享。`--tui` 下这些路径抛 `TuiInputNeeded`，
+  `handle_slash_command` / `_stream_response` 把它转成一条警告：该命令/回合作废，
+  会话继续，屏幕不被写花。请改为在命令行里直接给值（如 `/model <name>`）。
 - **输入行是单行的。** 暂无历史、暂无补全、暂无多行粘贴（阶段 3）。
 - **`--tui` 需要真终端。** 管道/CI 下打印警告并回退到行内 REPL；
   `python -m openx.tui` 则直接以 2 退出。
@@ -158,15 +201,29 @@ sink 投递、attach/detach，以及 `ask()` 契约（返回提交的文本，�
 解绑、排队输入路由，以及一次 `_stream_response` 端到端——断言 widget 有内容
 **且**没有起行内 `InputCapture`（cbreak 会与 Textual 抢 stdin）。
 
+`tests/tui/test_dialogs.py` 覆盖迁移后的弹窗：控件形态（两个屏，不给第四种弹窗
+写第三个屏）、fail-closed 取消语义、权限选项次序、审批正文里的 diff 预览、
+多选勾选、"Other" 分支进 `TextScreen`、三条缝（`Console.ask_permission`、
+`tools.console_dialog` 的异步优先入口）、detach 后回退行内，以及两条收摊契约——
+挂起的弹窗按默认值 resolve、关掉 app **真的会退出来**（有界等待，回归时是失败
+而不是挂死）。守卫测试也在这里：未迁移入口抛 `TuiInputNeeded`，而 slash 命令 /
+`_stream_response` 把它转成警告而不是错误。
+
 Textual 的 `App.run_test()` + `Pilot` 直接断言**widget 状态**——这正是行内
-实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。两个文件都用
+实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。三个文件都用
 `pytest.importorskip("textual")` 守卫，默认路径不会因缺少可选依赖而红。
 
 依赖：`textual>=8,<9`（它要求 `rich>=14.2`，与本仓 `rich>=14,<16` 相容）。
 所依赖的 API 面——`Collapsible` 的 reactive `title`/`collapsed`、
 `CollapsibleTitle` 的点击与 Enter 处理、`run_async`、`run_test`、
-`Static.update`、`VerticalScroll`——逐条列在 `pyproject.toml` 的依赖注释里；
-那边的改名应先在 `tests/tui/` 变红。
+`Static.update`/`visual`、`OptionList` 的 `replace_option_prompt_at_index`、
+`ModalScreen`/`push_screen(screen, callback)`、`VerticalScroll`——逐条列在
+`pyproject.toml` 的依赖注释里；那边的改名应先在 `tests/tui/` 变红。
+
+> 一个值得记住的命名雷：`MessagePump._closed` 是 Textual 自己的"消息队列已关闭"
+> 开关，它为真时 `post_message` 会**静默丢弃**消息。所以 app 自己的收摊标记叫
+> `_tui_closed`；早先复用了 `_closed`，`_close()` 一置位就把随后的 `ExitApp` 吃
+> 掉了，app 于是永久停在 `_process_messages` 里（表现为测试挂死而非失败）。
 
 ## 参见
 

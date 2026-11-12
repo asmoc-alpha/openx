@@ -32,6 +32,7 @@ from ...image import (
 )
 from ...instructions import ProjectInfo
 from ...services.streaming import StreamingService
+from ...ui._components.dialogs import TuiInputNeeded
 from ...ui.console import Console
 from .commands import handle_slash_command, _sync_skill_commands
 
@@ -374,6 +375,15 @@ async def _stream_response(
             _clear_interrupt(agent)
         # The frame is the last element of the Live render and doubles as
         # the next input — no trailing blank line is needed.
+    except TuiInputNeeded as e:
+        # 全屏 TUI 下撞到尚未迁移的同步交互入口：**不是崩溃**，是一条待办。
+        # 先收掉半截 Live/界面再打一句用户看得懂的话（用 error 层级会把
+        # "这个菜单还没做"读成"OpenX 出错了"）。
+        try:
+            display.cancel()  # type: ignore[name-defined]
+        except (NameError, UnboundLocalError):
+            pass
+        console.print_warning(str(e))
     except Exception as e:
         # Drop the partial live display + frame so the error reads cleanly.
         try:

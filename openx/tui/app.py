@@ -41,6 +41,14 @@ from textual.widgets import Footer, Input, Static
 
 from ..ui._style import ACCENT
 from .blocks import StatusLine, ThinkingBlock
+from .modals import (
+    _OTHER,
+    ChoiceScreen,
+    TextScreen,
+    ask_user_options,
+    permission_body,
+    plan_body,
+)
 from .sink import SinkQueue, TuiSink
 from .stream import Note, StreamStart, TuiStream, TurnAborted, TurnEnd
 from .view import IDLE_PLACEHOLDER, StreamView
@@ -101,15 +109,51 @@ class OpenXTui(App[None]):
     .entry {
         padding: 0 0;
     }
+    /* 弹窗：浮在转录之上、居中，带边框与底色——与转录的对比度是"这是
+       一个需要你回答的问题"的唯一提示（全屏界面里没有终端原生弹窗）。 */
+    ChoiceScreen, TextScreen {
+        align: center middle;
+        background: $background 60%;
+    }
+    #modal-card {
+        width: 84;
+        max-width: 96%;
+        height: auto;
+        max-height: 80%;
+        border: round $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #modal-title {
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+    #modal-body {
+        height: auto;
+        max-height: 16;
+        padding: 0 0 1 0;
+    }
+    #modal-options {
+        height: auto;
+        max-height: 14;
+    }
+    #modal-hint {
+        padding: 1 0 0 0;
+    }
+    #modal-input {
+        margin: 1 0 0 0;
+    }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+q", "quit_tui", "退出", show=True, priority=True),
         Binding("ctrl+r", "toggle_thinking", "thinking", show=True),
         Binding("ctrl+t", "toggle_all", "全部折叠/展开", show=True),
-        # priority：焦点在 Input 里也要能打断（否则 Esc 被输入框吞掉，
-        # 流式期只剩 Ctrl+C 一条路——与行内"esc to interrupt"承诺不符）
-        Binding("escape", "interrupt", "打断", show=False, priority=True),
+        # **不加 priority**：`Input` 没有 escape 绑定，按键自然冒泡到 app，
+        # 输入行聚焦时照样能打断。而加上 priority 会让 app 抢在**模态屏**
+        # 之前吃掉 Esc——弹窗就再也取消不了了（priority 绑定先于屏幕绑定
+        # 求值）。屏幕级绑定天然优先于 app 级绑定，正是这里要的分层。
+        Binding("escape", "interrupt", "打断", show=False),
     ]
 
     #: 排空间隔（秒）：sink/stream 投递 → widget 挂载的合并窗口（≈30Hz）
@@ -125,8 +169,16 @@ class OpenXTui(App[None]):
         self._demo = demo
         self._mounted_ready = asyncio.Event()
         self._input_q: asyncio.Queue = asyncio.Queue()
-        self._closed = False
+        #: "本界面已收摊" —— **绝不能叫 ``_closed``**。``MessagePump._closed``
+        #: 是 Textual 自己的开关，``post_message`` 在它为真时**静默丢弃**
+        #: 消息（``message_pump.py``: ``if self._closing or self._closed:
+        #: return False``）。早期版本直接复用了这个名字，于是 ``_close()``
+        #: 一置位，紧接着的 ``exit()`` 投递的 ``ExitApp`` 就被丢掉——退出
+        #: 消息永远到不了 app，``_process_messages`` 挂在 ``_get_message()``
+        #: 上不退（run_test 收尾 ``await app_task`` 遂永久挂死）。
+        self._tui_closed = False
         self._busy = False
+        self._busy_label: Optional[str] = None
         self._sink: Optional[TuiSink] = None
         #: 视图管线：**只**在 :meth:`_drain` 里被调用（单一消费者）
         self._view = StreamView(self)
@@ -136,6 +188,9 @@ class OpenXTui(App[None]):
         self._stream_active = False
         #: Esc 打断回调（``TuiStream.start()`` 接线，收尾解绑）
         self._interrupt_cb: Optional[Callable[[], None]] = None
+        #: 挂起的弹窗：future → 取消默认值。app 被外部关掉时按默认值
+        #: resolve——一个 await 着的工具绝不能永远挂着（那是死锁，不是退出）。
+        self._pending_dialogs: dict[Any, Any] = {}
 
     # ── 生命周期 ────────────────────────────────────────────────
 
@@ -165,14 +220,14 @@ class OpenXTui(App[None]):
         里被驱动）或演示脚本；两者都在 app 主循环线程，不构成并发写。
         """
         entry = RichEntry(renderable)
-        if not self._closed:
+        if not self._tui_closed:
             self._transcript.mount(entry)
             self._scroll_to_end()
         return entry
 
     def write_widget(self, widget: Any) -> None:
         """挂载一个 widget（块类：ThinkingBlock / ToolBlock …）。"""
-        if self._closed:
+        if self._tui_closed:
             return
         self._transcript.mount(widget)
         self._scroll_to_end()
@@ -191,7 +246,7 @@ class OpenXTui(App[None]):
         ``_closed`` 早退：定时器可能在 app 卸载之后仍被投递一次（控件树
         已拆），此时任何 ``query``/``mount`` 都会抛。
         """
-        if self._closed:
+        if self._tui_closed:
             return
         events = self.stream_queue.drain()
         for event in events:
@@ -252,16 +307,137 @@ class OpenXTui(App[None]):
     def set_busy(self, label: Optional[str]) -> None:
         """``label`` 非空 → 显示转帧 + 耗时；None → 清空。"""
         self._busy = label is not None
+        self._busy_label = label
         if label is None:
             self.query_one("#spinner", StatusLine).set_busy(None)
         else:
             self.query_one("#spinner", StatusLine).set_busy(label,
                                                             started_at=time.monotonic())
 
+    # ── 弹窗（ModalScreen）──────────────────────────────────────
+
+    async def _modal(self, screen: Any, default: Any) -> Any:
+        """压一个模态屏并 await 它的结果（``default`` 兼作取消/关闭兜底）。
+
+        不用 ``push_screen_wait``：它要求 worker 上下文，而这里的调用方是
+        任意协程（工具执行栈深处）。自建 Future 的好处是能兜底——app 若在
+        等待期间被关掉（Ctrl+Q / ``/quit``），``_close`` 会按 ``default``
+        把它 resolve 掉，绝不让工具栈永远挂着。
+
+        弹窗期间状态行改说 ``Waiting for you…``：流式回合此时静止（在等
+        工具返回），继续显示 ``Answering…`` 会读成"已经答完了"。
+
+        已收摊（``_close()`` 之后）直接返回 ``default``：这时压屏只会压进
+        一棵已拆除的控件树，而 await 一个有主的 future 等于把工具栈钉死。
+        """
+        if self._tui_closed:
+            return default
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._pending_dialogs[fut] = default
+        prev_label = self._busy_label
+        if self._busy_label is not None:
+            self.set_busy("Waiting for you…")
+
+        def _done(result: Any) -> None:
+            if not fut.done():
+                fut.set_result(default if result is None else result)
+
+        try:
+            self.push_screen(screen, _done)
+            return await fut
+        finally:
+            self._pending_dialogs.pop(fut, None)
+            if prev_label is not None and not self._tui_closed:
+                with contextlib.suppress(Exception):
+                    self.set_busy(prev_label)
+
+    async def ask_permission(
+        self,
+        tool_name: str,
+        reason: str,
+        details: str = "",
+        args_summary: str = "",
+        can_remember: bool = True,
+        diff: Optional[tuple[str, str, str]] = None,
+    ) -> tuple[bool, bool]:
+        """权限审批 → ``(approved, remember)``。取消/关闭 = ``(False, False)``。
+
+        "不再询问"只在**有参数摘要可落规则**且调用方允许持久化时出现——
+        与行内实现的判据逐字一致（manual 模式传 ``can_remember=False``）。
+        """
+        options: list[tuple[str, tuple[bool, bool]]] = [
+            ("Yes, allow once", (True, False)),
+            ("No, don't run", (False, False)),
+        ]
+        if args_summary and can_remember:
+            options.insert(1, ("Yes, and don't ask again for this", (True, True)))
+        body = permission_body(reason, details, diff, theme="monokai")
+        return await self._modal(
+            ChoiceScreen(
+                f"Allow {tool_name}?",
+                options,
+                body=body,
+                cancel_value=(False, False),
+            ),
+            (False, False),
+        )
+
+    async def ask_question(
+        self, question: str, options: list[dict], multi_select: bool = False
+    ) -> Any:
+        """``ask_user`` 提问 → ``str``（单选）或 ``list[str]``（多选）。
+
+        取消语义：单选 ``""``、多选 ``[]``——"未作答"在工具侧是合法输入
+        （``ask_user`` 会把空答案如实回给模型，而不是编一个默认选项）。
+        """
+        pairs = ask_user_options(options, multi_select)
+        choice = await self._modal(
+            ChoiceScreen(
+                question,
+                pairs,
+                cancel_value=[] if multi_select else "",
+                multi=multi_select,
+            ),
+            [] if multi_select else "",
+        )
+        if multi_select:
+            chosen = list(choice) if isinstance(choice, list) else []
+            if _OTHER in chosen:
+                chosen.remove(_OTHER)
+                typed = await self.ask_text("Your answer")
+                if typed:
+                    chosen.append(typed)
+            return chosen
+        if choice == _OTHER:
+            typed = await self.ask_text("Your answer")
+            return typed or ""
+        return choice
+
+    async def ask_text(self, title: str, *, placeholder: str = "") -> str:
+        """自由文本弹窗（返回 ``""`` 表示取消/空输入）。"""
+        value = await self._modal(TextScreen(title, placeholder=placeholder), None)
+        return (value or "").strip()
+
+    async def ask_plan(self, plan: str = "") -> bool:
+        """计划审批 → 是否执行。取消/关闭 = ``False``（不执行，fail-closed）。"""
+        return bool(await self._modal(
+            ChoiceScreen(
+                "Plan approval  计划审批",
+                [
+                    ("Approve and execute (批准并执行)", True),
+                    ("Reject (拒绝)", False),
+                ],
+                body=plan_body(plan),
+                cancel_value=False,
+            ),
+            False,
+        ))
+
     def _tick_spinner(self) -> None:
         # shutdown 竞态：定时器可能在控件树拆除后再被投递一次（回合没跑完
         # 就退出时最典型）。转帧是纯装饰，绝不能让它把退出路径炸掉。
-        if not self._busy or self._closed:
+        if not self._busy or self._tui_closed:
             return
         with contextlib.suppress(Exception):
             self.query_one("#spinner", StatusLine)._render_frame()
@@ -332,9 +508,28 @@ class OpenXTui(App[None]):
             block.collapsed = not expand
 
     def _close(self) -> None:
-        if self._closed:
+        """收摊：先按取消默认值了结挂起的弹窗，再让 app 退出。
+
+        顺序是承重的——**先 resolve，再 exit**：挂起弹窗的 ``await`` 属于
+        工具栈，若先退出，工具栈会在 app 已经死掉之后再被唤醒（写已拆除
+        的控件树）。
+        """
+        if self._tui_closed:
             return
-        self._closed = True
+        self._tui_closed = True
+        for fut, default in list(self._pending_dialogs.items()):
+            if not fut.done():
+                with contextlib.suppress(Exception):
+                    fut.set_result(default)
+        self._pending_dialogs.clear()
+        # 逐层摘掉模态屏只是为了让退出过程干净（转录不留半块浮层）；
+        # 即便摘不掉也不影响退出：``App._shutdown()`` 的 ``_close_all()``
+        # 会收掉所有屏幕栈。所以这里一律兜住异常。
+        while len(self.screen_stack) > 1:
+            try:
+                self.pop_screen()
+            except Exception:
+                break
         with contextlib.suppress(Exception):
             self.exit()
 

@@ -106,6 +106,33 @@ def _fire_dialog_hook(console: object, attr: str) -> None:
         pass
 
 
+class TuiInputNeeded(RuntimeError):
+    """全屏 TUI 下遇到了**尚未迁移**的同步交互入口。
+
+    行内弹窗靠 ``termios.setcbreak`` + 裸 ``sys.stdout.write`` 读键定位光标；
+    全屏界面里 stdin 与屏幕都归 Textual，跑这套只会把界面写花。因此这类
+    入口在 ``--tui`` 下**主动报错**——干净的一句话远好过一块乱屏。
+
+    捕获方（``commands.handle_slash_command`` / ``_stream_response``）把它
+    转成一条警告：本条命令/回合作废，会话继续。
+    """
+
+
+def _tui_app(console: object):
+    """``Console._tui``（``attach_tui`` 期间非 None）；未挂载 → None。
+
+    不加类型注解的原因见 ``Console``：``_tui`` 刻意不是 dataclass 字段。
+    """
+    return getattr(console, "_tui", None)
+
+
+def _tui_hint() -> str:
+    return (
+        "This menu is not available in --tui yet. Pass the value directly "
+        "(e.g. /model <name>) or run without --tui."
+    )
+
+
 class DialogsMixin:
     """Permission dialogs, trust prompt, and interactive ask-user questions."""
 
@@ -124,6 +151,8 @@ class DialogsMixin:
     ) -> tuple[bool, bool]:
         """Ask user for permission. Returns ``(approved, remember)``.
 
+        **全屏 TUI**：压一块 :class:`openx.tui.modals.ChoiceScreen` 模态屏，
+        上方的转录照常可见（取消 = 拒绝，fail-closed）。
         **流式期**（console 上注册了活动的 StreamingService）：委托
         ``ask_permission_bridge``——选择面板嵌在输入框下方，上方内容
         照常展示、Live 不暂停（用户报告：全屏弹窗占满屏影响体验）。
@@ -131,12 +160,19 @@ class DialogsMixin:
         退回数字菜单）。
 
         ``diff``：``(path, old_content, new_content)`` 三元组——write/edit
-        类工具的变更预览；传统路径经 ``print_file_diff`` 渲染彩色 unified
-        diff，桥接路径压缩为摘要行。缺省 None → 不渲染。
+        类工具的变更预览；两条路径都按各自的多语言高亮 diff 渲染。缺省
+        None → 不渲染。
 
         ``can_remember=False``（manual 模式传入）隐藏"不再询问"选项——
         手动模式语义为逐项授权，绝不产生持久化放行规则。
         """
+        app = _tui_app(self)
+        if app is not None:
+            return await app.ask_permission(
+                tool_name, reason, details=details,
+                args_summary=args_summary,
+                can_remember=can_remember, diff=diff,
+            )
         svc = getattr(self, "_streaming_service", None)
         if svc is not None and svc.is_live_active():
             return await svc.ask_permission_bridge(
@@ -299,6 +335,30 @@ class DialogsMixin:
             prompt="Choose:",
         )
 
+    # ── 异步优先的协程变体（TUI / serve 共用的一层）─────────────
+    #
+    # ``openx/tools/console_dialog.py`` 的工具侧入口是 **async 优先**的：
+    # 探到 ``ask_user_question_async`` / ``confirm_plan_async`` 就 await
+    # 它，否则退回同名同步方法。serve（浏览器）与 TUI（模态屏）都靠这两个
+    # 名字接入——工具代码因此一行都不用改。
+    #
+    # 无 ``_tui``（默认行内 REPL）时它们**原样委托同步方法**：行为与迁移
+    # 前逐字一致，这两层只是空转发。
+
+    async def ask_user_question_async(
+        self, question: str, options: list[dict], multi_select: bool = False
+    ) -> list[str] | str:
+        app = _tui_app(self)
+        if app is None:
+            return self.ask_user_question(question, options, multi_select)
+        return await app.ask_question(question, options, multi_select)
+
+    async def confirm_plan_async(self, plan: str = "") -> bool:
+        app = _tui_app(self)
+        if app is None:
+            return self.confirm_plan()
+        return await app.ask_plan(plan)
+
     # ── interactive select (arrow keys) ─────────────────────────
 
     def _interactive_select(
@@ -313,7 +373,13 @@ class DialogsMixin:
 
         ``cancel`` / ``cancel_chars`` 透传给 ``_raw_select``（仅 pick_session
         启用 Esc/q 取消；默认禁用，其他弹窗行为不变）。
+
+        全屏 TUI 下直接抛 :class:`TuiInputNeeded`：这条路径下面全是 raw-mode
+        读键，跑下去只会把界面写花。**尚未迁移**的调用方目前只剩 slash 命令
+        里的菜单（权限 / 计划 / 提问三类已改走模态屏，见上面的三个方法）。
         """
+        if _tui_app(self) is not None:
+            raise TuiInputNeeded(_tui_hint())
         # 弹窗读取输入前确保光标可见：流式 Live 会隐藏光标，正常路径下
         # on_dialog_start 暂停已恢复；此处兜底任何泄漏路径（?25h 幂等）。
         # Guarantee a visible cursor before any dialog reads input.

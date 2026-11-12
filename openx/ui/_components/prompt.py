@@ -568,7 +568,16 @@ def paste_aware_input(console, prompt_markup: str = "") -> str:
 
     非 TTY（管道/测试）退回原生 ``input()``；终端不支持括号粘贴时无
     标记 → 单行行为同旧版。EOF 抛 ``EOFError``（与 rich 一致）。
+
+    全屏 TUI 下抛 :class:`~openx.ui._components.dialogs.TuiInputNeeded`：
+    本函数要 ``termios.setcbreak`` + 裸写 stdout，与 Textual 争同一个终端。
+    尚未迁移的自由输入框（slash 命令里那几处）由此得到一句干净的报错，而
+    不是把界面写花。
     """
+    if getattr(console, "_tui", None) is not None:
+        from .dialogs import TuiInputNeeded, _tui_hint
+
+        raise TuiInputNeeded(_tui_hint())
     console.print(prompt_markup, end="")
     if not sys.stdin.isatty():
         return input()

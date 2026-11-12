@@ -13,14 +13,14 @@ program does not own.
 Textual): the screen is a widget tree, so folding a block is a widget property
 rather than a state machine, and the framework owns layout, focus and scrolling.
 
-> **Status: experimental, streaming.** Answers stream, thinking and tool blocks are
-> collapsible, and `Esc` interrupts a turn. The inline REPL is still the default and
-> still the source of truth for dialogs, input editing and the fleet/plugin panels
-> (see [Limits](#limits)).
+> **Status: experimental, streaming, dialogs migrated.** Answers stream, thinking
+> and tool blocks are collapsible, `Esc` interrupts a turn, and permission / plan
+> approval / `ask_user` are real modal screens. The inline REPL is still the
+> default, and it still owns input editing, the slash-command menus and the
+> fleet/plugin panels (see [Limits](#limits)).
 
 ```bash
 openx --tui                     # full-screen interface
-openx --tui --auto-approve      # ... with no ASK dialogs (see Limits)
 openx --tui --continue          # resume a session, as usual
 python -m openx.tui             # offline demo: no model, no network
 ```
@@ -54,6 +54,7 @@ things the inline implementation already abstracted.
 | Output | `Console._console` is a Rich `Console` writing to stdout | `Console._console` is `TuiSink`: `print()` enqueues a renderable, the app mounts it as a widget |
 | Input | `print_user_prompt` draws a frame and runs the prompt_toolkit editor | `print_user_prompt` delegates to `app.ask()` — the `Input` widget's next submission |
 | Session | `asyncio.run(run_interactive(...))` | `run_tui` runs the app and the same REPL coroutine concurrently in **one event loop** |
+| Dialogs | raw-mode menus on the tty (`ui/_components/dialogs.py`) | `ModalScreen`s over the transcript (`openx/tui/modals.py`) |
 
 **Output.** `TuiSink` (`openx/tui/sink.py`) keeps the whole rendering layer
 untouched: the ~90 `console.print_*` call sites still hand Rich renderables over,
@@ -135,6 +136,54 @@ Enter during a turn **queues** the message instead of sending it: it goes into
 `console._input_queue`, the channel the inline REPL already drains between turns,
 and the transcript echoes `↳ queued: …` so the user sees what is waiting.
 
+## Dialogs
+
+The inline prompts are the part of the old surface that a widget tree cannot
+share: `ui/_components/dialogs.py` puts the tty into raw mode, writes escape
+sequences and positions the cursor by counting lines. With Textual owning both
+stdin and the screen that is a guaranteed mess, so the three questions the agent
+actually blocks on became `ModalScreen`s (`openx/tui/modals.py`).
+
+| Question | Screen | Cancel (`Esc`) |
+|---|---|---|
+| permission ASK (`Console.ask_permission`) | `ChoiceScreen` | `(False, False)` — do not run |
+| plan approval (`confirm_plan`) | `ChoiceScreen` (Markdown body) | `False` — do not execute |
+| `ask_user` (`ask_user_question`) | `ChoiceScreen` (multi-select) / `TextScreen` ("Other") | `""` / `[]` — unanswered |
+
+Two widgets cover all three: one choice screen and one text screen. What differs
+is data (title, body renderable, option table) — a fourth dialog should not need a
+third screen.
+
+**Wiring is unchanged on the tool side.** `Console.ask_permission` checks
+`_tui` first and hands over to `app.ask_permission`; `ask_user` / `confirm_plan`
+route through the async-first entries (`ask_user_question_async` /
+`confirm_plan_async`) that `tools/console_dialog.py` already prefers when they
+exist — the same pair the browser (`--serve`) surface uses. Tool code needed no
+edits, and the same two methods fall back to the synchronous inline implementations
+verbatim when there is no app attached.
+
+**Cancellation is fail-closed**, and it is the screen's value, not the caller's
+guess: `Esc`, app shutdown or a lost screen all resolve to the conservative
+answer (deny / do not execute / unanswered). A dismissed dialog can never become
+an implicit authorization. Permission ordering also matches inline: *allow once /
+don't ask again / reject*, so one extra `↓` lands on the narrower grant rather
+than turning a rejection into a permanent allow.
+
+**A dialog never leaks a dangling `await`.** Each modal resolves a `Future` the
+caller awaits; `App._close()` resolves every pending one with its default before
+exiting, and a dialog requested *after* shutdown returns its default immediately.
+Without that, a tool blocked in `ask_permission` would outlive the interface
+(a deadlock, not an exit).
+
+While a dialog is up the status line says `Waiting for you…` instead of
+`Answering…`: the turn is paused on a tool result, and "answering" would read as
+"already answered".
+
+`Esc` is deliberately **not** an app-level priority binding: the input line has no
+`Esc` binding so the key still bubbles up and interrupts a turn, while a modal
+screen's own binding takes precedence over the app's — which is exactly the
+layering needed for both meanings to coexist.
+
 ## Keys
 
 | Key | Action |
@@ -144,7 +193,10 @@ and the transcript echoes `↳ queued: …` so the user sees what is waiting.
 | `Ctrl+R` | toggle every thinking block |
 | `Ctrl+T` | expand all blocks, or collapse all if any is collapsed |
 | `Tab` / `Shift+Tab` | move focus between block titles and the input line |
-| `Esc` | interrupt the running turn (no-op when idle) |
+| `Esc` | interrupt the running turn (no-op when idle); cancel the open dialog |
+
+In a dialog: `↑`/`↓` move, `space` toggles (multi-select only), `Enter` confirms,
+`Esc` cancels with the conservative answer.
 
 Clicking a block's title bar toggles it; the vertical scrollbar and mouse wheel
 scroll the transcript, and the view stops following the bottom while you are
@@ -152,12 +204,13 @@ reading history.
 
 ## Limits
 
-- **Dialogs are not migrated.** Permission ASK prompts, plan approval,
-  `ask_user`, and the settings overlay still come from the inline implementation,
-  which switches the tty to raw mode and writes escape sequences directly —
-  incompatible with the app owning the screen. Run `--tui` with `-y` /
-  `--auto-approve` (or in auto mode) so no dialog is needed until stage 5 lands
-  the modal screens.
+- **Slash-command menus are not migrated.** `/config`, `/model`, `/mcp add`,
+  `/hooks`, `/skill create`, `/resume` and friends still drive the inline
+  selectors and free-text prompts, which is raw-mode tty work the app cannot
+  share. In `--tui` those paths raise `TuiInputNeeded`, and
+  `handle_slash_command` / `_stream_response` turn it into one warning: the
+  command or turn is dropped, the session continues, the screen is untouched.
+  Pass the value on the command line instead (e.g. `/model <name>`).
 - **The input line is single-line.** No history, no completion, no multi-line
   paste yet (stage 3).
 - **`--tui` needs a real terminal.** On a pipe or in CI it prints a warning and
@@ -187,16 +240,36 @@ parallel same-name pairing by `call_id`, orphan results not being dropped,
 `_stream_response` that asserts widgets are fed **and** that no inline
 `InputCapture` is started (cbreak would fight Textual for stdin).
 
+`tests/tui/test_dialogs.py` covers the migrated dialogs: widget shape (two
+screens, no third for a fourth question), fail-closed cancellation, the
+permission option order, the diff preview in the permission body, the multi-select
+toggle, the "Other" branch into `TextScreen`, the three seams (`Console.ask_permission`,
+`tools.console_dialog`'s async-first entries), detach falling back to inline, and
+two shutdown contracts — a pending dialog resolves to its default, and closing the
+app **actually ends it** (bounded wait, so a regression fails instead of hanging).
+The guard tests are here too: the unmigrated entries raise `TuiInputNeeded`, and
+the slash-command / stream-response paths turn that into a warning rather than an
+error.
+
 Textual's `App.run_test()` + `Pilot` assert **widget state** directly, which is
 what the inline implementation cannot do — there, stream rendering is verified
-through `pyte` screen snapshots. Both files are `pytest.importorskip("textual")`-
-guarded, so the default path never goes red for a missing optional dependency.
+through `pyte` screen snapshots. All three files are
+`pytest.importorskip("textual")`-guarded, so the default path never goes red for a
+missing optional dependency.
 
 Dependency: `textual>=8,<9` (it requires `rich>=14.2`, compatible with this
 repo's `rich>=14,<16`). The API surface relied on — `Collapsible` with reactive
 `title`/`collapsed`, `CollapsibleTitle`'s click and Enter handlers, `run_async`,
-`run_test`, `Static.update`, `VerticalScroll` — is listed in the dependency
-comment in `pyproject.toml`; a rename there should go red in `tests/tui/` first.
+`run_test`, `Static.update`/`visual`, `OptionList` with
+`replace_option_prompt_at_index`, `ModalScreen`/`push_screen(screen, callback)`,
+`VerticalScroll` — is listed in the dependency comment in `pyproject.toml`; a
+rename there should go red in `tests/tui/` first.
+
+> One naming landmine worth knowing: `MessagePump._closed` is Textual's own
+> "message queue is closed" switch, and `post_message` **silently drops** anything
+> posted while it is set. The app's own teardown flag is therefore `_tui_closed`;
+> reusing `_closed` made `_close()` swallow the `ExitApp` that follows it, and the
+> app then sat in `_process_messages` forever (tests hung instead of failing).
 
 ## See also
 

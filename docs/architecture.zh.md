@@ -81,7 +81,7 @@ openx/
 │   │   ├── eval_export.py # 轨迹 → eval JSONL 导出（含成本字段；/export-eval）
 │   │   └── exploration.py # 项目概览探测
 │   ├── ui/                # Rich TUI：console、内嵌输入框、对话框、输入捕获
-│   ├── tui/               # 全屏 TUI（`--tui`，Textual）：app、可折叠块、输出 sink
+│   ├── tui/               # 全屏 TUI（`--tui`，Textual）：app、可折叠块、输出 sink、模态弹窗
 │   └── utils/             # 路径、文本、错误辅助
 ├── tests/                 # 子目录与 openx/ 布局对应（orchestration/ kernel/ serve/ llm/ services/ tools/ ui/ tui/ mcp/）
 ├── docs/

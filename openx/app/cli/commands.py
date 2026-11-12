@@ -35,6 +35,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
+from ...ui._components.dialogs import TuiInputNeeded
 from ...ui._components.prompt import paste_aware_input
 
 if TYPE_CHECKING:
@@ -187,7 +188,14 @@ async def handle_slash_command(
     handler = find_handler(cmd_name)
     if handler is None:
         return None
-    return await handler(agent, console, args)
+    try:
+        return await handler(agent, console, args)
+    except TuiInputNeeded as e:
+        # 全屏 TUI 下撞到尚未迁移的同步交互菜单（选择器 / 自由输入框）：
+        # 命令作废、会话继续。**不能让异常穿出去**——它在 REPL 主循环里
+        # 会杀掉整个会话（连同 Textual 界面）。
+        console.print_warning(str(e))
+        return True
 
 
 # ── command handlers ────────────────────────────────────────────
