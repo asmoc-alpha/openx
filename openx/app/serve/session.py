@@ -164,6 +164,14 @@ class _SlashConsole(Console):
     def _interactive_select(self, *args, **kwargs):
         raise _WebInputNeeded(getattr(args[0], "title", "") if args else "")
 
+    async def select_async(self, options, default_index=0, prompt="Choose:"):
+        """slash 菜单的选择入口在 web 端不可用 → 干净报错（同上）。"""
+        raise _WebInputNeeded(prompt)
+
+    async def ask_text_async(self, prompt_markup="", *, placeholder=""):
+        """slash 菜单的自由输入在 web 端不可用 → 干净报错（同上）。"""
+        raise _WebInputNeeded(prompt_markup)
+
     def take_output(self) -> str:
         out = self._buf.getvalue()
         self._buf.truncate(0)
@@ -748,10 +756,10 @@ class ServeSession:
     async def _run_slash_command(self, text: str, started: float) -> None:
         """web 端斜杠命令：CLI 注册表分发 → 捕获输出 → 广播成一条回复。
 
-        交互式输入在 web 端不可用：``paste_aware_input`` 与
-        ``_interactive_select`` 换成干净报错（命令中性收尾），绝不读服务
-        进程的 stdin、绝不阻塞事件循环。命令异常不毒死 worker（与模型
-        回合同一条纪律）。
+        交互式输入在 web 端不可用：``_SlashConsole`` 把 ``select_async`` /
+        ``ask_text_async`` / ``_interactive_select`` 换成干净报错（命令中性
+        收尾），绝不读服务进程的 stdin、绝不阻塞事件循环。命令异常不毒死
+        worker（与模型回合同一条纪律）。
         """
         from ..cli import commands as commands_mod
 
@@ -759,13 +767,8 @@ class ServeSession:
         name = cmd[0].lower()
         args = cmd[1:]
         con = self._slash_console()
-        real_input = commands_mod.paste_aware_input
         result: Optional[bool] = True  # 异常路径已产出警告行，视为已处理
 
-        def _no_web_input(*a, **k):
-            raise _WebInputNeeded(name)
-
-        commands_mod.paste_aware_input = _no_web_input
         try:
             result = await commands_mod.handle_slash_command(name, self.agent, con, args)
         except _WebInputNeeded:
@@ -775,8 +778,6 @@ class ServeSession:
         except Exception as e:  # noqa: BLE001  命令崩溃不毒死 worker
             _log.exception("slash command /%s failed", name)
             con.print_error(f"/{name} 执行失败：{type(e).__name__}: {e}")
-        finally:
-            commands_mod.paste_aware_input = real_input
 
         if result is None:
             con.print_warning(f"Unknown command: /{name}. Try /help")

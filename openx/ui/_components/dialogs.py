@@ -133,6 +133,17 @@ def _tui_hint() -> str:
     )
 
 
+def _strip_markup(markup: str) -> str:
+    """Rich markup → 纯文本（``[bold]x[/bold]`` → ``x``）。
+
+    ``TextScreen`` 的标题走纯 ``Text``（非 markup 渲染），样式标签留着会
+    原样显示成方块。正则剥标签足够——提示语里不存在嵌套/转义方括号。
+    """
+    import re
+
+    return re.sub(r"\[/?[^\]]*\]", "", markup or "")
+
+
 class DialogsMixin:
     """Permission dialogs, trust prompt, and interactive ask-user questions."""
 
@@ -358,6 +369,61 @@ class DialogsMixin:
         if app is None:
             return self.confirm_plan()
         return await app.ask_plan(plan)
+
+    # ── slash 命令菜单的通用异步入口（TUI 模态 / 行内原样）────────
+    #
+    # slash 命令里散落着两类交互原语：选择器（``_interactive_select``，
+    # raw-mode ↑↓）与自由输入（``paste_aware_input``，cbreak 读键）。两者
+    # 在全屏 TUI 下都是硬冲突（``TuiInputNeeded``），因此命令侧统一改走
+    # 这对**异步优先**入口：TUI 在场 → 模态屏；不在场 → 原样委托行内
+    # 实现，行为逐字不变。与 ``ask_user_question_async`` 同一模式。
+
+    async def select_async(
+        self,
+        options: list[tuple[str, object]],
+        default_index: int = 0,
+        prompt: str = "Choose:",
+    ) -> object:
+        """选择菜单：TUI → ``ChoiceScreen`` 模态；行内 → 原选择器。
+
+        取消统一返回 ``None``——行内菜单各处本就以 ``None`` 表示
+        "Cancel/Done"，调用方判断一次即可。行内路径的 Esc/Ctrl-C
+        （``_raw_select`` 抛 ``KeyboardInterrupt``）与 EOF 也归一成
+        ``None``：调用方已按"取消"分支写好，异常穿出去反而会把整个
+        REPL 杀掉（旧调用点自带 try/except，迁移后由这里统一兜）。
+        """
+        app = _tui_app(self)
+        if app is None:
+            try:
+                return self._interactive_select(
+                    options, default_index=default_index, prompt=prompt
+                )
+            except (KeyboardInterrupt, EOFError):
+                return None
+        # 标题取提示语（"Configure:" / "Role:" …），剥掉尾冒号更像标题
+        title = prompt.rstrip(":") or "Choose"
+        return await app.select(title, options, default_index=default_index)
+
+    async def ask_text_async(
+        self, prompt_markup: str = "", *, placeholder: str = ""
+    ) -> str:
+        """自由输入：TUI → ``TextScreen`` 模态；行内 → ``paste_aware_input``。
+
+        取消/空输入返回 ``""``（调用方既有 ``if not value: Aborted``
+        分支原样兼容）。行内路径的 Ctrl-C / EOF 同样归一成 ``""``
+        （``paste_aware_input`` 的 EOF 语义），异常不外穿。
+        """
+        app = _tui_app(self)
+        if app is None:
+            try:
+                return paste_aware_input(self._console, prompt_markup)
+            except (KeyboardInterrupt, EOFError):
+                return ""
+        # 标题取提示语的可读部分：剥 Rich markup（标题走纯 ``Text``，
+        # 留着样式标签会原样显示）与括号提示，压成一行
+        plain = _strip_markup(prompt_markup)
+        title = plain.rstrip(": ▸").strip() or "Input"
+        return await app.ask_text(title, placeholder=placeholder)
 
     # ── interactive select (arrow keys) ─────────────────────────
 

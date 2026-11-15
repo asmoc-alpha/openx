@@ -1,6 +1,6 @@
 """OpenX - A verifiable and evolvable agent runtime for coding."""
 
-__version__ = "0.1.30"
+__version__ = "0.1.31"
 __all__ = [
     "__version__",
     "OpenXConfig",

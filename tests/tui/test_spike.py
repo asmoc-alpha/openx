@@ -226,11 +226,23 @@ class TestDemo:
             await pilot.pause(0.6)
             assert list(app.query(ThinkingBlock)), "演示应产出 thinking 块"
 
-    def test_parse_args_has_tui_flag(self):
+    def test_parse_args_interface_flags(self):
+        """入口翻转后的旗标语义：默认 TUI，--inline 逃生门，--tui 兼容别名。
+
+        parse_args 只管解析；"非 TTY 回落行内"的守卫在 main() 里（运行期
+        判 tty，单测里改由 test_main_guard* 系列锚定行为语义）。
+        """
         from openx.main import parse_args
 
+        # 兼容别名仍在（旧脚本不破）
         assert parse_args(["--tui"]).tui is True
-        assert parse_args([]).tui is False
+        assert parse_args(["--tui"]).inline is False
+        # 逃生门显式选行内
+        args = parse_args(["--inline"])
+        assert args.inline is True and args.tui is False
+        # 默认：两个标志都不亮 → 派发层走 TUI（not args.inline）
+        args = parse_args([])
+        assert args.inline is False and args.tui is False
 
     async def test_status_line_shows_label_and_timer(self):
         """状态行：标签 + 耗时同屏（替代行内 spinner 行的转帧语义）。

@@ -81,7 +81,7 @@ openx/
 │   │   ├── eval_export.py # 轨迹 → eval JSONL 导出（含成本字段；/export-eval）
 │   │   └── exploration.py # 项目概览探测
 │   ├── ui/                # Rich TUI：console、内嵌输入框、对话框、输入捕获
-│   ├── tui/               # 全屏 TUI（`--tui`，Textual）：app、可折叠块、输出 sink、模态弹窗
+│   ├── tui/               # 全屏 TUI（默认界面，Textual）：app、可折叠块、输出 sink、模态弹窗
 │   └── utils/             # 路径、文本、错误辅助
 ├── tests/                 # 子目录与 openx/ 布局对应（orchestration/ kernel/ serve/ llm/ services/ tools/ ui/ tui/ mcp/）
 ├── docs/
@@ -104,7 +104,7 @@ openx/
 
 | 层 | 模块 | 职责 |
 |---|---|---|
-| 产品表面 | `app/cli/`、`app/serve/`、`ui/`、`tui/` | REPL、单次与 headless 入口、Web 端；行内渲染（`ui/`）与全屏界面（`tui/`） |
+| 产品表面 | `app/cli/`、`app/serve/`、`ui/`、`tui/` | REPL、单次与 headless 入口、Web 端；全屏界面（`tui/`，默认）与行内渲染（`ui/`，`--inline` 逃生门） |
 | 内核 | `kernel/`（五件套：装配/推理/审计/轨迹/沙箱，含协议与 hooks）、`agent.py`、`services/tool_executor.py`、`services/streaming.py` | turn 循环、工具分发（串行准备 → 并行执行）、流式显示、裁决与账本 |
 | 模型层 | `llm/` | provider 实现（openai-compat / anthropic-compat）、流式；重试/退避在内核（`kernel/reasoning/`） |
 | 能力层 | `tools/`、`mcp/` | 面向模型的工具（fs、shell、搜索、git、web、todo、plan、task、workflow）与外部 MCP 工具 |

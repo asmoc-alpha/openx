@@ -119,12 +119,17 @@ async def test_clear_runs_agent_action(session):
 
 
 async def test_interactive_input_guard(session, monkeypatch):
-    """paste_aware_input 在 web 端换成交互不可用报错，命令中性收尾。"""
+    """ask_text_async 在 web 端换成交互不可用报错，命令中性收尾。
+
+    slash 命令的交互输入统一走 ``console.ask_text_async`` /
+    ``console.select_async``（TUI 模态 / 行内原样的桥接层）；web 端由
+    ``_SlashConsole`` 覆写成 ``_WebInputNeeded`` 干净报错。
+    """
     from openx.app.cli import commands as commands_mod
 
     @commands_mod.register("web-slash-ask", description="test: asks for input")
     async def _ask(agent, console, args):
-        commands_mod.paste_aware_input(console.raw, "say: ")
+        await console.ask_text_async("say: ")
         return True  # 若守卫失效则走到这里
 
     try:
@@ -139,8 +144,6 @@ async def test_interactive_input_guard(session, monkeypatch):
         text = "".join(e.get("text", "") for e in ws.sent if e["type"] == "text_delta")
         assert "需要交互式输入" in text
         assert any(e["type"] == "result" for e in ws.sent)
-        # 守卫卸载后原函数被还原（global 状态不留痕）
-        assert commands_mod.paste_aware_input.__module__ != __name__
     finally:
         commands_mod._commands.pop("web-slash-ask", None)
         commands_mod._descriptions.pop("web-slash-ask", None)
@@ -158,6 +161,11 @@ async def test_interactive_select_guard(tmp_path):
         slash._interactive_select(["a", "b"])
     with pytest.raises(_WebInputNeeded):
         slash._interactive_select()
+    # 桥接入口（slash 菜单的实际路径）同款守卫
+    with pytest.raises(_WebInputNeeded):
+        await slash.select_async([("a", 1)])
+    with pytest.raises(_WebInputNeeded):
+        await slash.ask_text_async("say: ")
     # 捕获与取走
     slash.print_success("captured")
     assert "captured" in slash.take_output()

@@ -4,6 +4,89 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.31 — Full-screen TUI becomes the default
+
+### The flip
+
+- **`openx` now starts the full-screen TUI.** The inline REPL — output in the
+  terminal scrollback, thinking folded via Ctrl+R — becomes the explicit
+  `--inline` escape hatch, and `--tui` degrades to a no-op compat alias (same
+  interface as the default, so existing scripts and muscle memory keep working;
+  if both flags are passed `--inline` wins with a warning)
+- **Thinking stays collapsed by default, click to expand** — the headline
+  behaviour the flip is about. In the widget tree folding is a `Collapsible`
+  property; the inline implementation needed an unfixed-window state machine
+  and Ctrl+R because scrollback lines can never be rewritten
+- **Missing `textual` no longer bricks the CLI**: the default path prints a
+  warning and falls back to the inline REPL; only an explicit `--tui` fails
+  with exit 2 and an install hint. Same for a non-TTY stdin/stdout (pipe, CI):
+  warn once, run inline
+- The TUI remains mutually exclusive with `--serve` and a one-shot prompt —
+  those surfaces own stdout in ways a full-screen app cannot share (`--inline`
+  accepts them as before)
+
+### Dialogs adopt the inline open format
+
+- **Modal screens are the inline `_raw_select` menu, fully open**: the
+  `ChoiceScreen` / `TextScreen` paint no dim overlay (transparent screen — the
+  transcript stays visible behind the dialog) and their content is a
+  full-width, flush-left column docked to the bottom — bold title line, body,
+  the bare `●` option list (selected row `●` + bright bold text, colour
+  carried by the prompt `Text` itself, the OptionList's reverse-video
+  highlight stripped via CSS), other rows dim, trailing
+  `(↑/↓ to choose, Enter to confirm, Esc to cancel)` hint line in English,
+  matching the inline renderer verbatim. Multi-select rows keep `✓`/`·` marks
+  ahead of the cursor dot; `TextScreen`'s input shares the main input's frame
+- **The input line wears the inline frame**: `#prompt` drops Textual's
+  rectangular border for the inline prompt's look — two thin horizontal rules
+  (`border-top`/`border-bottom: tall`, colour `#585858` = 256-colour 240, the
+  same grey as the inline `_style.CHROME` rule) wrapping the input, no side
+  borders. Textual's CSS does not accept Rich colour names (`grey35` fails to
+  parse), hence the hex
+- **No footer.** The key-hint bar (`^Q quit   ^R thinking   ^T expand all`) is
+  gone — the bottom ends at the input line. The keys still work (bindings
+  flipped to `show=False` now that nothing displays them); the hints live in
+  the input placeholder and the dialogs' own hint lines
+- **Fix: dialogs crashed with `NoActiveAppError` in the real `run_tui` setup.**
+  The REPL coroutine is spawned as a sibling task of the app; `active_app` is a
+  ContextVar that sibling tasks don't inherit, so a dialog's `compose()` (which
+  needs it before the widgets are attached) blew up outside tests — `run_test`
+  bodies run inside `app._context()`, which is why the suite never caught it.
+  `run_tui` now spawns the REPL task inside `app._context()`
+
+### Slash-command completion menu
+
+- **Typing `/` in the input line pops a candidate menu** — the fullscreen peer
+  of the inline prompt_toolkit completion. Same data source
+  (`cli.commands.menu_entries`), same matching rules verbatim (line starts with
+  `/`, command name has no whitespace yet, prefix matches canonical names and
+  aliases, case-insensitive), same keys: ↑/↓ move the cursor (`●`), Tab applies
+  + trailing space, Enter applies the canonical name (`/he` → submits `/help`)
+  and submits, Esc dismisses the menu only (bubbling to interrupt when closed)
+- `SlashMenu` (`openx/tui/slash.py`) renders a fixed pool of rows updated in
+  place — no runtime mount/unmount (that path crashed Textual's compositor);
+  `PromptInput` (`app.py`) routes the keys. Two Textual subtleties documented
+  in code: `prevent_default()` (breaks the MRO key handling) vs `stop()` (would
+  also kill bubbling, so the binding actions never fire — Esc regression), and
+  `check_action` gating the bindings off entirely when the menu is closed so
+  Esc still reaches the app's interrupt binding
+
+### Slash-command menus become modal screens
+
+- **`/config`, `/model <group>:<role>`, `/mcp add|remove`, `/skill add|remove`,
+  `/release` and `/clear` now work in the TUI** instead of raising
+  "not available in --tui yet". Two async-first entries on `Console` —
+  `select_async` (choice) and `ask_text_async` (free text) — hand over to
+  `app.select` / `app.ask_text` when a TUI is attached and delegate to the
+  inline implementations verbatim otherwise, mirroring the existing
+  `ask_user_question_async` / `confirm_plan_async` pair
+- `app.select` is just another `ChoiceScreen` — a fourth question still does
+  not need a third screen. Cancellation unifies to `None` / `""`, matching the
+  menus' existing "Cancel/Done" semantics; inline Ctrl-C/EOF is normalized the
+  same way so a stray Esc cancels the command, not the session
+- `/clear` removes the transcript widgets (`app.clear_transcript`) instead of
+  `raw.clear()`, which under the sink only lands in the measuring `StringIO`
+
 ## 0.1.30 — `--tui` dialogs: the blocking questions become modal screens
 
 ### Two screens instead of raw-mode cursor arithmetic

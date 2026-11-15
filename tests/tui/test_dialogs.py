@@ -1,13 +1,16 @@
-"""阶段 5：弹窗迁移成 ModalScreen + 未迁移入口的干净报错。
+"""阶段 5+：弹窗迁移成 ModalScreen + slash 菜单桥接 + 未迁移入口的干净报错。
 
-三条承重行为：
+四条承重行为：
 
 1. **三个阻塞弹窗不再碰终端**：权限审批 / ``ask_user`` 提问 / 计划批准各压
    一块 ``ModalScreen``，取消一律 fail-closed（拒绝 / 不执行 / 未作答）。
 2. **接缝是真的接上了**：真 ``Console`` + ``attach_tui`` 下，
    ``console.ask_permission`` 与工具侧的 ``tools.console_dialog`` 入口都自动
    走模态；``detach_tui`` 后自动退回行内同步实现（迁移期逃生门）。
-3. **未迁移入口干净报错**：slash 命令里的同步选择器 / 自由输入框在 TUI 下
+3. **slash 命令菜单同款桥接**（``select_async`` / ``ask_text_async``）：
+   挂 app 走同一对屏，取消归一成 ``None`` / ``""``；行内路径的 Ctrl-C/EOF
+   同样归一，绝不穿出杀 REPL；``/clear`` 走 ``app.clear_transcript``。
+4. **未迁移入口干净报错**：绕过异步入口裸调同步选择器 / 自由输入框在 TUI 下
    抛 ``TuiInputNeeded``，由 ``handle_slash_command`` / ``_stream_response``
    转成一条警告——会话继续，界面不被 raw-mode 写花。
 """
@@ -378,7 +381,138 @@ class TestConsoleSeam:
             assert await asyncio.wait_for(app.ask_text("q"), 2) == ""
 
 
-# ── 5. 未迁移入口：干净报错 ───────────────────────────────────────
+# ── 5. slash 命令菜单的桥接（select_async / ask_text_async）──────
+
+
+class TestMenuBridge:
+    """挂 app → 模态屏；detach → 逐字委托行内实现；取消归一成 None/""。"""
+
+    async def test_select_async_opens_choice_screen(self):
+        app = OpenXTui()
+        console = _console()
+        console.attach_tui(app)
+        try:
+            async with app.run_test(size=(100, 34)) as pilot:
+                task = asyncio.create_task(console.select_async(
+                    [("First", 1), ("Second", 2)], prompt="Pick:"
+                ))
+                await _settle(pilot)
+                screen = _modal(app)
+                assert isinstance(screen, ChoiceScreen)
+                assert [lbl for lbl, _ in screen._options] == ["First", "Second"]
+                await pilot.press("enter")
+                assert await asyncio.wait_for(task, 5) == 1
+        finally:
+            console.detach_tui()
+
+    async def test_select_async_esc_returns_none(self):
+        app = OpenXTui()
+        console = _console()
+        console.attach_tui(app)
+        try:
+            async with app.run_test(size=(100, 34)) as pilot:
+                task = asyncio.create_task(console.select_async(
+                    [("A", "a"), ("Cancel", None)], prompt="Pick:"
+                ))
+                await _settle(pilot)
+                await pilot.press("escape")
+                assert await asyncio.wait_for(task, 5) is None
+        finally:
+            console.detach_tui()
+
+    async def test_ask_text_async_opens_text_screen(self):
+        app = OpenXTui()
+        console = _console()
+        console.attach_tui(app)
+        try:
+            async with app.run_test(size=(100, 34)) as pilot:
+                task = asyncio.create_task(console.ask_text_async(
+                    "  [cyan]New model[/cyan] [dim](required)[/dim]: "
+                ))
+                await _settle(pilot)
+                assert isinstance(_modal(app), TextScreen)
+                for ch in "gpt-5":
+                    await pilot.press(ch)
+                await pilot.press("enter")
+                assert await asyncio.wait_for(task, 5) == "gpt-5"
+        finally:
+            console.detach_tui()
+
+    def test_select_async_delegates_to_inline_when_detached(self, monkeypatch):
+        """无 app：委托 ``_interactive_select`` 原样（参数逐字透传）。"""
+        console = _console()
+        seen: dict = {}
+
+        def _fake(opts, default_index=0, prompt="Choose:", **kw):
+            seen["args"] = (opts, default_index, prompt)
+            return opts[1][1]
+
+        console._interactive_select = _fake
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+        result = asyncio.run(console.select_async(
+            [("Yes", True), ("No", False)], default_index=1, prompt="Pick:"
+        ))
+        assert result is False
+        assert seen["args"] == ([("Yes", True), ("No", False)], 1, "Pick:")
+
+    def test_select_async_inline_interrupt_becomes_none(self, monkeypatch):
+        """行内路径 Ctrl-C/EOF → None（不穿出杀 REPL）。"""
+        console = _console()
+
+        def _boom(opts, default_index=0, prompt="Choose:", **kw):
+            raise KeyboardInterrupt
+
+        console._interactive_select = _boom
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+        assert asyncio.run(console.select_async([("A", 1)])) is None
+
+    def test_ask_text_async_delegates_to_inline_when_detached(self, monkeypatch):
+        console = _console()
+        calls: list = []
+
+        def _fake(c, markup=""):
+            calls.append(markup)
+            return "value"
+
+        import openx.ui._components.dialogs as dialogs_mod
+
+        monkeypatch.setattr(dialogs_mod, "paste_aware_input", _fake)
+        result = asyncio.run(console.ask_text_async("  ▸ name: "))
+        assert result == "value"
+        assert calls == ["  ▸ name: "]
+
+    def test_ask_text_async_inline_eof_becomes_empty(self, monkeypatch):
+        console = _console()
+
+        def _boom(c, markup=""):
+            raise EOFError
+
+        import openx.ui._components.dialogs as dialogs_mod
+
+        monkeypatch.setattr(dialogs_mod, "paste_aware_input", _boom)
+        assert asyncio.run(console.ask_text_async("  ▸ ")) == ""
+
+    async def test_clear_transcript_removes_entries(self):
+        app = OpenXTui()
+        console = _console()
+        console.attach_tui(app)
+        try:
+            async with app.run_test(size=(100, 34)) as pilot:
+                from rich.text import Text
+
+                app.write(Text("line one"))
+                app.write(Text("line two"))
+                await _settle(pilot)
+                entries = list(app.query("#transcript Static"))
+                assert len(entries) >= 2
+                app.clear_transcript()
+                await _settle(pilot)
+                assert not list(app.query("#transcript Static"))
+        finally:
+            console.detach_tui()
+
+
+# ── 6. 未迁移入口：干净报错（绕过异步入口的绊线）──────────────────
 
 
 class TestUnmigratedGuards:
@@ -459,7 +593,7 @@ class TestUnmigratedGuards:
         assert not errors, "未迁移入口不该被报成 Error"
 
 
-# ── 6. 控件级细节 ─────────────────────────────────────────────────
+# ── 7. 控件级细节 ─────────────────────────────────────────────────
 
 
 class TestScreenDetails:

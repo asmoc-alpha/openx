@@ -2,27 +2,29 @@
 
 English | [中文](tui.zh.md)
 
-The default interface is an **inline REPL**: output accumulates in the terminal's
-scrollback and the input frame is redrawn in place. That model is cheap to get
-right and impossible to make rich — once a line is in the scrollback it can never
-be rewritten, so "collapse this thinking block", "re-render on resize" and
-"show a live subagent panel" all become cursor arithmetic against a region the
-program does not own.
-
-`openx --tui` runs a **full-screen interface** instead (`openx/tui/`, built on
-Textual): the screen is a widget tree, so folding a block is a widget property
+The default interface is the **full-screen TUI** (`openx/tui/`, built on Textual):
+the screen is a widget tree, so folding a thinking block is a widget property
 rather than a state machine, and the framework owns layout, focus and scrolling.
 
-> **Status: experimental, streaming, dialogs migrated.** Answers stream, thinking
-> and tool blocks are collapsible, `Esc` interrupts a turn, and permission / plan
-> approval / `ask_user` are real modal screens. The inline REPL is still the
-> default, and it still owns input editing, the slash-command menus and the
-> fleet/plugin panels (see [Limits](#limits)).
+`openx --inline` runs the **inline REPL** instead — the pre-TUI surface where
+output accumulates in the terminal's scrollback and the input frame is redrawn
+in place. That model is cheap to get right and impossible to make rich: once a
+line is in the scrollback it can never be rewritten, so "collapse this thinking
+block", "re-render on resize" and "show a live subagent panel" all become cursor
+arithmetic against a region the program does not own. It is kept as an escape
+hatch (`--inline`), not as a peer surface.
+
+> **Status: default interface.** Streaming, collapsible thinking/tool blocks,
+> `Esc` interrupt, permission / plan-approval / `ask_user` modal dialogs and the
+> slash-command menus all run in the app. Remaining gaps: the decks (plan /
+> queue / fleet / plugin panels) render as transcript text, and the input line
+> is single-line (see [Limits](#limits)).
 
 ```bash
-openx --tui                     # full-screen interface
-openx --tui --continue          # resume a session, as usual
-python -m openx.tui             # offline demo: no model, no network
+openx                          # full-screen interface (default)
+openx --inline                 # inline REPL (the pre-TUI surface)
+openx --tui                    # no-op compat alias for the default
+python -m openx.tui            # offline demo: no model, no network
 ```
 
 ## Layout
@@ -38,18 +40,18 @@ python -m openx.tui             # offline demo: no model, no network
 ├─────────────────────────────────────────────────────────┤
 │  ✻ Thinking…  (3.4s)  ·  esc to interrupt               │  status line
 ├─────────────────────────────────────────────────────────┤
-│  Ask OpenX…                                             │  Input
-├─────────────────────────────────────────────────────────┤
-│  ^Q quit   ^R thinking   ^T expand all                  │  Footer
+│  Ask OpenX…   (/ pops the slash-command menu)           │  Input + SlashMenu
 └─────────────────────────────────────────────────────────┘
-```
+
+No footer: `Ctrl+Q` / `Ctrl+R` / `Ctrl+T` still work but are never displayed
+on screen (the input placeholder and the dialogs' hint lines carry the hints).
 
 ## The three seams
 
 The full-screen interface does not reimplement the agent; it reroutes three
 things the inline implementation already abstracted.
 
-| Seam | Inline | `--tui` |
+| Seam | Inline (`--inline`) | Default (TUI) |
 |---|---|---|
 | Output | `Console._console` is a Rich `Console` writing to stdout | `Console._console` is `TuiSink`: `print()` enqueues a renderable, the app mounts it as a widget |
 | Input | `print_user_prompt` draws a frame and runs the prompt_toolkit editor | `print_user_prompt` delegates to `app.ask()` — the `Input` widget's next submission |
@@ -154,6 +156,12 @@ Two widgets cover all three: one choice screen and one text screen. What differs
 is data (title, body renderable, option table) — a fourth dialog should not need a
 third screen.
 
+**Visuals are the inline open format**: the modal screen paints no dim overlay
+(transparent background — the transcript stays visible behind the dialog), and the
+content is a full-width, flush-left column docked to the bottom — bold title line,
+body, the bare `●` option list (selected row bright bold, others dim), and a
+trailing `(↑/↓ to choose, …)` hint line. No card, no border, no box.
+
 **Wiring is unchanged on the tool side.** `Console.ask_permission` checks
 `_tui` first and hands over to `app.ask_permission`; `ask_user` / `confirm_plan`
 route through the async-first entries (`ask_user_question_async` /
@@ -178,6 +186,20 @@ Without that, a tool blocked in `ask_permission` would outlive the interface
 While a dialog is up the status line says `Waiting for you…` instead of
 `Answering…`: the turn is paused on a tool result, and "answering" would read as
 "already answered".
+
+### Slash-command menus ride the same screens
+
+The `/config`, `/model <group>:<role>`, `/mcp add|remove`, `/skill add|remove`
+and `/release` flows used to drive the inline selectors, which under the app
+raised `TuiInputNeeded`. They now go through two async-first entries on
+`Console` — `select_async` (choice) and `ask_text_async` (free text) — that
+hand over to `app.select` / `app.ask_text` when a TUI is attached and delegate
+to the inline implementations verbatim otherwise. `app.select` is just another
+`ChoiceScreen`: a fourth question still does not need a third screen.
+Cancellation returns `None` / `""`, matching the menus' existing
+"Cancel/Done" semantics. `/clear` removes the transcript widgets
+(`app.clear_transcript`) instead of `raw.clear()`, which under the sink only
+lands in the measuring `StringIO`.
 
 `Esc` is deliberately **not** an app-level priority binding: the input line has no
 `Esc` binding so the key still bubbles up and interrupts a turn, while a modal
@@ -204,24 +226,24 @@ reading history.
 
 ## Limits
 
-- **Slash-command menus are not migrated.** `/config`, `/model`, `/mcp add`,
-  `/hooks`, `/skill create`, `/resume` and friends still drive the inline
-  selectors and free-text prompts, which is raw-mode tty work the app cannot
-  share. In `--tui` those paths raise `TuiInputNeeded`, and
-  `handle_slash_command` / `_stream_response` turn it into one warning: the
-  command or turn is dropped, the session continues, the screen is untouched.
-  Pass the value on the command line instead (e.g. `/model <name>`).
-- **The input line is single-line.** No history, no completion, no multi-line
-  paste yet (stage 3).
-- **`--tui` needs a real terminal.** On a pipe or in CI it prints a warning and
-  falls back to the inline REPL; `python -m openx.tui` exits 2 instead.
-- `--tui` is mutually exclusive with `--serve` and with a one-shot prompt
-  argument — those surfaces own stdout in ways a full-screen app cannot share.
+- **The input line is single-line.** No history, no multi-line paste yet
+  (stage 3); the slash-command completion menu is in place (typing `/` pops
+  candidates; ↑/↓/Tab/Enter/Esc match the inline ptk completer verbatim —
+  `openx/tui/slash.py`). `/skill add`'s multi-line instructions therefore read
+  one modal per line — usable, not pleasant.
+- **The TUI needs a real terminal.** On a pipe or in CI the CLI prints a
+  warning and falls back to the inline REPL; `python -m openx.tui` exits 2
+  instead. If `textual` itself is missing, the default path likewise falls
+  back with a warning, while an explicit `--tui` fails with exit 2 and an
+  install hint.
+- The TUI is mutually exclusive with `--serve` and with a one-shot prompt
+  argument — those surfaces own stdout in ways a full-screen app cannot share
+  (use `--inline` with a prompt if you need the inline surface).
 - Plugin UI panels (`ctx.register_ui_slot`), the subagent fleet deck and the
   plan/queue deck are inline-only for now: their renderers write through
   `Console`, so their output shows up in the transcript as text rather than as a
-  pinned panel. `--tui` carries the to-do/fleet/panel arguments in the
-  `TuiStream` constructor and ignores them.
+  pinned panel. The `TuiStream` constructor carries the to-do/fleet/panel
+  arguments and ignores them.
 - Long answers re-render as Markdown at 10 Hz while streaming; a very long answer
   on a slow terminal is correspondingly heavier than the inline line-commit path.
 
@@ -247,9 +269,11 @@ toggle, the "Other" branch into `TextScreen`, the three seams (`Console.ask_perm
 `tools.console_dialog`'s async-first entries), detach falling back to inline, and
 two shutdown contracts — a pending dialog resolves to its default, and closing the
 app **actually ends it** (bounded wait, so a regression fails instead of hanging).
-The guard tests are here too: the unmigrated entries raise `TuiInputNeeded`, and
-the slash-command / stream-response paths turn that into a warning rather than an
-error.
+The bridge tests cover `select_async` / `ask_text_async`: attached they open the
+modal screens, detached they delegate to the inline selector verbatim. The
+unmigrated-entry guard (`TuiInputNeeded` from a raw `_interactive_select` /
+`paste_aware_input` call under an attached app) remains as the tripwire for any
+future call site that bypasses the async entries.
 
 Textual's `App.run_test()` + `Pilot` assert **widget state** directly, which is
 what the inline implementation cannot do — there, stream rendering is verified

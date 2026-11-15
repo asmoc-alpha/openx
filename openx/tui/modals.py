@@ -11,6 +11,13 @@ Textual，屏幕也归 Textual，弹窗一开就是花屏。于是同样的三�
 | 计划批准 ``confirm_plan`` | :class:`ChoiceScreen` | ``False`` — 不执行 |
 | 提问 ``ask_user_question`` | :class:`ChoiceScreen` (+ :class:`TextScreen`) | ``""`` / ``[]`` — 未作答 |
 
+**视觉 = 行内的开放式弹窗**（``_raw_select`` 菜单原样）：**无遮罩无卡片**——
+screen 背景透明，转录在弹窗后面照常可见；内容通栏左对齐（padding 与转录一致），
+像行内输出一样直接铺在屏幕底部：标题一行亮字 → 正文 → 裸 ``●`` 选项列
+（选中行 ``●`` + 亮字，其余 dim）→ 尾部 ``(↑/↓ to choose, …)`` 提示行。
+模态语义保留（挡住下方的输入行、Esc 取消），但没有任何"对话框"的盒子——
+行内用户伸手即可用的肌肉记忆原样生效。
+
 设计上只有**两个**控件：一个选择屏、一个文本屏。三种弹窗的差异全部是数据
 （标题 / 正文 renderable / 选项表）——加第四种弹窗不该需要写第三个屏。
 
@@ -32,7 +39,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from ..ui._style import ACCENT, DIM
+from ..ui._style import DIM
 
 #: 多选时的勾选标记（与单选的高亮区分：勾是"选中了"，高亮是"光标在这"）
 _CHECKED = "✓"
@@ -74,22 +81,24 @@ class ChoiceScreen(ModalScreen[Any]):
         self._cancel_value = cancel_value
         self._multi = multi
         self._hint = hint or (
-            "↑/↓ 移动 · space 勾选 · Enter 确认 · Esc 取消"
-            if multi else "↑/↓ 移动 · Enter 确认 · Esc 取消"
+            "(↑/↓ to choose, space to check, Enter to confirm, Esc to cancel)"
+            if multi else "(↑/↓ to choose, Enter to confirm, Esc to cancel)"
         )
         self._checked: set[int] = set()
         self._labels = [label for label, _ in self._options]
 
     def compose(self) -> ComposeResult:
+        # 行内菜单样式：标题一行亮字（非粗体大标题）、选项表裸列、
+        # 尾部 "(↑/↓ to choose, …)" 提示行——没有边框卡片，没有底色块。
         with Vertical(id="modal-card"):
-            yield Static(Text(self._title_text, style=f"bold {ACCENT}"),
+            yield Static(Text(self._title_text, style="bold white"),
                          id="modal-title")
             if self._body is not None:
                 with VerticalScroll(id="modal-body"):
                     yield Static(self._body, id="modal-body-text")
             yield OptionList(
                 *[
-                    Option(self._label_for(i), id=str(i))
+                    Option(self._prompt_for(i), id=str(i))
                     for i in range(len(self._options))
                 ],
                 id="modal-options",
@@ -101,22 +110,49 @@ class ChoiceScreen(ModalScreen[Any]):
         if self._options:
             options.highlighted = self._default_index
         options.focus()
+        self._sync_cursor(options)
 
-    # ── 标签（多选时带勾选标记）─────────────────────────────────
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        # 光标随高亮走（行内菜单语义：● 只在当前行）
+        self._sync_cursor(event.option_list)
+
+    def _sync_cursor(self, options: OptionList) -> None:
+        """把 ``●`` 光标写到高亮行的 prompt 里（就地换，不重建列表）。"""
+        highlighted = options.highlighted
+        for i in range(len(self._options)):
+            options.replace_option_prompt_at_index(i, self._prompt_for(
+                i, cursor=(i == highlighted)))
+
+    # ── 标签（多选勾选标记 + 单选 ● 光标，均在 prompt 文本内）──────
 
     def _label_for(self, index: int) -> str:
+        """纯标签文本（测试与旧调用点兼容面）。"""
+        return self._labels[index]
+
+    def _prompt_for(self, index: int, *, cursor: bool = False) -> Text:
+        """选项 → 行内菜单样式的 prompt。
+
+        行内形态（``_render_options``）：单选选中行 ``● label``（cyan 圆点 +
+        亮字加粗）、未选中 ``  label``（dim）；多选在光标标记前再带
+        ``✓``/``·`` 勾选标记。CSS 已剥掉 OptionList 的反白高亮块，颜色
+        全由 prompt 自带。
+        """
         label = self._labels[index]
-        if not self._multi:
-            return label
-        mark = _CHECKED if index in self._checked else _UNCHECKED
-        return f"{mark} {label}"
+        if self._multi:
+            check = _CHECKED if index in self._checked else _UNCHECKED
+            head = f"{check} ● " if cursor else f"{check}   "
+        else:
+            head = "● " if cursor else "  "
+        style = "bold white" if cursor else DIM
+        return Text(f"{head}{label}", style=style)
 
     def _refresh_labels(self) -> None:
         # 就地换 prompt（``replace_option_prompt_at_index``）：重建整个
         # OptionList 会抖掉高亮位置——用户勾完一项，光标必须留在原处。
         options = self.query_one("#modal-options", OptionList)
-        for i in range(len(self._options)):
-            options.replace_option_prompt_at_index(i, self._label_for(i))
+        self._sync_cursor(options)
 
     # ── 交互 ────────────────────────────────────────────────────
 
@@ -167,10 +203,10 @@ class TextScreen(ModalScreen[Optional[str]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-card"):
-            yield Static(Text(self._title_text, style=f"bold {ACCENT}"),
+            yield Static(Text(self._title_text, style="bold white"),
                          id="modal-title")
             yield Input(placeholder=self._placeholder, id="modal-input")
-            yield Static(Text("Enter 确认 · Esc 取消", style=DIM),
+            yield Static(Text("(Enter to confirm, Esc to cancel)", style=DIM),
                          id="modal-hint")
 
     def on_mount(self) -> None:

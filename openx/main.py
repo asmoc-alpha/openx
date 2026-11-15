@@ -59,7 +59,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  openx                          Start interactive REPL
+  openx                          Start the full-screen TUI (default)
+  openx --inline                 Start the inline REPL instead
   openx "fix all type errors"    Single-shot mode
   openx --image shot.png "what's in this?"   Single-shot with an image
   openx --workspace /my/project  Set workspace
@@ -155,10 +156,18 @@ them interactively with /model and /config. Environment:
         "--tui",
         action="store_true",
         help=(
-            "[experimental] Full-screen TUI (Textual) instead of the inline "
-            "REPL: collapsible thinking/tool blocks (click the title or focus "
-            "it and press Enter), streaming answers, Esc to interrupt. Inline "
-            "dialogs are not migrated yet — pair it with -y / auto mode"
+            "[compat] No-op alias: the full-screen TUI (Textual) is the "
+            "default interface now. Kept so existing scripts and muscle "
+            "memory keep working"
+        ),
+    )
+    parser.add_argument(
+        "--inline",
+        action="store_true",
+        help=(
+            "[experimental] Inline REPL instead of the default full-screen "
+            "TUI: output accumulates in the terminal scrollback, thinking "
+            "blocks fold via Ctrl+R"
         ),
     )
     parser.add_argument(
@@ -303,22 +312,34 @@ def _import_serve() -> tuple:
     return ServeConsole, run_serve
 
 
-def _run_tui(agent: OpenXAgent, console: Console) -> None:
-    """``--tui`` 入口：惰性导入 Textual，依赖缺失时给安装指引而非栈。
+def _run_tui(agent: OpenXAgent, console: Console, *, explicit: bool = False) -> None:
+    """全屏 TUI 入口：惰性导入 Textual，依赖缺失时按入口给不同的出路。
 
     ``run_tui`` 内部把 app 与既有 REPL 协程放进同一个 loop 并发跑（见
     ``openx/tui/app.py``），因此这里只是普通的 ``asyncio.run``。
+
+    ``explicit``：用户显式传了 ``--tui`` → exit(2) + 安装指引（用户点名
+    要这个界面，静默换面是欺骗）；默认路径（无标志）→ 警告 + 回落行内
+    REPL——默认界面绝不能因环境缺依赖把整个 CLI 砖死。
     """
     try:
         from .tui.app import run_tui
     except ImportError as e:  # textual 未安装 / 版本不满足
+        if explicit:
+            print(
+                "Error: the TUI requires the 'textual' package.\n"
+                "  Install with:  pip install 'textual'\n"
+                f"  ({e})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         print(
-            "Error: --tui requires the 'textual' package.\n"
-            "  Install with:  pip install 'textual'\n"
-            f"  ({e})",
+            "Warning: 'textual' is unavailable; falling back to the inline "
+            f"REPL. ({e})",
             file=sys.stderr,
         )
-        sys.exit(2)
+        asyncio.run(run_interactive(agent, console))
+        return
     asyncio.run(run_tui(agent, console))
 
 
@@ -361,22 +382,33 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
         args.resume = None
 
-    # --tui 守卫：全屏界面必须独占一个真终端；与 serve / 单次查询互斥
-    # （那两个路径的输出去向不同，混用只会产出半截界面）。
-    if args.tui:
+    # ── 界面守卫：全屏 TUI 是默认界面，必须独占一个真终端 ────────
+    # ``--tui`` 是无操作兼容别名；真正决定走哪套界面的是 ``--inline``。
+    # 两标志同传时 ``--inline`` 优先（显式选择行内的意图更具体），警告
+    # 一句而不报错——组合脚本不因别名被废而崩。
+    if args.inline and args.tui:
+        print(
+            "Warning: --tui is a no-op alias now; --inline wins.",
+            file=sys.stderr,
+        )
+    # 互斥检查（serve / 单次查询）只对"将走 TUI"的人生效；tty 检查在
+    # 非 TTY 下回落行内（那两个路径的输出去向不同，混用只会产出半截
+    # 界面）。
+    if not args.inline:
         if args.serve or args.prompt:
             print(
-                "Error: --tui cannot be combined with --serve or a prompt.",
+                "Error: the TUI cannot be combined with --serve or a prompt. "
+                "Add --inline for the inline REPL, or drop the prompt.",
                 file=sys.stderr,
             )
             sys.exit(2)
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print(
-                "Warning: --tui needs an interactive terminal; "
+                "Warning: the TUI needs an interactive terminal; "
                 "falling back to the inline REPL.",
                 file=sys.stderr,
             )
-            args.tui = False
+            args.inline = True
 
     # ── First-run check: modelGroups ─────────────────────────────
     # 模型/凭据只来自 settings.json 的 modelGroups；未配置（无激活组）→
@@ -522,10 +554,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
         else:
             try:
-                if args.tui:
-                    _run_tui(agent, console)
-                else:
+                if args.inline:
                     asyncio.run(run_interactive(agent, console))
+                else:
+                    _run_tui(agent, console, explicit=args.tui)
             except KeyboardInterrupt:
                 console.print_goodbye(agent.session_token_usage())
     finally:

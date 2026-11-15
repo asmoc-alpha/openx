@@ -1,7 +1,8 @@
-"""OpenX 全屏 TUI（Textual）。
+"""OpenX 全屏 TUI（Textual）——默认界面。
 
-本包只在 ``openx --tui`` / ``python -m openx.tui`` 路径被导入；默认的
-行内 REPL 完全不经此包（``textual`` 缺失也不影响默认路径）。
+``openx``（无参）与 ``openx --tui``（兼容别名）都进本包；``openx --inline``
+走旧行内 REPL，完全不 import 这里（迁移期逃生门）。textual 缺失时默认路径
+警告后回退行内（见 ``main._run_tui``），因此本包仍保持惰性导入的纪律。
 
 组成：
 

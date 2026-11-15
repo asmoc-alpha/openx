@@ -1,11 +1,13 @@
 """Textual app —— 全屏界面主体（转录 / 状态行 / 输入框 / 按键）。
 
-组成（对应行内实现的四段式布局，但由框架托管）：
+组成（对应行内实现的界面分段，但由框架托管；**没有 Footer**——键位提示
+只在弹窗的提示行里出现，`Ctrl+Q`/`Ctrl+R`/`Ctrl+T` 照常生效，不在屏幕上
+常驻占一行）：
 
     ┌ transcript (VerticalScroll) ─ 会话流，块可折叠、可鼠标点开
     │ status line                  转帧 + Thinking…/Answering… + 耗时
-    │ Input                        输入行（Enter 提交；多行/历史是 Stage 3）
-    └ Footer                       键位提示
+    │ Input                        输入行（Enter 提交；斜杠菜单见 slash.py）
+    └ SlashMenu                    输入行下方的 `/` 候选浮层
 
 三条缝在这里落地：
 
@@ -34,10 +36,11 @@ import time
 from typing import Any, ClassVar, Callable, Optional
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.widgets import Footer, Input, Static
+from textual.widgets import Input, Static
 
 from ..ui._style import ACCENT
 from .blocks import StatusLine, ThinkingBlock
@@ -50,6 +53,7 @@ from .modals import (
     plan_body,
 )
 from .sink import SinkQueue, TuiSink
+from .slash import SlashMenu
 from .stream import Note, StreamStart, TuiStream, TurnAborted, TurnEnd
 from .view import IDLE_PLACEHOLDER, StreamView
 
@@ -76,6 +80,104 @@ class RichEntry(Static):
         super().update(source, **kwargs)
 
 
+class PromptInput(Input):
+    """输入行 + 斜杠命令菜单的键位路由。
+
+    行内 ptk 的语义（``editor.build_key_bindings``）逐条搬过来：
+
+    - 菜单开时 ``↑``/``↓`` 移动候选光标（不到输入历史里去——TUI 输入行
+      暂无历史，方向键不挪光标也符合"菜单优先"的行内行为）；
+    - ``Tab``：应用当前候选 + 尾随空格（参数位起编）；
+    - ``Enter``：应用当前候选并**提交**（行内 ``_enter_with_menu``）；
+    - ``Esc``：先收菜单（有菜单关菜单），无菜单时冒泡给 app 打断回合
+      （行内 ``_esc_closes_menu`` 同款分层）。
+
+    菜单本体是兄弟节点 ``#slash-menu``（compose 顺序紧贴输入行下方）；
+    路由方法在这里，弹与收由 :meth:`_refresh_slash_menu` 驱动。
+    """
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("up", "slash_up", "上一个候选", show=False),
+        Binding("down", "slash_down", "下一个候选", show=False),
+        Binding("tab", "slash_tab", "应用候选", show=False),
+        Binding("escape", "slash_esc", "收菜单", show=False),
+    ]
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """菜单关时全部 slash 绑定整体失效——Esc 等键自然冒泡给 app。
+
+        不做这一层门控，Esc 绑定会先于 app 的 interrupt 吃掉按键：流式
+        打断永远不触发（回归于 test_esc_cancels_registered_task_once）。
+        """
+        if action.startswith("slash_"):
+            return self._menu_open()
+        return super().check_action(action, parameters)
+
+    async def _on_key(self, event: events.Key) -> None:
+        """菜单开时吃掉 ↑/↓/Tab/Esc 的**默认行为**，但放行冒泡。
+
+        Textual 的键路是两条：① MRO 分发的 ``_on_key``（Input 在这里把
+        可打印字符插入、把 ↑/↓ 交给光标/历史）；② 事件冒泡到 ``App`` 后
+        的 ``_check_bindings``（我们注册的 slash_* 绑定在这里触发）。
+        ``prevent_default`` 只断 ①（MRO 在本类之后 break），``stop`` 会
+        把 ② 也断掉——按键永远到不了绑定 action（实测：菜单开按 ↓ 光标
+        纹丝不动）。所以这里**只 prevent_default、绝不 stop**。
+        """
+        if self._menu_open() and event.key in ("up", "down", "tab", "escape"):
+            event.prevent_default()
+
+    @property
+    def _slash_menu(self) -> SlashMenu | None:
+        try:
+            return self.app.query_one("#slash-menu", SlashMenu)
+        except Exception:
+            return None
+
+    def _menu_open(self) -> bool:
+        menu = self._slash_menu
+        return menu is not None and bool(menu.matches)
+
+    def action_slash_up(self) -> None:
+        self._slash_menu.move(-1)
+
+    def action_slash_down(self) -> None:
+        self._slash_menu.move(1)
+
+    def action_slash_tab(self) -> None:
+        menu = self._slash_menu
+        if menu is None or not menu.matches:
+            return  # 无候选：不拦截（Textual Input 默认 Tab 是焦点移动）
+        applied = menu.apply(with_space=True)
+        if applied is not None:
+            self.value = applied
+            self.cursor_position = len(applied)
+            menu.hide()
+
+    def action_slash_esc(self) -> None:
+        self._slash_menu.hide()
+
+    async def action_submit(self) -> None:
+        """Enter：菜单开时先应用候选再提交（行内 ``_enter_with_menu``）。
+
+        菜单未开：默认提交原文。应用后 value 已是规范名（``/quit`` 而非
+        ``/qu``），随后的提交事件携带的就是它。
+        """
+        menu = self._slash_menu
+        if menu is not None and menu.matches:
+            applied = menu.apply()
+            if applied is not None:
+                self.value = applied
+                self.cursor_position = len(applied)
+        await super().action_submit()
+
+    def _refresh_slash_menu(self) -> None:
+        """输入变化 → 弹/收菜单（``Input.Changed`` 经 app 转发驱动）。"""
+        menu = self._slash_menu
+        if menu is None:
+            return
+        menu.refresh_for(self.value)
+
+
 class OpenXTui(App[None]):
     """OpenX 的全屏终端界面：转录 + 状态行 + 输入框 + 键位。"""
 
@@ -92,11 +194,15 @@ class OpenXTui(App[None]):
         height: 1;
         padding: 0 1;
     }
+    /* 输入行 = 行内同款的"两条横线包着"（``print_user_prompt`` 的框）：
+       顶、底各一条细线，**左右无边框**——不是 Textual 默认的长方形盒。
+       #585858 = 256 色 240 号，即行内框线的 ``_style.CHROME``（grey35，
+       Textual 的 CSS 不认 Rich 颜色名，故写十六进制）。 */
     #prompt {
         height: 3;
-    }
-    Footer {
-        height: 1;
+        border: none;
+        border-top: tall #585858;
+        border-bottom: tall #585858;
     }
     .thinking-block > .block-body {
         color: grey;
@@ -109,22 +215,21 @@ class OpenXTui(App[None]):
     .entry {
         padding: 0 0;
     }
-    /* 弹窗：浮在转录之上、居中，带边框与底色——与转录的对比度是"这是
-       一个需要你回答的问题"的唯一提示（全屏界面里没有终端原生弹窗）。 */
+    /* 弹窗：行内的开放式格式（与 ``_raw_select`` 菜单同构）——无遮罩
+       （screen 背景透明，转录在弹窗后面照常可见）、通栏左对齐、无卡片
+       无边框：标题一行亮字 → 正文 → 裸 ``●`` 选项列 → dim 提示行，像行内
+       输出一样铺在屏幕底部。模态语义保留：挡住下方的输入行、Esc 取消。 */
     ChoiceScreen, TextScreen {
-        align: center middle;
-        background: $background 60%;
+        align: left bottom;
+        background: transparent;
     }
-    #modal-card {
-        width: 84;
-        max-width: 96%;
+    ChoiceScreen #modal-card, TextScreen #modal-card {
+        width: 100%;
         height: auto;
         max-height: 80%;
-        border: round $accent;
-        background: $surface;
-        padding: 1 2;
+        padding: 0 1;
     }
-    #modal-title {
+    ChoiceScreen #modal-title, TextScreen #modal-title {
         text-style: bold;
         padding: 0 0 1 0;
     }
@@ -133,22 +238,47 @@ class OpenXTui(App[None]):
         max-height: 16;
         padding: 0 0 1 0;
     }
-    #modal-options {
+    /* 选项表：裸列。行内菜单选中行 = ``● label``（cyan 圆点 + 亮白字），
+       其余 = ``  label`` dim。OptionList 默认的反白高亮块与边框全数剥掉。 */
+    ChoiceScreen #modal-options {
         height: auto;
         max-height: 14;
+        border: none;
+        background: transparent;
+        padding: 0;
+        scrollbar-size-vertical: 0;
     }
-    #modal-hint {
+    ChoiceScreen #modal-options > .option-list--option-highlighted {
+        background: transparent;
+        color: $foreground;
+        text-style: bold;
+    }
+    ChoiceScreen #modal-options:focus > .option-list--option-highlighted {
+        background: transparent;
+        color: $foreground;
+        text-style: bold;
+    }
+    ChoiceScreen #modal-hint, TextScreen #modal-hint {
         padding: 1 0 0 0;
     }
-    #modal-input {
+    /* 弹窗里的自由输入行：与主输入行同一视觉身份——两条横线包着。 */
+    TextScreen #modal-input {
         margin: 1 0 0 0;
+        background: transparent;
+        padding: 0;
+        height: auto;
+        border: none;
+        border-top: tall #585858;
+        border-bottom: tall #585858;
     }
     """
 
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("ctrl+q", "quit_tui", "退出", show=True, priority=True),
-        Binding("ctrl+r", "toggle_thinking", "thinking", show=True),
-        Binding("ctrl+t", "toggle_all", "全部折叠/展开", show=True),
+        # 全部 show=False：界面没有 Footer，键位不在屏幕上常驻展示——
+        # `Ctrl+Q`/`Ctrl+R`/`Ctrl+T` 照常生效，提示只在弹窗的提示行出现。
+        Binding("ctrl+q", "quit_tui", "退出", show=False, priority=True),
+        Binding("ctrl+r", "toggle_thinking", "thinking", show=False),
+        Binding("ctrl+t", "toggle_all", "全部折叠/展开", show=False),
         # **不加 priority**：`Input` 没有 escape 绑定，按键自然冒泡到 app，
         # 输入行聚焦时照样能打断。而加上 priority 会让 app 抢在**模态屏**
         # 之前吃掉 Esc——弹窗就再也取消不了了（priority 绑定先于屏幕绑定
@@ -197,8 +327,8 @@ class OpenXTui(App[None]):
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="transcript")
         yield StatusLine(id="spinner")
-        yield Input(placeholder=IDLE_PLACEHOLDER, id="prompt")
-        yield Footer()
+        yield PromptInput(placeholder=IDLE_PLACEHOLDER, id="prompt")
+        yield SlashMenu()
 
     def on_mount(self) -> None:
         self._mounted_ready.set()
@@ -419,6 +549,41 @@ class OpenXTui(App[None]):
         value = await self._modal(TextScreen(title, placeholder=placeholder), None)
         return (value or "").strip()
 
+    async def select(
+        self,
+        title: str,
+        options: list[tuple[str, Any]],
+        *,
+        default_index: int = 0,
+    ) -> Any:
+        """通用选择模态（slash 命令菜单的 TUI 后端）。
+
+        ``options`` 是 ``(label, value)`` 序列，``value`` 原样返回。取消
+        （Esc / app 关闭）→ ``None``——与行内各菜单 "Cancel/Done → None"
+        的既有语义天然对齐，调用方无需分叉判断。
+        """
+        return await self._modal(
+            ChoiceScreen(
+                title,
+                options,
+                default_index=default_index,
+                cancel_value=None,
+            ),
+            None,
+        )
+
+    def clear_transcript(self) -> None:
+        """清空转录（``/clear`` 的 TUI 后端）。
+
+        行内实现是 ``console.raw.clear()``（清整屏）；全屏界面里等价操作
+        是移除 transcript 的全部子控件——``raw`` 在 TUI 下是 ``TuiSink``，
+        它的 ``clear()`` 只会落进测量用的 StringIO，屏清不掉。
+        """
+        if self._tui_closed:
+            return
+        with contextlib.suppress(Exception):
+            self._transcript.remove_children()
+
     async def ask_plan(self, plan: str = "") -> bool:
         """计划审批 → 是否执行。取消/关闭 = ``False``（不执行，fail-closed）。"""
         return bool(await self._modal(
@@ -444,15 +609,26 @@ class OpenXTui(App[None]):
 
     # ── 输入缝 ──────────────────────────────────────────────────
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """输入变化 → 刷新斜杠菜单（``PromptInput`` 转发来的联动）。"""
+        if isinstance(event.input, PromptInput):
+            event.input._refresh_slash_menu()
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Enter：流式期排队等本回合结束，空闲期交给 ``ask()``。
 
         与行内同语义（流式期回车 = "该回合结束后立即发送"）：行内由
         ``InputCapture`` 把行塞进 ``console._input_queue``，此处直接复用
         那个通道——主循环的下一拍就会取走它。
+
+        菜单开着时先应用候选（行内 ``_enter_with_menu``：Enter = 提交所选
+        命令而不是原文）。
         """
         text = event.value
         event.input.value = ""
+        # 提交后菜单即收（候选已应用或命令已定型）
+        menu = self.query_one("#slash-menu", SlashMenu)
+        menu.hide()
         if not text.strip():
             return
         if self._stream_active and self._openx_console is not None:
@@ -600,14 +776,27 @@ async def run_tui(agent: Any, console: Any) -> None:
 
     任一先结束就收掉另一个：REPL 里 ``/quit`` 或 EOF → 关 app；用户在 TUI
     里 Ctrl+Q → ``ask()`` 拿到 ``None`` → REPL 走既有的 EOF 退出路径。
+
+    REPL task 必须带着 ``active_app`` 上下文出生：Textual 的 ``push_screen``
+    → 屏 ``compose`` 依赖这个 ContextVar（``Widget.app`` 在控件尚未挂上父
+    节点时靠它兜底）。``run_tui`` 自身在 ``app._context()`` 之外运行，裸
+    ``create_task`` 出生的 REPL 及其后代 task（工具执行栈里的弹窗调用都
+    在其中）没有它——弹窗一开就在 compose 的 ``Vertical.__enter__`` 处
+    ``NoActiveAppError``。测试没抓到是因为 ``run_test`` 的测试体本身跑在
+    上下文里。
     """
     from ..app.cli.interactive import run_interactive
 
     app = OpenXTui()
     console.attach_tui(app)
     app_task = asyncio.create_task(app.run_async(), name="openx-tui")
-    repl_task = asyncio.create_task(run_interactive(agent, console),
-                                    name="openx-repl")
+    try:
+        spawn_ctx = app._context()
+    except AttributeError:  # pragma: no cover - 防御 textual 版本变动
+        spawn_ctx = contextlib.nullcontext()
+    with spawn_ctx:
+        repl_task = asyncio.create_task(run_interactive(agent, console),
+                                        name="openx-repl")
     try:
         await asyncio.wait({app_task, repl_task},
                            return_when=asyncio.FIRST_COMPLETED)

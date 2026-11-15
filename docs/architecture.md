@@ -83,7 +83,7 @@ openx/
 │   │   ├── eval_export.py # Trajectory → eval JSONL export (cost fields; /export-eval)
 │   │   └── exploration.py # Project overview detection
 │   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
-│   ├── tui/               # Full-screen TUI (`--tui`, Textual): app, collapsible blocks, sink, modal dialogs
+│   ├── tui/               # Full-screen TUI (default interface, Textual): app, collapsible blocks, sink, modal dialogs
 │   └── utils/             # Path, text, and error helpers
 ├── tests/                 # Subdirs mirror the openx/ layout (orchestration/ kernel/ serve/ llm/ services/ tools/ ui/ tui/ mcp/)
 ├── docs/
@@ -108,7 +108,7 @@ Permission checks and hook invocations happen during serial preparation, inside
 
 | Layer | Modules | Responsibility |
 |---|---|---|
-| Surface | `app/cli/`, `app/serve/`, `ui/`, `tui/` | REPL, single-shot, headless and web entry; inline rendering (`ui/`) and the full-screen surface (`tui/`) |
+| Surface | `app/cli/`, `app/serve/`, `ui/`, `tui/` | REPL, single-shot, headless and web entry; the full-screen surface (`tui/`, default) and inline rendering (`ui/`, `--inline` escape hatch) |
 | Kernel | `kernel/` (five-piece: assembly/reasoning/audit/trace/sandbox, incl. protocol & hooks), `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display, verdicts & ledger |
 | Model | `llm/` | Provider implementations (openai-compat / anthropic-compat), streaming; retry/backoff lives in the kernel (`kernel/reasoning/`) |
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |

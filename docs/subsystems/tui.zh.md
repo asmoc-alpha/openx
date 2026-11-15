@@ -2,22 +2,25 @@
 
 [English](tui.md) | 中文
 
-默认界面是**行内 REPL**：输出累积进终端 scrollback，输入框就地重绘。这个
-模型的代价小、但天花板低——一行进了 scrollback 就再也改不了，于是"折叠这段
-thinking"、"窗口大小变了重排"、"显示实时 subagent 面板"统统变成对一块程序
-并不拥有的区域做光标算术。
+默认界面是**全屏 TUI**（`openx/tui/`，基于 Textual）：屏幕是 widget 树，
+折叠一个 thinking 块只是控件属性而非状态机，布局、焦点、滚动都交给框架。
 
-`openx --tui` 改为跑**全屏界面**（`openx/tui/`，基于 Textual）：屏幕是
-widget 树，折叠一个块只是控件属性而非状态机，布局、焦点、滚动都交给框架。
+`openx --inline` 则跑**行内 REPL**——TUI 之前的旧界面：输出累积进终端
+scrollback，输入框就地重绘。这个模型代价小、但天花板低：一行进了
+scrollback 就再也改不了，于是"折叠这段 thinking"、"窗口大小变了重排"、
+"显示实时 subagent 面板"统统变成对一块程序并不拥有的区域做光标算术。它
+作为逃生门保留（`--inline`），不再是平级界面。
 
-> **状态：实验性，已流式，弹窗已迁移。** 答案逐字流式、thinking 与工具块可折叠、
-> `Esc` 可打断回合，权限审批 / 计划批准 / `ask_user` 已是真正的模态屏。默认仍是
-> 行内 REPL，它仍拥有输入编辑、slash 命令菜单、fleet 与插件面板（见[限制](#限制)）。
+> **状态：默认界面。** 流式、可折叠的 thinking/工具块、`Esc` 打断、权限
+> 审批 / 计划批准 / `ask_user` 模态弹窗与 slash 命令菜单都在 app 里跑。仍
+> 存的缺口：deck（计划 / 队列 / 舰队 / 插件面板）以转录文本呈现、输入行
+> 是单行（见[限制](#限制)）。
 
 ```bash
-openx --tui                     # 全屏界面
-openx --tui --continue          # 照常恢复会话
-python -m openx.tui             # 离线演示：不起模型、不联网
+openx                          # 全屏界面（默认）
+openx --inline                 # 行内 REPL（TUI 之前的旧界面）
+openx --tui                    # 无操作兼容别名（等价默认）
+python -m openx.tui            # 离线演示：不起模型、不联网
 ```
 
 ## 布局
@@ -33,17 +36,17 @@ python -m openx.tui             # 离线演示：不起模型、不联网
 ├───────────────────────────────────────────────────────┤
 │  ✻ Thinking…  (3.4s)  ·  esc to interrupt             │  状态行
 ├───────────────────────────────────────────────────────┤
-│  Ask OpenX…                                           │  Input
-├───────────────────────────────────────────────────────┤
-│  ^Q quit   ^R thinking   ^T expand all                │  Footer
+│  Ask OpenX…  （输入 / 弹出斜杠命令菜单）                │  Input + SlashMenu
 └───────────────────────────────────────────────────────┘
-```
+
+没有 Footer：`Ctrl+Q` / `Ctrl+R` / `Ctrl+T` 照常生效，但不在屏幕上常驻展示
+（键位提示只出现在输入行占位符与弹窗的提示行里）。
 
 ## 三条缝
 
 全屏界面不重写 agent；它只是改道了三处行内实现本就抽出来的接缝。
 
-| 缝 | 行内 | `--tui` |
+| 缝 | 行内（`--inline`） | 默认（TUI） |
 |---|---|---|
 | 输出 | `Console._console` 是写 stdout 的 Rich `Console` | `Console._console` 是 `TuiSink`：`print()` 投递 renderable，由 app 挂成 widget |
 | 输入 | `print_user_prompt` 画输入框、跑 prompt_toolkit 编辑器 | `print_user_prompt` 转交 `app.ask()`——等 `Input` 控件的下一次提交 |
@@ -131,6 +134,11 @@ Textual 之后，这套等于必然花屏。于是 agent 真正会阻塞等待�
 三种弹窗只由两个控件覆盖：一个选择屏、一个文本屏。差异全是数据（标题、正文
 renderable、选项表）——加第四种弹窗不该需要写第三个屏。
 
+**视觉是行内的开放式弹窗**：模态屏不铺半透明遮罩（背景透明，转录在弹窗后面
+照常可见），内容是停靠在屏幕底部的通栏左对齐一列——亮字标题 → 正文 → 裸
+`●` 选项列（选中行亮粗、其余 dim）→ 尾部 `(↑/↓ to choose, …)` 提示行，
+没有卡片、边框与盒子。
+
 **工具侧接线零改动。** `Console.ask_permission` 先看 `_tui`，命中就转交
 `app.ask_permission`；`ask_user` / `confirm_plan` 走**异步优先**入口
 （`ask_user_question_async` / `confirm_plan_async`）——`tools/console_dialog.py`
@@ -149,6 +157,18 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
 
 弹窗期间状态行改说 `Waiting for you…` 而不是 `Answering…`：回合正停在工具结果
 上，继续显示"在回答"会被读成"已经答完了"。
+
+### slash 命令菜单也走同一对屏
+
+`/config`、`/model <组>:<角色>`、`/mcp add|remove`、`/skill add|remove`、
+`/release` 原先走行内选择器，在 app 下会抛 `TuiInputNeeded`。现在它们统一走
+`Console` 上的两个**异步优先**入口——`select_async`（选择）与
+`ask_text_async`（自由输入）：挂了 TUI 就转交 `app.select` / `app.ask_text`，
+没挂就逐字委托行内实现。`app.select` 只是又一个 `ChoiceScreen`——第四种问题
+依旧不需要第三个屏。取消统一返回 `None` / `""`，与各菜单既有的
+"Cancel/Done" 语义对齐。`/clear` 则移除转录的全部 widget
+（`app.clear_transcript`）——`raw.clear()` 在 sink 下只会落进量测用的
+`StringIO`，屏清不掉。
 
 `Esc` 刻意**不再**是 app 级 priority 绑定：输入行没有 `Esc` 绑定，按键照样冒泡
 上来打断回合；而模态屏自己的绑定天然优先于 app 级绑定——这正是两种含义共存所需
@@ -173,19 +193,18 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
 
 ## 限制
 
-- **slash 命令菜单尚未迁移。** `/config`、`/model`、`/mcp add`、`/hooks`、
-  `/skill create`、`/resume` 等仍走行内选择器与自由输入框——那是对 tty 做 raw
-  模式操作，app 无法共享。`--tui` 下这些路径抛 `TuiInputNeeded`，
-  `handle_slash_command` / `_stream_response` 把它转成一条警告：该命令/回合作废，
-  会话继续，屏幕不被写花。请改为在命令行里直接给值（如 `/model <name>`）。
-- **输入行是单行的。** 暂无历史、暂无补全、暂无多行粘贴（阶段 3）。
-- **`--tui` 需要真终端。** 管道/CI 下打印警告并回退到行内 REPL；
-  `python -m openx.tui` 则直接以 2 退出。
-- `--tui` 与 `--serve`、以及一次性 prompt 参数互斥——那两条路径对 stdout 的
-  占用方式，全屏 app 无法共享。
+- **输入行是单行的。** 暂无历史、暂无多行粘贴（阶段 3）；斜杠命令补全菜单
+  已就位（`/` 起头弹候选，↑/↓/Tab/Enter/Esc 与行内 ptk 补全逐字同义，
+  `openx/tui/slash.py`）。
+  `/skill add` 的多行 instructions 因此变成每行一个模态——能用，不优雅。
+- **TUI 需要真终端。** 管道/CI 下 CLI 打印警告并回退到行内 REPL；
+  `python -m openx.tui` 则直接以 2 退出。`textual` 本身缺失时，默认路径
+  同样警告后回退；显式传 `--tui` 才以 2 退出并给安装指引。
+- TUI 与 `--serve`、以及一次性 prompt 参数互斥——那两条路径对 stdout 的
+  占用方式，全屏 app 无法共享（要行内界面配 prompt 就加 `--inline`）。
 - 插件 UI 面板（`ctx.register_ui_slot`）、subagent fleet 面板与计划/队列 deck
   目前仍是行内：它们的渲染走 `Console`，于是输出以文本形式落进转录，而不是
-  钉住的面板。`--tui` 把 todos/fleet/panels 参数收进 `TuiStream` 构造但不使用。
+  钉住的面板。`TuiStream` 把 todos/fleet/panels 参数收进构造但不使用。
 - 长答案流式期按 10Hz 重渲 Markdown；慢终端上的超长答案因此比行内的逐行固化
   路径更重。
 
@@ -206,8 +225,10 @@ sink 投递、attach/detach，以及 `ask()` 契约（返回提交的文本，�
 多选勾选、"Other" 分支进 `TextScreen`、三条缝（`Console.ask_permission`、
 `tools.console_dialog` 的异步优先入口）、detach 后回退行内，以及两条收摊契约——
 挂起的弹窗按默认值 resolve、关掉 app **真的会退出来**（有界等待，回归时是失败
-而不是挂死）。守卫测试也在这里：未迁移入口抛 `TuiInputNeeded`，而 slash 命令 /
-`_stream_response` 把它转成警告而不是错误。
+而不是挂死）。桥接测试覆盖 `select_async` / `ask_text_async`：挂上 app 走模态
+屏、detach 后逐字委托行内选择器、行内路径的 Ctrl-C/EOF 归一成取消值。未迁移
+入口的守卫（挂上 app 后裸调 `_interactive_select` / `paste_aware_input` 抛
+`TuiInputNeeded`）保留——它是任何绕过异步入口的新调用点的绊线。
 
 Textual 的 `App.run_test()` + `Pilot` 直接断言**widget 状态**——这正是行内
 实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。三个文件都用

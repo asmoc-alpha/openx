@@ -36,7 +36,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from ...ui._components.dialogs import TuiInputNeeded
-from ...ui._components.prompt import paste_aware_input
 
 if TYPE_CHECKING:
     from ...agent import OpenXAgent
@@ -983,6 +982,14 @@ async def _cmd_clear(agent, console, args):
         workspace=agent.hooks.workspace,
         session_id=agent.hooks.session_id,
     ))
+    app = getattr(console, "_tui", None)
+    if app is not None:
+        # 全屏 TUI：清屏 = 移除转录的全部 widget（raw.clear 在 TUI 下只落
+        # 进 sink 的测量 StringIO，屏清不掉）；标题/状态行照常打印。
+        app.clear_transcript()
+        console.print_header(instructions_loaded=agent.instructions.has_any)
+        console.print_status_line()
+        return True
     console.raw.clear()
     console.print_header(instructions_loaded=agent.instructions.has_any)
     console.print_status_line()
@@ -1121,10 +1128,9 @@ async def _cmd_set_role_model(agent, console, target: str) -> Optional[bool]:
 
     console.raw.print()
     default = f"[dim][{cur}][/dim] " if cur else ""
-    value = paste_aware_input(
-        console.raw,
-        f"  [{PROMPT_STYLE}]New {role_key} model[/{PROMPT_STYLE}] {default}: ",
-    ).strip()
+    value = (await console.ask_text_async(
+        f"  [{PROMPT_STYLE}]New {role_key} model[/{PROMPT_STYLE}] {default}: "
+    )).strip()
     if not value:
         console.print_info("Aborted.")
         return True
@@ -1458,12 +1464,12 @@ async def _cmd_config(agent, console, args):
         agent._rebuild_llm()
         return True
 
-    def _add_model_group() -> None:
+    async def _add_model_group() -> None:
         console.raw.print("\n[bold]Add Model Group[/bold]\n")
-        name = paste_aware_input(console.raw,
+        name = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Group name[/{PROMPT_STYLE}] "
             f"[dim](letters/digits/./_/-)[/dim]: "
-        ).strip()
+        )).strip()
         if not name:
             console.print_warning("Group name cannot be empty — skipped.")
             return
@@ -1471,21 +1477,21 @@ async def _cmd_config(agent, console, args):
         if name in groups:
             console.print_warning(f"Group '{name}' already exists.")
             return
-        model = paste_aware_input(console.raw,
+        model = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Main model[/{PROMPT_STYLE}] "
             f"[dim](required)[/dim]: "
-        ).strip()
+        )).strip()
         if not model:
             console.print_warning("Main model cannot be empty — skipped.")
             return
-        api_base = paste_aware_input(console.raw,
+        api_base = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]API base URL[/{PROMPT_STYLE}] "
             f"[dim](Enter to skip)[/dim]: "
-        ).strip()
-        api_key = paste_aware_input(console.raw,
+        )).strip()
+        api_key = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]API key[/{PROMPT_STYLE}] "
             f"[dim](Enter to skip; env-var fallback applies)[/dim]: "
-        ).strip()
+        )).strip()
         group: dict = {"kind": "openai-compat", "openx-main-model": model}
         if api_base:
             group["apiBase"] = api_base
@@ -1500,17 +1506,14 @@ async def _cmd_config(agent, console, args):
 
     _ROLE_CHOICES = ["exec", "mini", "modal"]
 
-    def _pick_role() -> str | None:
+    async def _pick_role() -> str | None:
         """在 exec/mini/modal 里选角色；取消返回 None。"""
         options = [(r, r) for r in _ROLE_CHOICES]
         options.append(("Cancel", None))
         console.raw.print()
-        try:
-            picked = console._interactive_select(
-                options, default_index=0, prompt="Role:",
-            )
-        except (KeyboardInterrupt, EOFError):
-            return None
+        picked = await console.select_async(
+            options, default_index=0, prompt="Role:",
+        )
         return picked
 
     def _role_key(role: str) -> str:
@@ -1518,12 +1521,12 @@ async def _cmd_config(agent, console, args):
 
         return canonical_role(role) or role
 
-    def _prompt_new_role_model(role: str) -> None:
+    async def _prompt_new_role_model(role: str) -> None:
         console.raw.print()
-        value = paste_aware_input(console.raw,
+        value = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]{role} model[/{PROMPT_STYLE}] "
             f"[dim](type - to clear back to main)[/dim]: "
-        ).strip()
+        )).strip()
         if value == "-":
             _clear_role(role)  # 显式清除：回到 main 回落
             return
@@ -1549,8 +1552,8 @@ async def _cmd_config(agent, console, args):
             agent._rebuild_llm()
         console.print_success(f"{role} cleared (falls back to main)")
 
-    def _edit_role_cred() -> None:
-        role = _pick_role()
+    async def _edit_role_cred() -> None:
+        role = await _pick_role()
         if not role:
             return
         options = [
@@ -1559,26 +1562,23 @@ async def _cmd_config(agent, console, args):
             ("Cancel", None),
         ]
         console.raw.print()
-        try:
-            field = console._interactive_select(
-                options, default_index=0, prompt=f"{role} override:",
-            )
-        except (KeyboardInterrupt, EOFError):
-            return
+        field = await console.select_async(
+            options, default_index=0, prompt=f"{role} override:",
+        )
         if field not in ("key", "base"):
             return
         label = "API key" if field == "key" else "API base URL"
         console.raw.print()
-        value = paste_aware_input(console.raw,
+        value = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]{role} {label}[/{PROMPT_STYLE}] "
             f"[dim](Enter empty to clear override)[/dim]: "
-        ).strip()
+        )).strip()
         if agent.set_role_cred(role, "api_key" if field == "key" else "api_base", value):
             console.print_success(
                 f"{role} {label} override {'set' if value else 'cleared'}"
             )
 
-    def _delete_model_group() -> None:
+    async def _delete_model_group() -> None:
         groups = OpenXConfig.load_model_groups_raw()
         active = _active_group_name()
         candidates = [n for n in groups if n != active]
@@ -1590,12 +1590,9 @@ async def _cmd_config(agent, console, args):
         options = [(n, n) for n in candidates]
         options.append(("Cancel", None))
         console.raw.print()
-        try:
-            picked = console._interactive_select(
-                options, default_index=0, prompt="Delete group:",
-            )
-        except (KeyboardInterrupt, EOFError):
-            return
+        picked = await console.select_async(
+            options, default_index=0, prompt="Delete group:",
+        )
         if not picked:
             return
         raw = OpenXConfig.load_model_groups_raw()
@@ -1607,57 +1604,56 @@ async def _cmd_config(agent, console, args):
     _show()
     while True:
         console.raw.print()
-        try:
-            choice = console._interactive_select(
-                [
-                    ("Change main model", "model"),
-                    ("Change exec model", "role:exec"),
-                    ("Change mini model", "role:mini"),
-                    ("Change modal model", "role:modal"),
-                    ("Role key/base override", "role_cred"),
-                    ("Shared API base URL", "base"),
-                    ("Shared API key", "key"),
-                    ("Add model group", "add_group"),
-                    ("Switch active group", "switch_group"),
-                    ("Delete model group", "del_group"),
-                    ("Done", None),
-                ],
-                default_index=0,
-                prompt="Configure:",
-            )
-        except (KeyboardInterrupt, EOFError):
-            return True
+        choice = await console.select_async(
+            [
+                ("Change main model", "model"),
+                ("Change exec model", "role:exec"),
+                ("Change mini model", "role:mini"),
+                ("Change modal model", "role:modal"),
+                ("Role key/base override", "role_cred"),
+                ("Shared API base URL", "base"),
+                ("Shared API key", "key"),
+                ("Add model group", "add_group"),
+                ("Switch active group", "switch_group"),
+                ("Delete model group", "del_group"),
+                ("Done", None),
+            ],
+            default_index=0,
+            prompt="Configure:",
+        )
+        if choice is None:
+            break
         if choice == "model":
             console.raw.print()
-            value = paste_aware_input(console.raw,
+            value = (await console.ask_text_async(
                 f"  [{PROMPT_STYLE}]Main model[/{PROMPT_STYLE}] [dim][{c.model}][/dim]: "
-            ).strip()
+            )).strip()
             if value and agent.set_role_model("main", value):
                 console.print_success(f"Main model set to {value}")
         elif isinstance(choice, str) and choice.startswith("role:"):
-            _prompt_new_role_model(choice[5:])
+            await _prompt_new_role_model(choice[5:])
         elif choice == "role_cred":
-            _edit_role_cred()
+            await _edit_role_cred()
         elif choice == "base":
             console.raw.print()
-            value = paste_aware_input(console.raw,
+            value = (await console.ask_text_async(
                 f"  [{PROMPT_STYLE}]Shared API base URL[/{PROMPT_STYLE}] "
                 f"[dim][{psettings.get('api_base', '')}][/dim]: "
-            ).strip()
+            )).strip()
             if value and _edit_active_group(api_base=True, value=value):
                 console.print_success(f"Shared API base set to {value}")
         elif choice == "key":
             console.raw.print()
             _cur_key = psettings.get("api_key", "")
             disp = mask_key(_cur_key) if _cur_key else "(not set)"
-            value = paste_aware_input(console.raw,
+            value = (await console.ask_text_async(
                 f"  [{PROMPT_STYLE}]Shared API key[/{PROMPT_STYLE}] "
                 f"[dim][{disp}][/dim]: "
-            ).strip()
+            )).strip()
             if value and _edit_active_group(api_base=False, value=value):
                 console.print_success("Shared API key updated")
         elif choice == "add_group":
-            _add_model_group()
+            await _add_model_group()
         elif choice == "switch_group":
             groups_raw = OpenXConfig.load_model_groups_raw()
             if not groups_raw:
@@ -1669,16 +1665,13 @@ async def _cmd_config(agent, console, args):
             ]
             options.append(("Cancel", None))
             console.raw.print()
-            try:
-                picked = console._interactive_select(
-                    options, default_index=0, prompt="Switch active group:",
-                )
-            except (KeyboardInterrupt, EOFError):
-                continue
+            picked = await console.select_async(
+                options, default_index=0, prompt="Switch active group:",
+            )
             if picked:
                 _switch_group(agent, console, picked)
         elif choice == "del_group":
-            _delete_model_group()
+            await _delete_model_group()
         else:
             break
     _show()
@@ -1729,12 +1722,9 @@ async def _cmd_release_notes(agent, console, args):
     ]
     options.append(("All versions", None))
     console.raw.print()
-    try:
-        choice = console._interactive_select(
-            options, default_index=0, prompt="View:",
-        )
-    except (KeyboardInterrupt, EOFError):
-        return True
+    choice = await console.select_async(
+        options, default_index=0, prompt="View:",
+    )
     if choice is None:
         console.print_release_notes()
     else:
@@ -1854,28 +1844,28 @@ async def _cmd_mcp(agent, console, args):
     # ── /mcp add — 交互式安装一个新的 MCP server ──────────────
     if subcmd == "add":
         console.raw.print("\n[bold]Install MCP Server[/bold]\n")
-        name = paste_aware_input(console.raw, 
+        name = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Server name[/{PROMPT_STYLE}] "
             f"[dim](e.g. filesystem, github, brave-search)[/dim]: "
-        ).strip()
+        )).strip()
         if not name:
             console.print_warning("Server name cannot be empty — skipped.")
             return True
-        command = paste_aware_input(console.raw, 
+        command = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Command[/{PROMPT_STYLE}] "
             f"[dim](e.g. npx, node, python, docker)[/dim]: "
-        ).strip()
+        )).strip()
         if not command:
             console.print_warning("Command cannot be empty — skipped.")
             return True
-        args_str = paste_aware_input(console.raw, 
+        args_str = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Arguments[/{PROMPT_STYLE}] "
             f"[dim](space-separated, e.g. -y @modelcontextprotocol/server-filesystem /tmp)[/dim]: "
-        ).strip()
-        env_str = paste_aware_input(console.raw, 
+        )).strip()
+        env_str = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Environment vars[/{PROMPT_STYLE}] "
             f"[dim](KEY=VALUE space-separated, Enter to skip)[/dim]: "
-        ).strip()
+        )).strip()
 
         server_cfg: dict = {"command": command}
         if args_str:
@@ -1910,12 +1900,9 @@ async def _cmd_mcp(agent, console, args):
             ]
             options.append(("Cancel", None))
             console.raw.print()
-            try:
-                choice = console._interactive_select(
-                    options, default_index=0, prompt="Remove server:",
-                )
-            except (KeyboardInterrupt, EOFError):
-                return True
+            choice = await console.select_async(
+                options, default_index=0, prompt="Remove server:",
+            )
             if choice and OpenXConfig.delete_mcp_server(choice):
                 console.print_success(f"Removed MCP server: {choice}")
             return True
@@ -2078,26 +2065,26 @@ async def _cmd_skill(agent, console, args):
     # ── /skill add — 交互式创建新 skill ─────────────────────
     if subcmd == "add":
         console.raw.print("\n[bold]Create New Skill[/bold]\n")
-        name = paste_aware_input(console.raw, 
+        name = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Skill name[/{PROMPT_STYLE}] "
             f"[dim](e.g. docker-expert, api-designer)[/dim]: "
-        ).strip()
+        )).strip()
         if not name:
             console.print_warning("Skill name cannot be empty — skipped.")
             return True
-        description = paste_aware_input(console.raw, 
+        description = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Description[/{PROMPT_STYLE}] "
             f"[dim](what this skill does)[/dim]: "
-        ).strip()
-        trigger_str = paste_aware_input(console.raw, 
+        )).strip()
+        trigger_str = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Trigger keywords[/{PROMPT_STYLE}] "
             f"[dim](comma-separated, Enter to skip)[/dim]: "
-        ).strip()
+        )).strip()
         triggers = [t.strip() for t in trigger_str.split(",") if t.strip()] if trigger_str else []
-        tools_str = paste_aware_input(console.raw, 
+        tools_str = (await console.ask_text_async(
             f"  [{PROMPT_STYLE}]Pre-approved tools[/{PROMPT_STYLE}] "
             f"[dim](comma-separated, Enter to skip)[/dim]: "
-        ).strip()
+        )).strip()
         allowed_tools = (
             [t.strip() for t in tools_str.split(",") if t.strip()] if tools_str else []
         )
@@ -2107,10 +2094,9 @@ async def _cmd_skill(agent, console, args):
         )
         content_lines: list[str] = []
         while True:
-            try:
-                line = paste_aware_input(console.raw, "  ")
-            except (KeyboardInterrupt, EOFError):
-                break
+            # 行内：cbreak 逐行读；TUI：每行一个 TextScreen 模态（朴素但
+            # 可用——多行编辑器的 widget 化是 stage 3 的输入行工作）。
+            line = await console.ask_text_async("  Instructions line")
             if not line.strip():
                 break
             content_lines.append(line)
@@ -2125,12 +2111,9 @@ async def _cmd_skill(agent, console, args):
             ("Project (.openx/skills/)", "project"),
         ]
         console.raw.print()
-        try:
-            scope = console._interactive_select(
-                scope_options, default_index=0, prompt="Install to:",
-            )
-        except (KeyboardInterrupt, EOFError):
-            return True
+        scope = await console.select_async(
+            scope_options, default_index=0, prompt="Install to:",
+        )
         global_install = scope == "global"
 
         skill = install_skill_from_content(
@@ -2161,12 +2144,9 @@ async def _cmd_skill(agent, console, args):
             ]
             options.append(("Cancel", None))
             console.raw.print()
-            try:
-                choice = console._interactive_select(
-                    options, default_index=0, prompt="Remove skill:",
-                )
-            except (KeyboardInterrupt, EOFError):
-                return True
+            choice = await console.select_async(
+                options, default_index=0, prompt="Remove skill:",
+            )
             if choice:
                 if uninstall_skill(choice, workspace=str(agent.workspace)):
                     agent.reload_skills()
