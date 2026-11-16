@@ -20,7 +20,9 @@ import pytest
 
 pytest.importorskip("textual", reason="--tui 依赖 textual")
 
-from openx.config import OpenXConfig
+from textual.widgets import Input                                      # noqa: E402
+
+from openx.config import OpenXConfig                                   # noqa: E402
 from openx.tui.app import OpenXTui
 from openx.tui.blocks import ThinkingBlock, ToolBlock, markdown_answer
 from openx.tui.sink import TuiSink
@@ -80,6 +82,59 @@ class TestCollapsibleClick:
             await pilot.press("ctrl+t")
             await pilot.pause()
             assert all(b.collapsed is True for b in blocks)
+
+
+# ── 1b. 点击不抢焦点：任何点击之后输入行都得照常收键 ────────────────
+
+
+class TestClickKeepsInputFocus:
+    """点击转录 / 块标题后输入行必须照常收键（回归：点一下就打不了字）。
+
+    Textual 会把焦点交给被点的可聚焦控件——``VerticalScroll`` 的转录容器
+    与 ``CollapsibleTitle`` 都可聚焦。焦点一旦离开输入行，字符、Enter、
+    ``/quit`` 全部失效，界面对用户表现为"无法输入"。滚轮滚动与点击展开
+    本就不需要焦点（事件按指针位置分发），所以正确语义是焦点永远留在
+    输入行；模态屏有自己的焦点语义，不在本类覆盖范围（见 test_dialogs）。
+    """
+
+    async def test_transcript_container_is_not_focusable(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 24)):
+            transcript = app.query_one("#transcript")
+            assert transcript.can_focus is False, (
+                "转录容器不可聚焦——可聚焦时点一下转录就抢走输入行的焦点"
+            )
+
+    async def test_click_transcript_keeps_input_focus_and_typing(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.write_widget(ThinkingBlock())
+            await pilot.pause()
+            prompt = app.query_one("#prompt", Input)
+            assert prompt.has_focus
+
+            await pilot.click("#transcript", offset=(10, 3))
+            await pilot.pause()
+            assert app.focused is prompt, "点击转录不得移动焦点"
+
+            await pilot.press("h", "i")
+            await pilot.pause()
+            assert prompt.value == "hi", "点击后按键必须照常到达输入行"
+
+    async def test_click_block_title_returns_focus_to_input(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 24)) as pilot:
+            block = ThinkingBlock()
+            app.write_widget(block)
+            await pilot.pause()
+            prompt = app.query_one("#prompt", Input)
+
+            await pilot.click(type(_title_widget(block)))
+            await pilot.pause()
+            assert app.focused is prompt, "点开块之后焦点必须回到输入行"
+            await pilot.press("h", "i")
+            await pilot.pause()
+            assert prompt.value == "hi"
 
 
 # ── 2. 块内容语义：thinking 纯文本、答案走 Markdown ────────────────

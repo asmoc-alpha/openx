@@ -222,7 +222,11 @@ In a dialog: `↑`/`↓` move, `space` toggles (multi-select only), `Enter` conf
 
 Clicking a block's title bar toggles it; the vertical scrollbar and mouse wheel
 scroll the transcript, and the view stops following the bottom while you are
-reading history.
+reading history. Clicks never move focus off the input line: the transcript
+container and dialog bodies are non-focusable, and a click anywhere on the
+main screen hands focus back to the prompt — typing keeps working right after
+a click (`Tab` still walks the focus chain; a focused title still toggles on
+`Enter`).
 
 ## Limits
 

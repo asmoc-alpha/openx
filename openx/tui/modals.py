@@ -48,6 +48,17 @@ _OTHER = "__other__"
 _OTHER_LABEL = "Other (type your own)"
 
 
+class _BodyScroll(VerticalScroll):
+    """弹窗正文的滚动容器 —— **不可聚焦**（同主转录，见 ``tui/app.py``）。
+
+    正文常是超长 diff 预览；点它一下（选段文字）若把焦点从选项表抢走，
+    ``Enter`` 就不再确认、弹窗半死。关掉可聚焦性，点击只是无效操作，
+    ``Esc``/``Enter`` 照常落在屏与选项表上。
+    """
+
+    can_focus = False
+
+
 class ChoiceScreen(ModalScreen[Any]):
     """选项屏：标题 + 可选正文 + 选项表。单选返回值，多选返回列表。
 
@@ -94,7 +105,7 @@ class ChoiceScreen(ModalScreen[Any]):
             yield Static(Text(self._title_text, style="bold white"),
                          id="modal-title")
             if self._body is not None:
-                with VerticalScroll(id="modal-body"):
+                with _BodyScroll(id="modal-body"):
                     yield Static(self._body, id="modal-body-text")
             yield OptionList(
                 *[

@@ -4,6 +4,20 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.32 — Clicks can no longer kill the input
+
+- **Fixed: one click on the transcript bricked the input line.** Textual hands
+  focus to whatever focusable widget you click — the `VerticalScroll` transcript
+  container and `CollapsibleTitle` block titles included. After such a click no
+  key reached the input at all (characters, `Enter`, `/quit`); with the
+  full-screen TUI now the default interface this read as "can't type anymore"
+- The transcript container and dialog bodies (`#modal-body`) are now
+  non-focusable, and a click anywhere on the main screen returns focus to the
+  prompt — typing works right after clicking a thinking block open or
+  scrolling. Wheel scrolling and title-click toggling still work (they dispatch
+  by pointer position and never needed focus); modals keep their own focus
+  semantics (`OptionList` / `#modal-input`)
+
 ## 0.1.31 — Full-screen TUI becomes the default
 
 ### The flip

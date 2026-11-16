@@ -178,6 +178,20 @@ class PromptInput(Input):
         menu.refresh_for(self.value)
 
 
+class Transcript(VerticalScroll):
+    """转录滚动容器 —— **不可聚焦**（``can_focus = False``）。
+
+    Textual 的可滚动容器默认可聚焦（为了键盘滚动）。但聊天界面里点一下
+    转录（想选段文字，或纯属肌肉记忆）就会把焦点从输入行抢到 ``#transcript``
+    上——此后**所有**按键（字符、Enter、``/quit``）都到不了输入行，界面对
+    用户表现为"无法输入"；而且回看历史是滚轮的事（事件按指针位置派发，
+    不需要焦点），键盘滚动在这里没有意义。整体关掉可聚焦性，输入行永不
+    因点击失焦。
+    """
+
+    can_focus = False
+
+
 class OpenXTui(App[None]):
     """OpenX 的全屏终端界面：转录 + 状态行 + 输入框 + 键位。"""
 
@@ -325,7 +339,7 @@ class OpenXTui(App[None]):
     # ── 生命周期 ────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="transcript")
+        yield Transcript(id="transcript")
         yield StatusLine(id="spinner")
         yield PromptInput(placeholder=IDLE_PLACEHOLDER, id="prompt")
         yield SlashMenu()
@@ -340,6 +354,22 @@ class OpenXTui(App[None]):
 
     def on_resize(self) -> None:
         self._sync_sink_size()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        """主屏上的点击永不把焦点从输入行带走（聊天界面惯例）。
+
+        Textual 会把焦点交给被点的可聚焦控件（``CollapsibleTitle`` 等；
+        转录容器已在 :class:`Transcript` 里关掉可聚焦性），输入行从此
+        收不到任何按键——用户表现为“点了一下就打不了字”。滚轮滚动、
+        块标题点击都按指针位置分发、不需要焦点，所以功能照旧；这里在
+        冒泡到 app 的 MouseDown 上把焦点还给 ``#prompt``。模态屏有
+        自己的焦点语义（选项表 / ``#modal-input``），不介入。
+        """
+        if len(self.screen_stack) > 1:
+            return
+        with contextlib.suppress(Exception):
+            if self.focused is not self.query_one("#prompt", Input):
+                self.query_one("#prompt", Input).focus()
 
     # ── 输出缝 ──────────────────────────────────────────────────
 

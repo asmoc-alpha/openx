@@ -623,3 +623,22 @@ class TestScreenDetails:
             await _settle(pilot)
             assert _modal(app) is None
             assert not list(app.query(ChoiceScreen))
+
+    async def test_click_body_keeps_option_list_focus(self):
+        """点正文（diff 预览）不得抢走选项表焦点——否则 Enter 不再确认。
+
+        主界面的同类回归在 tests/tui/test_spike.py（TestClickKeepsInputFocus）；
+        这里钉弹窗侧：正文滚动容器不可聚焦，点击后 ``Enter`` 照常确认。
+        """
+        app = OpenXTui()
+        async with app.run_test(size=(100, 34)) as pilot:
+            task = asyncio.create_task(app.ask_permission("bash", "run tests"))
+            await _settle(pilot)
+            body = _modal(app).query_one("#modal-body")
+            assert body.can_focus is False, "弹窗正文必须不可聚焦"
+            await pilot.click(body, offset=(5, 1))
+            await pilot.pause()
+            options = _modal(app).query_one("#modal-options")
+            assert app.focused is options, "点正文不得抢走选项表的焦点"
+            await pilot.press("enter")
+            assert await asyncio.wait_for(task, 5) == (True, False)
