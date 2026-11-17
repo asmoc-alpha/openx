@@ -15,10 +15,10 @@ arithmetic against a region the program does not own. It is kept as an escape
 hatch (`--inline`), not as a peer surface.
 
 > **Status: default interface.** Streaming, collapsible thinking/tool blocks,
-> `Esc` interrupt, the multi-line input line (history + slash-command menu) and
-> the permission / plan-approval / `ask_user` modal dialogs all run in the app.
-> Remaining gap: the decks (plan / queue / fleet / plugin panels) render as
-> transcript text (see [Limits](#limits)).
+> `Esc` interrupt, the multi-line input line (history + slash-command menu), the
+> pinned decks (plan / queue / agents / plugin panels) and the permission /
+> plan-approval / `ask_user` modal dialogs all run in the app. Remaining gaps are
+> listed under [Limits](#limits).
 
 ```bash
 openx                          # full-screen interface (default)
@@ -38,9 +38,22 @@ python -m openx.tui            # offline demo: no model, no network
 │  ▸ ● grep (pattern=…)                                   │
 │  answer (Rich Markdown, math pre-rendered)              │
 ├─────────────────────────────────────────────────────────┤
+│   Plan 1/3                                  ← #plan-deck│  plan + queue
+│     ✓ read the streaming layer                          │
+│     ✻ wire the decks                                    │
+│   Queue (1)                                             │
+│     ▸ also update the docs                              │
+├─────────────────────────────────────────────────────────┤
 │  ✻ Thinking…  (3.4s)  ·  esc to interrupt               │  status line
 ├─────────────────────────────────────────────────────────┤
 │  Ask OpenX…   (/ pops the slash-command menu)           │  PromptEditor + SlashMenu
+├─────────────────────────────────────────────────────────┤
+│   Agents (2)                              ← #agents-deck│  agents + plugins
+│  ❯0 main · main answer                                  │
+│   1 ✻ explore streaming · 3 tools · 4s                  │
+│        ⎿  read_file(services/streaming.py)              │
+│   2 ✓ review docs · 5 tools · 9s                        │
+│  (^_^) demo-pet · frame 12                              │
 └─────────────────────────────────────────────────────────┘
 
 No footer: `Ctrl+Q` / `Ctrl+R` / `Ctrl+T` still work but are never displayed
@@ -202,6 +215,55 @@ history — a one-shot modal that recalls the transcript's commands is confusing
 and keeps the conservative contract: empty input means unanswered, `Esc` means
 `None`.
 
+## Decks
+
+The four status panels the inline implementation renders inside its `Live` region
+— **Plan** (the agent's to-do list), **Queue** (messages typed during a turn),
+**Agents** (the subagent fleet) and **plugin `ui.panel` slots** — became widgets:
+`#plan-deck` above the status line, `#agents-deck` below the input line. Nothing
+about the *data* moved: `TuiStream.start()` hands the same three providers the
+inline service gets from `_make_display` to `app.attach_decks`, and the app
+renders them on a 5 Hz timer (the same cadence as the inline `Live`).
+
+**One shared line format.** `openx/ui/_deck.py` builds the rows — Plan's three
+states with `activeForm` for the running item, the fold-to-one-line summary when
+everything is done, Queue's FIFO listing, Agents' leading main entry plus an
+activity line (`⎿ tool(summary)`) under each *running* subagent, plugin panels
+with `svg:` lines skipped and bad markup isolated per panel. The two surfaces
+differ only in **budget** (how many rows they can spend) and **placement** (above
+or below the frame); `StreamingService._deck_renderable` and friends are now thin
+wrappers around the same functions, so "the panels look the same in both
+interfaces" is a property of the code rather than a maintenance promise. The
+spinner glyph moved to `ui/_style.py` for the same reason.
+
+**Budget.** The inline side subtracts from the viewport because its `Live` region
+is an absolute row count. The full-screen side takes the smaller of
+`height // 4` and `(height - chrome - gaps - 3) // 2` — the ratio keeps the two
+decks inside half the screen, the subtraction guarantees a transcript of at least
+three rows (on a 12-row terminal the ratio alone would leave the transcript one
+row). `DeckSource` also clamps each deck to its budget exactly: the shared plugin
+renderer is allowed to exceed its row budget by one (that is pinned inline
+behaviour), so the strictly-bounded invariant is enforced by the caller that
+owns the viewport.
+
+**Visibility differs from inline on purpose.** Inline hides everything when the
+turn ends — a side effect of the `Live` region, not a requirement. Here:
+
+| Deck | When it shows |
+|---|---|
+| Plan / Queue | whenever there is something to show — the to-do list outlives the turn |
+| Agents | only while a turn is running (`fleet.reset()` empties it per turn) |
+| Plugin panels | whenever they render — a `ui.panel` pet or monitor is meant to be resident |
+
+**Geometry is explicit.** `DeckView` writes `styles.height = len(rows)` instead of
+trusting auto-height (deck rows are `no_wrap`, so one row is one line), hides
+itself via `display: none` when empty — which also drops its margin, exactly
+equivalent to the inline rule that the `_DECK_SPINNER_GAP` row only exists while
+the deck does — and never adds or removes children at runtime (the `SlashMenu` lesson:
+a container that briefly renders an empty visual crashes `render_strips`). When a
+deck changes height the app re-pins the transcript to the bottom, so growth does
+not silently stop the follow-scroll.
+
 ## Dialogs
 
 The inline prompts are the part of the old surface that a widget tree cannot
@@ -311,11 +373,12 @@ a click (`Tab` still walks the focus chain; a focused title still toggles on
 - The TUI is mutually exclusive with `--serve` and with a one-shot prompt
   argument — those surfaces own stdout in ways a full-screen app cannot share
   (use `--inline` with a prompt if you need the inline surface).
-- Plugin UI panels (`ctx.register_ui_slot`), the subagent fleet deck and the
-  plan/queue deck are inline-only for now: their renderers write through
-  `Console`, so their output shows up in the transcript as text rather than as a
-  pinned panel. The `TuiStream` constructor carries the to-do/fleet/panel
-  arguments and ignores them.
+- **The Agents panel is read-only here.** The inline deck has `↓` selection and
+  `Ctrl+O` for a subagent detail view; in a full-screen surface that means
+  swapping out the whole transcript, which is a different feature. The Agents
+  header therefore does not advertise those keys (the shared renderer takes a
+  `hints` flag) — a header must never promise keys that do nothing. Toggling,
+  scrolling and `Esc` are unaffected.
 - Long answers re-render as Markdown at 10 Hz while streaming; a very long answer
   on a slow terminal is correspondingly heavier than the inline line-commit path.
 
@@ -362,9 +425,24 @@ submissions land in the history file — including that repeats and blank lines 
 not. `tests/tui/conftest.py` points `HISTORY_PATH` at `tmp_path` for the whole
 directory, so no test writes into the user's real `~/.openx/history`.
 
+`tests/tui/test_deck.py` covers the status layer on both sides of the split. The
+pure half (`ui/_deck.py`, no app) pins the row semantics: plan's three states and
+`activeForm`, the fold-to-one-line summary, `+N more` overflows, queue FIFO and
+its count, the shared plan/queue budget (and that the larger block shrinks
+first), fleet rows with the activity line counted toward the budget, `hints`
+turning the `↓ select · ↵ view` hint off, plugin panels skipping `svg:` lines and
+dropping only the panel with bad markup, and every provider failing open. The
+widget half pins `DeckView` (hidden when empty without spending a row, height
+equal to the row count, no wrapping, click never stealing the input focus), the
+compose order (`plan-deck` above the status line above the prompt above
+`agents-deck`), the per-turn lifecycle (`TuiStream.start()` fills all four decks,
+`TurnEnd` retires Agents while Plan and plugin panels stay, `todos[:] = …` shows
+up on the next tick, the fleet is reset per turn) and a 12-row terminal where both
+decks stay inside their budget and the transcript keeps its three rows.
+
 Textual's `App.run_test()` + `Pilot` assert **widget state** directly, which is
 what the inline implementation cannot do — there, stream rendering is verified
-through `pyte` screen snapshots. All four files are
+through `pyte` screen snapshots. All five files are
 `pytest.importorskip("textual")`-guarded, so the default path never goes red for a
 missing optional dependency.
 

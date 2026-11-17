@@ -12,6 +12,8 @@
   ``StreamingService`` 同面的显示服务，只入队、不碰终端）。
 - :mod:`openx.tui.view` —— 事件 → widget 的管线（只在 app 定时器里驱动）。
 - :mod:`openx.tui.blocks` —— 可折叠块：thinking / 工具调用 / 状态行。
+- :mod:`openx.tui.deck` —— 状态层（deck）：计划 / 队列 / Agents / 插件面板
+  的取数与承载；行格式与行内共用 ``ui/_deck.py``。
 - :mod:`openx.tui.prompt` —— 输入行（``TextArea`` 之上：多行编辑 + 历史 +
   斜杠菜单键位）。
 - :mod:`openx.tui.history` —— 输入历史存储（与行内 REPL 共用
@@ -20,9 +22,9 @@
 - :mod:`openx.tui.app` —— app 主体：排空、输入缝、按键、演示脚本。
 
 已落地：输出/输入/会话三缝、可折叠块、流式答案与思考、Esc 打断、排队输入、
-多行输入行 + 历史、模态弹窗与 slash 菜单。仍未迁移（均以行内实现为准）：
-**fleet 面板与插件 ``ui.panel`` 的 widget 化**（它们的渲染走 ``Console``，
-于是以文本形式落进转录）。
+多行输入行 + 历史、状态层 deck（计划 / 队列 / Agents / 插件面板）、模态弹窗与
+slash 菜单。行内实现仍在（``--inline`` 逃生门），两套界面共用同一批渲染原语
+（``ui/_style.py`` 的字形与 ``ui/_deck.py`` 的 deck 行）。
 
 设计纪律（沿既有架构约定）：
 

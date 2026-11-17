@@ -82,8 +82,8 @@ openx/
 │   │   ├── interrupt.py   # Interrupt controller (signals / Esc / client interrupt)
 │   │   ├── eval_export.py # Trajectory → eval JSONL export (cost fields; /export-eval)
 │   │   └── exploration.py # Project overview detection
-│   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture
-│   ├── tui/               # Full-screen TUI (default interface, Textual): app, collapsible blocks, sink, modal dialogs
+│   ├── ui/                # Rich TUI: console, inline prompt frame, dialogs, input capture, shared deck lines
+│   ├── tui/               # Full-screen TUI (default interface, Textual): app, collapsible blocks, decks, input editor, sink, modal dialogs
 │   └── utils/             # Path, text, and error helpers
 ├── tests/                 # Subdirs mirror the openx/ layout (orchestration/ kernel/ serve/ llm/ services/ tools/ ui/ tui/ mcp/)
 ├── docs/

@@ -32,6 +32,7 @@ Textual，于是 Esc 是 app 的 key binding（:meth:`openx.tui.app.OpenXTui
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from dataclasses import dataclass
@@ -153,10 +154,19 @@ def _clip(text: str, limit: int) -> str:
 class TuiStream:
     """``StreamingService`` 的全屏对位：事件入队，widget 由 app 变更。
 
-    ``todos_provider`` / ``fleet`` / ``panels`` / ``tool_lookup`` 为接口兼容
-    参数（交互层的构造点与行内共用一份调用），当前**收下不使用**：计划
-    面板、舰队面板与插件面板的 widget 化是后续阶段；文本操作的变更前
-    对比同理由此暂缺。
+    三件事与行内同源：
+
+    - **事件**：``feed()`` 把 chunk 归一成 :class:`Answer` / :class:`Reasoning`
+      / :class:`ToolStarted` / :class:`ToolFinished` 入队，``StreamView`` 在
+      app 的排空节拍里落成 widget；
+    - **状态层（deck）**：``todos_provider`` / ``fleet`` / ``panels`` 在
+      ``start()`` 时交给 ``app.attach_decks``——计划、队列、Agents、插件面板
+      从此由 app 的 5Hz 定时器渲染（行格式与行内共用 ``ui/_deck.py``）；
+    - **舰队生命周期**：构造时 ``fleet.reset()``（与行内 ``StreamingService``
+      逐字同位置同理由——实例每轮新建，等于每轮重置）。
+
+    ``tool_lookup`` 仍是接口兼容参数（交互层的构造点与行内共用一份调用），
+    TUI 的工具块还没有内联 diff 预览。
     """
 
     def __init__(
@@ -176,12 +186,21 @@ class TuiStream:
         # 排空的队列，事件静默蒸发（widget 永远不出现）。
         queue = getattr(app, "stream_queue", None)
         self._queue: SinkQueue = queue if queue is not None else SinkQueue()
-        # 接口兼容参数（见类 docstring）：保留是为了让交互层的构造点无需分叉
-        self._input_tokens = input_tokens
+        # 状态层数据源：start() 时交给 app 的 deck 定时器渲染
         self._todos_provider = todos_provider
         self._fleet = fleet
         self._panels = panels
+        self._input_tokens = input_tokens
+        # 接口兼容参数（见类 docstring）：保留是为了让交互层的构造点无需分叉
         self._tool_lookup = tool_lookup
+        # 舰队每轮归零（与行内 ``StreamingService.__init__`` 同位置同理由：
+        # 显示服务实例每轮新建，构造即新一轮）。不做这一步，TUI 下 fleet
+        # 会跨轮累积——上一轮的子代理留在面板上，永远不下场。
+        if self._fleet is not None:
+            reset = getattr(self._fleet, "reset", None)
+            if callable(reset):
+                with contextlib.suppress(Exception):
+                    reset()
         self._t0 = 0.0
         self._done = False
         # ── Esc 打断（语义对齐 StreamingService）────────────────────
@@ -210,6 +229,13 @@ class TuiStream:
         except RuntimeError:
             self._loop = None  # 同步调用（测试）→ 打断降级 no-op
         self._app.set_interrupt(self.interrupt)
+        # 状态层接线（计划 / 队列 / Agents / 插件面板）：回合结束**不解线**
+        # ——计划与插件面板要继续留在屏上，Agents 的显隐由 app 看回合状态。
+        attach = getattr(self._app, "attach_decks", None)
+        if callable(attach):
+            with contextlib.suppress(Exception):
+                attach(todos=self._todos_provider, fleet=self._fleet,
+                       panels=self._panels)
         self._queue.push(StreamStart())
 
     def feed(self, chunk: Any) -> None:
@@ -226,8 +252,9 @@ class TuiStream:
             self._queue.push(Reasoning(chunk.text or ""))
         elif isinstance(chunk, ToolStartEvent):
             if chunk.name == "task":
-                # 起始不落块：子代理运行动态属舰队面板（Stage 4）。描述暂存
-                # 供结果回显的标题行——回显是该报告在转录里的唯一记录。
+                # 起始不落块：子代理运行动态归 Agents 面板（``tui/deck.py``）。
+                # 描述暂存供结果回显的标题行——回显是该报告在转录里的唯一
+                # 记录。
                 self._pending_task_desc.append(arg_summary(chunk.arguments))
             else:
                 self._queue.push(ToolStarted(

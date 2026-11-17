@@ -12,9 +12,9 @@ scrollback 就再也改不了，于是"折叠这段 thinking"、"窗口大小变
 作为逃生门保留（`--inline`），不再是平级界面。
 
 > **状态：默认界面。** 流式、可折叠的 thinking/工具块、`Esc` 打断、多行
-> 输入行（历史 + slash 命令菜单）与权限审批 / 计划批准 / `ask_user` 模态
-> 弹窗都在 app 里跑。仍存的缺口：deck（计划 / 队列 / 舰队 / 插件面板）以
-> 转录文本呈现（见[限制](#限制)）。
+> 输入行（历史 + slash 命令菜单）、钉住的状态层（计划 / 队列 / Agents /
+> 插件面板）与权限审批 / 计划批准 / `ask_user` 模态弹窗都在 app 里跑。仍存
+> 的缺口见[限制](#限制)。
 
 ```bash
 openx                          # 全屏界面（默认）
@@ -34,9 +34,22 @@ python -m openx.tui            # 离线演示：不起模型、不联网
 │  ▸ ● grep (pattern=…)                                  │
 │  答案（Rich Markdown，数学公式预转换）                   │
 ├───────────────────────────────────────────────────────┤
+│   Plan 1/3                                ← #plan-deck│  计划 + 队列
+│     ✓ 读完流式渲染层                                  │
+│     ✻ 接 deck 面板                                    │
+│   Queue (1)                                           │
+│     ▸ 顺便把文档也更新了                              │
+├───────────────────────────────────────────────────────┤
 │  ✻ Thinking…  (3.4s)  ·  esc to interrupt             │  状态行
 ├───────────────────────────────────────────────────────┤
 │  Ask OpenX…  （输入 / 弹出斜杠命令菜单）              │  PromptEditor + SlashMenu
+├───────────────────────────────────────────────────────┤
+│   Agents (2)                            ← #agents-deck│  Agents + 插件面板
+│  ❯0 main · main answer                                │
+│   1 ✻ explore streaming · 3 tools · 4s                │
+│        ⎿  read_file(services/streaming.py)            │
+│   2 ✓ review docs · 5 tools · 9s                      │
+│  (^_^) demo-pet · 第 12 帧                            │
 └───────────────────────────────────────────────────────┘
 
 没有 Footer：`Ctrl+Q` / `Ctrl+R` / `Ctrl+T` 照常生效，但不在屏幕上常驻展示
@@ -170,6 +183,45 @@ Textual 的 `Input`。理由只有一条，但很硬：`Input` 的文档模型�
 一行一个弹窗。它不接历史——一次性弹窗里翻转录的命令只会让人莫名其妙——并保留
 保守契约：空输入视为未作答，`Esc` 返回 `None`。
 
+## 状态层（deck）
+
+行内把四块状态面板塞进 `Live` 区域一帧一构——**计划**（agent 的 todos）、
+**队列**（流式期敲下的跟进消息）、**Agents**（子代理舰队）与**插件 `ui.panel`
+槽位**——全屏这边把它们做成常驻 widget：`#plan-deck` 在状态行之上、
+`#agents-deck` 在输入行之下。**数据一点没搬家**：`TuiStream.start()` 把
+`_make_display` 给行内的同三个 provider 交给 `app.attach_decks`，由 app 的 5Hz
+定时器渲染（与行内 `Live` 同节拍）。
+
+**行格式只有一份。** `openx/ui/_deck.py` 负责拼行——计划的三种状态（进行中用
+`activeForm`）、全部完成时折叠成单行汇总、队列的 FIFO 全列、Agents 的主条目
+（编号 0）+ 每个**运行中**子代理下面的活动行（`⎿ 工具(摘要)`）、插件面板跳过
+`svg:` 行并把坏 markup 隔离在单个面板内。两个界面的差别只剩**预算**（能花几
+行）与**摆放**（框上还是框下）：`StreamingService._deck_renderable` 那几个方法
+现在是同一批函数的薄包装，于是"两个界面看到的 deck 一样"是代码的性质，而不是
+一条要靠人守的维护承诺。转帧字形也同理下沉到了 `ui/_style.py`。
+
+**预算。** 行内是纯减法，因为 Rich `Live` 区域是绝对行数；全屏取
+`height // 4` 与 `(height - 固定件 - 间隙 - 3) // 2` 的较小者——比例保证两个
+deck 合计不吃掉半屏，减法保证转录至少三行（12 行终端上只按比例算，转录只剩一
+行）。`DeckSource` 还会把每段行**硬裁**到预算内：共享的插件渲染允许折叠行比预算
+多一行（那是行内被测试钉住的既有行为），"严格不超"这条由持有视口的那一侧补上。
+
+**可见性与行内故意不同。** 行内回合结束全部消失——那是 `Live` 区域的副作用，
+不是需求。这里：
+
+| 面板 | 何时显示 |
+|---|---|
+| Plan / Queue | 只要有内容就显示——待办列表本就跨轮存活 |
+| Agents | 只在回合进行中（`fleet.reset()` 每轮清空） |
+| 插件面板 | 只要渲染得出来就显示——`ui.panel` 的宠物/监控件按定义该常驻 |
+
+**几何是显式的。** `DeckView` 把 `styles.height` 写成 `len(rows)`，不赌框架的
+auto-height（deck 行恒 `no_wrap`，一行就是一个终端行）；空时用 `display: none`
+藏起来——margin 也随之消失，正是行内"`_DECK_SPINNER_GAP` 仅在 deck 在场时占位"
+的等价物；运行期**绝不增删子控件**（`SlashMenu` 踩过的坑：容器短暂以空 visual
+参与渲染会让 `render_strips` 崩）。deck 高度变化后 app 会补一次贴底滚动，
+免得"长高了就不再跟随"。
+
 ## 弹窗
 
 行内提示框是旧界面里 widget 树**无法共用**的那部分：`ui/_components/dialogs.py`
@@ -259,9 +311,10 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
   同样警告后回退；显式传 `--tui` 才以 2 退出并给安装指引。
 - TUI 与 `--serve`、以及一次性 prompt 参数互斥——那两条路径对 stdout 的
   占用方式，全屏 app 无法共享（要行内界面配 prompt 就加 `--inline`）。
-- 插件 UI 面板（`ctx.register_ui_slot`）、subagent fleet 面板与计划/队列 deck
-  目前仍是行内：它们的渲染走 `Console`，于是输出以文本形式落进转录，而不是
-  钉住的面板。`TuiStream` 把 todos/fleet/panels 参数收进构造但不使用。
+- **Agents 面板在这里是只读的。** 行内 deck 有 `↓` 选择与 `Ctrl+O` 子代理详情
+  视图；全屏界面里那意味着把整块转录换掉，是另一个功能。因此 Agents 头行不写
+  那两个键（共享渲染函数带 `hints` 开关）——头行绝不能承诺按不动的键。
+  折叠、滚动与 `Esc` 不受影响。
 - 长答案流式期按 10Hz 重渲 Markdown；慢终端上的超长答案因此比行内的逐行固化
   路径更重。
 
@@ -298,8 +351,19 @@ sink 投递、attach/detach，以及 `ask()` 契约（返回提交的文本，�
 `tests/tui/conftest.py` 把 `HISTORY_PATH` 指到 `tmp_path`（整个目录自动生效），
 因此没有用例会写进用户真实的 `~/.openx/history`。
 
+`tests/tui/test_deck.py` 覆盖状态层的两半。纯函数那半（`ui/_deck.py`，不需要
+app）钉住行语义：计划三态与 `activeForm`、全完成折叠成一行、`+N more` 折叠、
+队列 FIFO 与计数、计划/队列共享预算（且较大的块先让位）、舰队行（活动行计入
+预算）、`hints` 关掉 `↓ select · ↵ view` 提示、插件面板跳 `svg:` 且坏 markup
+只影响那一个面板、以及每个 provider 抛异常时的 fail-open。控件那半钉住
+`DeckView`（空则隐藏且不占行、高度等于行数、不折行、点击不夺输入行焦点）、
+compose 顺序（`plan-deck` → 状态行 → 输入行 → `agents-deck`）、回合生命周期
+（`TuiStream.start()` 后四块都在、`TurnEnd` 让 Agents 退场而计划与插件面板留存、
+`todos[:] = …` 下一拍可见、舰队每轮归零）以及 12 行小终端上两个 deck 都在预算
+内、转录仍留三行。
+
 Textual 的 `App.run_test()` + `Pilot` 直接断言**widget 状态**——这正是行内
-实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。四个文件都用
+实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。五个文件都用
 `pytest.importorskip("textual")` 守卫，默认路径不会因缺少可选依赖而红。
 
 依赖：`textual>=8,<9`（它要求 `rich>=14.2`，与本仓 `rich>=14,<16` 相容）。

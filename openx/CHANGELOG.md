@@ -4,6 +4,53 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.34 — The status decks become panels
+
+- **Plan, Queue, Agents and plugin `ui.panel` slots are pinned widgets now**
+  (`#plan-deck` above the status line, `#agents-deck` below the input line —
+  the same order the inline surface uses). `TuiStream` no longer swallows the
+  providers it was handed: `start()` hands `todos_provider` / `fleet` / `panels`
+  to `app.attach_decks`, and a 5 Hz timer renders them (the inline `Live`
+  cadence). `--tui` previously showed none of the four, and plugin panels were
+  never even collected
+- **One shared line format.** `openx/ui/_deck.py` builds the rows for both
+  surfaces — plan states with `activeForm`, the fold-to-one-line summary when
+  everything is done, queue FIFO, the fleet's main entry plus an activity line
+  under each running subagent, plugin panels with `svg:` lines skipped and bad
+  markup isolated per panel. `StreamingService._deck_renderable` / 
+  `_fleet_deck_renderable` / `_plugin_deck_renderable` are now thin wrappers, so
+  "both interfaces look the same" is a property of the code. The spinner glyph
+  moved to `ui/_style.py` alongside the marks for the same reason
+- **Budget and geometry are explicit.** `deck_budget(height)` takes the smaller
+  of `height // 4` and `(height - chrome - gaps - 3) // 2`, so two decks stay
+  inside half the screen *and* the transcript keeps at least three rows (a
+  12-row terminal would otherwise lose it entirely). `DeckView` writes
+  `styles.height = len(rows)` instead of trusting auto-height, hides via
+  `display: none` when empty (which drops its margin — the equivalent of the
+  inline "gap only while the deck is there" rule), and re-pins the transcript
+  scroll when its height changes
+- **Visibility is deliberately not turn-scoped**: Plan/Queue and plugin panels
+  stay as long as they have content (a `ui.panel` pet or monitor is meant to be
+  resident; `agent.todos` outlives the turn), while Agents shows only during a
+  turn — and the fleet is now `reset()` per turn like the inline service does
+  (it used to accumulate forever in TUI mode)
+- **The Agents header no longer lies**: the inline deck has `↓` selection and
+  `Ctrl+O` for a detail view, which in a full-screen surface means swapping out
+  the transcript — a different feature. `fleet_lines(..., hints=False)` drops
+  `· ↓ select · ↵ view` so the header never advertises keys that do nothing
+- A shared-budget bug surfaced once the TUI started using the same code: with
+  both blocks overflowing, `plan/queue` could exceed its budget by a row (the
+  trim loop could not shrink below two headers plus two `+N more` lines). The
+  cascade now also retires whole blocks (queue first, it is only follow-ups) —
+  inline geometry is otherwise unchanged
+- `tests/tui/test_deck.py` (46 cases) covers the row semantics without an app,
+  `DeckView`'s invariants (hidden empty, height == rows, no wrapping, never
+  steals input focus), the compose order, the per-turn lifecycle and a 12-row
+  terminal where nothing starves the transcript; `python -m openx.tui`'s demo
+  now feeds real-shaped todos/fleet/panel providers, so the demo keeps
+  self-checking the pipeline. Docs (both languages) gain a Decks section and the
+  modified limits
+
 ## 0.1.33 — The input line becomes a real editor
 
 - **The input line is now a `TextArea` (`PromptEditor`), not `Input`.** `Enter`

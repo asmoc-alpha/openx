@@ -479,7 +479,7 @@ class TestPlanCollapse:
         assert "doing1" in text and "task2" in text   # 进行中用 activeForm
 
     def test_all_done_with_overflow_would_not_fold(self, deterministic_live):
-        """超过 _DECK_PLAN_ROWS 的全完成列表仍然只占 1 行（折叠优先于裁剪）。"""
+        """超过 DECK_PLAN_ROWS（ui/_deck）的全完成列表仍然只占 1 行（折叠优先）。"""
         h = Harness(todos=self._todos(*["completed"] * 10))
         h.svc.start()
         _deck, deck_h = h.svc._deck_renderable([])
@@ -670,7 +670,7 @@ class TestQueuePanel:
         assert y_old < y_new, "FIFO：先排者在上"
 
     def test_queue_overflow_folds(self, deterministic_live):
-        """超 _DECK_QUEUE_ROWS 折叠 +N more（单行不变量不破）。"""
+        """超 DECK_QUEUE_ROWS（ui/_deck）折叠 +N more（单行不变量不破）。"""
         h = Harness()
         for i in range(6):
             h.svc._console._input_queue.append(f"msg {i}")

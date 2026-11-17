@@ -48,8 +48,19 @@ from ..ui._helpers import DONE_VERBS, done_line, fmt_duration
 # （纯展示层，见 ui/_diff.py）。
 from ..ui._diff import classify_text_op, diff_stat, op_style, render_diff_lines
 from ..ui._style import (
-    ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, MARK_BULLET, MARK_FAIL, MARK_INFO,
+    ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, GUTTER, MARK_FAIL, MARK_INFO,
     MARK_OK, MARK_PENDING, SPIN_FRAME_MS, SPIN_FRAMES, SUCCESS_STYLE,
+    spin_glyph,
+)
+# deck（状态层：计划 / 队列 / 舰队 / 插件面板）的行格式与全屏 TUI **共用
+# 一份**——两端只差预算与摆放位置，行内容不许各写一套（见 ui/_deck.py）。
+# 各块的行数上限（DECK_PLAN_ROWS 等）也定义在那里，这边不再抄一份。
+from ..ui._deck import (
+    deck_line,
+    deck_markup,
+    fleet_lines,
+    plan_queue_lines,
+    plugin_lines,
 )
 
 # 进行中动画字形 = Claude Code 星形家族（定义在 ui/_style.py，与标记
@@ -63,10 +74,12 @@ _SPIN_MS = SPIN_FRAME_MS
 def _spin_glyph() -> str:
     """当前 spinner 帧（**绝对时钟**驱动：同一帧内多次调用取到同一字形）。
 
-    状态行、deck 计划面板、running 工具行共用这一个来源——三处各自
-    算一遍相位，同一屏上就会看到三个不同步的转针（"各转各的"）。
+    状态行、deck 计划面板、running 工具行共用这一个来源——三处各自算一遍
+    相位，同一屏上就会看到三个不同步的转针（"各转各的"）。相位公式只有
+    一份（``ui/_style.spin_glyph``），这里传本模块的 ``_SPIN``/``_SPIN_MS``
+    ——它们是模块级名字，测试 monkeypatch 之即可钉住相位。
     """
-    return _SPIN[int(time.monotonic() * 1000 / _SPIN_MS) % len(_SPIN)]
+    return spin_glyph(frames=_SPIN, frame_ms=_SPIN_MS)
 
 
 # 扫光（shimmer）：spinner 标签上的移动高亮窗。参考 OpenClaw
@@ -130,14 +143,11 @@ _VIEWPORT_RESERVE = (
 # （固化行在 scrollback，终端原生上翻可见，无需标记）。
 _SCROLL_MARKER = "↑ …"
 
-# 状态层（deck，frame 之上）的行数上限：计划面板最多 _DECK_PLAN_ROWS
-# 条 todos、队列面板最多 _DECK_QUEUE_ROWS 条待发提示、舰队最多
-# _DECK_FLEET_ROWS 个子代理，超出折叠成 "+N more"。
-# 实际渲染还会被视口预算（height - _VIEWPORT_RESERVE - 5）二次裁剪，
-# 保证 max_lines ≥ 5——deck 永不把响应窗口挤没、永不撑爆视口。
-_DECK_PLAN_ROWS = 6
-_DECK_QUEUE_ROWS = 4
-_DECK_FLEET_ROWS = 4
+# 状态层（deck，frame 之上）的行数上限：计划面板最多 DECK_PLAN_ROWS 条
+# todos、队列面板最多 DECK_QUEUE_ROWS 条待发提示、舰队最多 DECK_FLEET_ROWS
+# 个子代理，超出折叠成 "+N more"。数值定义在 ui/_deck.py（与全屏 TUI 共
+# 用一份），实际渲染还会被视口预算（height - _VIEWPORT_RESERVE - 5）二次
+# 裁剪，保证 max_lines ≥ 5——deck 永不把响应窗口挤没、永不撑爆视口。
 
 # Rich markup tags the agent yields (e.g. "[dim]● tool[/dim]"); stripped
 # before Markdown() which would otherwise render them literally. 只作用于
@@ -188,7 +198,7 @@ _EXPAND_HARD_CAP = 200
 # 的 3 行宽——diff 是用户在转录里回看的核心信息，12 行覆盖绝大多数小改动，
 # 更大的改动仍可 Ctrl+T 展开（走 _EXPAND_HARD_CAP）。
 _DIFF_MAX_LINES = 12
-_GUTTER = "⎿"    # Claude Code 结果槽线符号（U+23BF）
+_GUTTER = GUTTER    # Claude Code 结果槽线符号（U+23BF；定义在 ui/_style.py）
 
 # ── 工具调用聚合展示（对标 Claude Code 的折叠摘要）────────────────
 # 连续的只读探查调用折叠成一行摘要（"Read 2 files, ran 1 command"）：
@@ -1894,129 +1904,63 @@ class StreamingService:
         return text
 
     # ── 状态层（deck）：frame 之上的计划面板 + 队列 + 子代理舰队 ──
+    #
+    # **行怎么拼不在这里**：那是 ``ui/_deck.py`` 的事，行内与全屏 TUI 共用
+    # 同一份——两个界面看到同样的 Plan/Queue/Agents 行，不该各写一套。本类
+    # 只做两件行内特有的活：① 取数据（todos provider、排队消息）；② 算预算
+    # （视口高度减去框/spinner/间距/slack，恒保正文窗口 ≥ 5 行）。
 
     @staticmethod
     def _deck_line(text: str, style: str = "") -> Text:
-        """单行 deck 行。**硬不变量：1 deck 行 ≡ 1 终端行**——no_wrap +
-        ellipsis 杜绝自动换行撑高区域、破坏视口预算与擦除行数计算。"""
-        return Text(text, style=style, no_wrap=True, overflow="ellipsis")
+        """单行 deck 行（委托 ``ui/_deck.deck_line``；名字保留供既有调用点）。"""
+        return deck_line(text, style)
 
     @staticmethod
     def _deck_markup(markup: str) -> Text:
-        """带 markup 的单行 deck 行（同 _deck_line 的单行不变量）。"""
-        t = Text.from_markup(markup)
-        t.no_wrap = True
-        t.overflow = "ellipsis"
-        return t
+        """带 markup 的单行 deck 行（委托 ``ui/_deck.deck_markup``）。"""
+        return deck_markup(markup)
 
     def _deck_spin(self) -> str:
         """deck（计划/舰队）转帧：与状态行、running 工具行同源同相。"""
         return _spin_glyph()
 
+    def _deck_budget(self, extra_reserve: int = 0) -> int:
+        """deck 行预算 → 可用于状态层的行数。
+
+        ``height - _VIEWPORT_RESERVE - 5 - extra_reserve``：恒保正文窗口
+        ≥ 5 行（``_windowed`` 的 <5 兜底是退化终端的最后防线，正常路径由
+        本预算钉死）。取高失败按 24 行兜底——状态层绝不因量测失败而消失。
+        """
+        try:
+            height = self._rich.height
+        except Exception:
+            height = 24
+        return max(0, height - _VIEWPORT_RESERVE - 5 - extra_reserve)
+
     def _deck_renderable(self, snap: list, extra_reserve: int = 0) -> tuple:
         """构建**上状态层** → ``(Group | None, 行数)``（渲染在输入框之上）。
 
-        自上而下两块：**Plan**（todos 计划面板）→ **Queue**（流式期间
-        排队待发的跟进消息，FIFO 全列、跨轮常驻直至全部发出）。子代理
-        列表在输入框之下（见 :meth:`_fleet_deck_renderable`）。
-
-        ``extra_reserve``：deck 之外已占用的额外行——从预算中扣除，
-        保证叠加后仍恒有 max_lines ≥ 5。
+        数据两路：``todos_provider``（计划面板）与排队待发的跟进消息
+        （FIFO 全列：跨轮留存的 ``console._input_queue`` + 本轮流式中新排的
+        ``self._queued``；后者 ``stop()`` 时才并入前者，故两源从不同帧出现，
+        顺序拼接即全貌、无重复）。行格式与折叠语义见
+        ``ui/_deck.plan_queue_lines``。
 
         fail-open：任何异常（坏 todos 数据、console 取高失败……）落回
         无 deck——与 _LiveView 的回落哲学一致，状态层绝不拖垮主渲染。
         """
         try:
-            todos = (
-                list(self._todos_provider()) if self._todos_provider else []
-            )
+            todos = list(self._todos_provider()) if self._todos_provider else []
         except Exception:
             todos = []
-        plan_items = [t for t in todos if isinstance(t, dict)]
-        # 排队待发全列（FIFO）：跨轮留存（console._input_queue，REPL
-        # 逐条 pop）+ 本轮流式中新排（self._queued，stop 时才并入前者）。
-        # 顺序拼接即全貌，无重复——并入发生在 stop，而 done 态不渲染
-        # deck，两源从不同帧出现。
         with self._queued_lock:
             queued_now = list(self._queued)
         console_q = getattr(self._console, "_input_queue", None) or []
         queue_items = [str(q) for q in list(console_q)]
         queue_items += [str(q) for q in queued_now]
-        if not plan_items and not queue_items:
-            return None, 0
-        try:
-            height = self._rich.height
-        except Exception:
-            height = 24
-        # 视口预算：恒保 max_lines ≥ 5（_windowed 的 <5 兜底是退化终端
-        # 的最后防线，正常路径由本预算钉死）
-        budget = max(0, height - _VIEWPORT_RESERVE - 5 - extra_reserve)
-        if budget == 0:
-            return None, 0
-
-        # 全部完成 → 计划面板折叠成单行汇总（对标 Claude Code）：逐条列出
-        # 已完成项只是占地方，收尾时把版面还给正文。折叠态没有逐条项，
-        # plan_allow 归零、也不产生 "+N more" 折叠行。
-        plan_all_done = bool(plan_items) and all(
-            t.get("status") == "completed" for t in plan_items)
-        plan_allow = 0 if plan_all_done else min(len(plan_items), _DECK_PLAN_ROWS)
-        queue_allow = min(len(queue_items), _DECK_QUEUE_ROWS)
-        headers = (1 if plan_items else 0) + (1 if queue_items else 0)
-        # 折叠行（"+N more"）计数：某块被裁过就占一行
-        def _overflow() -> int:
-            return (
-                (1 if not plan_all_done and len(plan_items) > plan_allow else 0)
-                + (1 if len(queue_items) > queue_allow else 0)
-            )
-        # 超预算时先裁较大的块，直到放下
-        while headers + plan_allow + queue_allow + _overflow() > budget:
-            if plan_allow <= 0 and queue_allow <= 0:
-                break
-            if plan_allow >= queue_allow and plan_allow > 0:
-                plan_allow -= 1
-            elif queue_allow > 0:
-                queue_allow -= 1
-
-        rows: list = []
-        if plan_items:
-            done = sum(
-                1 for t in plan_items if t.get("status") == "completed"
-            )
-            if plan_all_done:
-                # 折叠态：单行汇总，与逐条态的项行同缩进（2 空格）
-                rows.append(self._deck_line(
-                    f"  {MARK_OK} Plan {done}/{len(plan_items)}",
-                    SUCCESS_STYLE))
-            else:
-                rows.append(self._deck_markup(
-                    f" [bold]Plan[/bold] [dim]{done}/{len(plan_items)}[/dim]"))
-            for t in plan_items[:plan_allow]:
-                status = t.get("status")
-                if status == "completed":
-                    rows.append(self._deck_line(
-                        f"  {MARK_OK} {t.get('content') or ''}", "green"))
-                elif status == "in_progress":
-                    # activeForm 的存在意义：进行中一项显示"正在做什么"
-                    label = t.get("activeForm") or t.get("content") or ""
-                    rows.append(self._deck_line(
-                        f"  {self._deck_spin()} {label}", ACCENT))
-                else:
-                    rows.append(self._deck_line(
-                        f"  {MARK_PENDING} {t.get('content') or ''}", "dim"))
-            if not plan_all_done and len(plan_items) > plan_allow:
-                rows.append(self._deck_line(
-                    f"  +{len(plan_items) - plan_allow} more", "dim"))
-        if queue_items:
-            # 队列面板：按序全列（超 _DECK_QUEUE_ROWS 折叠 +N more），
-            # 位置在 Plan 之下、输入框之上——发出后 REPL 从头部 pop，
-            # 面板随下一轮流式区重建，用户视角常驻直至清空。
-            rows.append(self._deck_markup(
-                f" [bold]Queue[/bold] [dim]({len(queue_items)})[/dim]"))
-            for q in queue_items[:queue_allow]:
-                rows.append(self._deck_line(f"  {MARK_BULLET} {q}", "dim"))
-            if len(queue_items) > queue_allow:
-                rows.append(self._deck_line(
-                    f"  +{len(queue_items) - queue_allow} more", "dim"))
+        rows = plan_queue_lines(
+            todos, queue_items, budget=self._deck_budget(extra_reserve),
+            spin=self._deck_spin)
         if not rows:
             return None, 0
         return Group(*rows), len(rows)
@@ -2024,96 +1968,28 @@ class StreamingService:
     def _fleet_deck_renderable(self, snap: list) -> tuple:
         """构建**下状态层** → ``(Group | None, 行数)``（渲染在输入框之下）。
 
-        子代理列表，含**主代理条目（编号 0）**：↓ 选中 + Enter 把输入
-        框上方的主视图切换到选中条目（0 = 主回答，1..N = 子代理详情）。
-        ❯ 标记待确认选择（优先）或当前视图条目。无子代理时不渲染。
-
-        每个**运行中**的子代理在其行下补一条缩进活动行（``⎿ 工具(摘要)``）
-        ——对标 Claude Code Agent View 的"当前在做什么"。只有运行中才有：
-        已结束的代理没有"当前活动"可言，硬留一行是噪音。
+        子代理列表含**主代理条目（编号 0）**：行内的 ↓ 选中 + Enter 把主
+        视图切到选中条目（0 = 主回答，1..N = 子代理详情），故 ``❯`` 标记
+        待确认选择（优先）或当前视图条目、头行带操作提示。行格式（含运行中
+        代理的活动行）见 ``ui/_deck.fleet_lines``。
         """
-        if not snap:
-            return None, 0
-        try:
-            height = self._rich.height
-        except Exception:
-            height = 24
-        budget = max(0, height - _VIEWPORT_RESERVE - 5)
-        if budget == 0:
-            return None, 0
-
-        def _activity(v: dict) -> str:
-            """该子代理的活动行内容（空串 = 不渲染活动行）。"""
-            return (v.get("last_tool") or "") if v["status"] == "running" else ""
-
-        def _rows_for(allow: int) -> int:
-            """裁到 allow 个子代理行时的总行数：头部 1 + 主条目 1 +
-            子代理行 + 各自活动行 + 折叠行。活动行必须计入，否则浮层
-            撑爆视口（整组高度 ≤ 视口是不变量）。"""
-            activity = sum(1 for v in snap[:allow] if _activity(v))
-            fold = 1 if len(snap) > allow else 0
-            return 2 + allow + activity + fold
-
-        fleet_allow = min(len(snap), _DECK_FLEET_ROWS)
-        while _rows_for(fleet_allow) > budget:
-            if fleet_allow <= 0:
-                break
-            fleet_allow -= 1
-        # ❯ 标记：待确认选择优先，其次当前视图条目
         marked = (
-            self._fleet_selected
-            if self._fleet_selected >= 0 else self._focus
+            self._fleet_selected if self._fleet_selected >= 0 else self._focus
         )
-        rows: list = [self._deck_markup(
-            f" [bold]Agents[/bold] [dim]({len(snap)})"
-            f" · ↓ select · ↵ view[/dim]")]
-        # 主代理条目（0）：Enter 回到主回答视图
-        main_head = (
-            f"[{ACCENT_BOLD}]❯0[/]" if marked == 0 else "[dim] 0[/dim]"
-        )
-        main_style = "bold" if marked == 0 else "dim"
-        rows.append(self._deck_markup(
-            f"{main_head} [{main_style}]main[/][dim] · main answer[/dim]"))
-        for v in snap[:fleet_allow]:
-            secs = fmt_duration(v["elapsed"])
-            tools = f"{v['tools_count']} tools"
-            # 编号 + 标记：恒 2 格宽前缀（"❯N" / " N"）。
-            # 标签经 markup 转义：子代理描述可含方括号。
-            head = (
-                f"[{ACCENT_BOLD}]❯{v['id']}[/]"
-                if marked == v["id"] else f"[dim] {v['id']}[/dim]"
-            )
-            label = escape(v["label"])
-            if v["status"] == "running":
-                body = (
-                    f"[{ACCENT}] {self._deck_spin()} {label}"
-                    f" · {tools} · {secs}[/]"
-                )
-            elif v["status"] == "error":
-                body = f"[red] {MARK_FAIL} {label} · {secs}[/]"
-            else:
-                body = f"[green] {MARK_OK} {label} · {tools} · {secs}[/]"
-            rows.append(self._deck_markup(head + body))
-            activity = _activity(v)
-            if activity:
-                # 活动行缩进与主转录的结果槽线同级（5 空格 + ⎿ + 2 空格）。
-                # 摘要来自子代理的工具参数，可能含方括号 → 必须转义。
-                rows.append(self._deck_line(
-                    f"     {_GUTTER}  {escape(activity)}", DIM))
-        if len(snap) > fleet_allow:
-            rows.append(self._deck_line(
-                f"  +{len(snap) - fleet_allow} more", "dim"))
+        rows = fleet_lines(snap, budget=self._deck_budget(), marked=marked,
+                           spin=self._deck_spin)
+        if not rows:
+            return None, 0
         return Group(*rows), len(rows)
 
     def _plugin_deck_renderable(self) -> tuple:
         """插件 UI 面板（ui/v1，P-D）→ ``(Group | None, 行数)``。
 
-        渲染在输入框之下、舰队列表之后。征集与故障隔离（崩溃跳过 /
-        熔断摘除 / 行数限额 / refresh_hz 节流）全在 UiPanelCollector
-        （services/assembly.py）——渲染帧绝不能被插件拖死；这里只做
-        markup 行化（deck 行不变量：no_wrap + ellipsis ≡ 1 终端行）与
-        单面板兜底（坏 markup → 该面板本帧缺席）。视口预算内超出行
-        折叠成 "+N more"。None（无面板 / 无收集器）→ 零行为变化。
+        渲染在输入框之下、舰队列表之后。征集与故障隔离（崩溃跳过 / 熔断
+        摘除 / 行数限额 / refresh_hz 节流）全在 UiPanelCollector
+        （``services/assembly.py``）——渲染帧绝不能被插件拖死。行化（
+        ``svg:`` 行跳过、坏 markup 单面板兜底、超预算折叠）在
+        ``ui/_deck.plugin_lines``。None（无面板 / 无收集器）→ 零行为变化。
         """
         if self._panels is None:
             return None, 0
@@ -2121,37 +1997,11 @@ class StreamingService:
             panel_list = self._panels.panels()
         except Exception:
             return None, 0
-        if not panel_list:
-            return None, 0
-        try:
-            height = self._rich.height
-        except Exception:
-            height = 24
-        budget = max(0, height - _VIEWPORT_RESERVE - 5)
-        if budget == 0:
-            return None, 0
-        rows: list = []
-        dropped = 0
-        for _name, _plugin, lines in panel_list:
-            try:
-                # svg: 行是插件资产引用（serve 端渲染为图）；终端渲染不了
-                # SVG → 本帧跳过（插件应自带 ASCII 回退行）
-                panel_rows = [
-                    self._deck_markup(ln) for ln in lines
-                    if not ln.startswith("svg:")
-                ]
-            except Exception:
-                continue  # 坏 markup（未闭合标签等）→ 该面板本帧缺席
-            for row in panel_rows:
-                if len(rows) >= budget:
-                    dropped += 1
-                else:
-                    rows.append(row)
+        rows = plugin_lines(panel_list, budget=self._deck_budget())
         if not rows:
             return None, 0
-        if dropped:
-            rows.append(self._deck_line(f"  +{dropped} more", "dim"))
         return Group(*rows), len(rows)
+
 
     def _detail_view(self, view: dict, deck_h: int):
         """Ctrl-O 切换到的子代理详情视图：头行 + 捕获事件流的末尾窗口。

@@ -5,9 +5,11 @@
 常驻占一行）：
 
     ┌ transcript (VerticalScroll) ─ 会话流，块可折叠、可鼠标点开
+    │ plan-deck (DeckView)         计划 + 排队队列（输入框之上，空则隐藏）
     │ status line                  转帧 + Thinking…/Answering… + 耗时
     │ PromptEditor                 输入行（Enter 提交 / Ctrl+J 换行 / ↑↓ 历史）
-    └ SlashMenu                    输入行下方的 `/` 候选浮层
+    │ SlashMenu                    输入行下方的 `/` 候选浮层
+    └ agents-deck (DeckView)       Agents + 插件面板（输入框之下，空则隐藏）
 
 三条缝在这里落地：
 
@@ -45,6 +47,7 @@ from textual.widgets import Static
 
 from ..ui._style import ACCENT
 from .blocks import StatusLine, ThinkingBlock
+from .deck import DeckSource, DeckView
 from .history import PromptHistory
 from .modals import (
     _OTHER,
@@ -112,6 +115,20 @@ class OpenXTui(App[None]):
     #spinner {
         height: 1;
         padding: 0 1;
+    }
+    /* 状态层（deck）两个槽位：计划/队列在输入行**之上**、Agents 与插件面板
+       在其**之下**（与行内同序）。各自与相邻区域隔 1 空行——行内靠
+       _DECK_SPINNER_GAP 显式占位，这里用 margin：deck 不在场时
+       ``display: none`` 会把 margin 一并带走，正是"仅 deck 在场才占位"。
+       高度由 DeckView.set_rows 显式写成 len(rows)（行恒 no_wrap，
+       一行 ≡ 一行），CSS 不写 height。 */
+    #plan-deck {
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    #agents-deck {
+        padding: 0 1;
+        margin-top: 1;
     }
     /* 输入行 = 行内同款的"两条横线包着"（``print_user_prompt`` 的框）：
        顶、底各一条细线，**左右无边框**——不是 Textual 默认的长方形盒。
@@ -226,6 +243,9 @@ class OpenXTui(App[None]):
     DRAIN_INTERVAL = 1 / 30
     #: 状态行刷新间隔（转帧，与行内 Live 的 5Hz 同量级）
     SPINNER_INTERVAL = 0.12
+    #: deck 刷新间隔（秒）：与行内 ``Live`` 的 5Hz 同节拍——deck 里的转帧、
+    #: 子代理耗时、插件面板（``refresh_hz`` 默认 5）都按这个节奏走。
+    DECK_INTERVAL = 0.2
 
     def __init__(self, *, demo: bool = False, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -256,6 +276,8 @@ class OpenXTui(App[None]):
         self._interrupt_cb: Optional[Callable[[], None]] = None
         #: 输入历史（与行内共用 ``~/.openx/history``，见 ``tui/history.py``）
         self._history = PromptHistory()
+        #: 状态层数据源（``TuiStream.start()`` 接线；行格式见 ``ui/_deck.py``）
+        self._decks = DeckSource()
         #: 挂起的弹窗：future → 取消默认值。app 被外部关掉时按默认值
         #: resolve——一个 await 着的工具绝不能永远挂着（那是死锁，不是退出）。
         self._pending_dialogs: dict[Any, Any] = {}
@@ -264,6 +286,8 @@ class OpenXTui(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
+        # 输入框之上的状态层：计划 + 队列
+        yield DeckView(id="plan-deck")
         yield StatusLine(id="spinner")
         yield PromptEditor(
             placeholder=IDLE_PLACEHOLDER,
@@ -271,11 +295,14 @@ class OpenXTui(App[None]):
             prompt_history=self._history,
         )
         yield SlashMenu()
+        # 输入框之下的状态层：Agents + 插件面板
+        yield DeckView(id="agents-deck")
 
     def on_mount(self) -> None:
         self._mounted_ready.set()
         self.set_interval(self.DRAIN_INTERVAL, self._drain)
         self.set_interval(self.SPINNER_INTERVAL, self._tick_spinner)
+        self.set_interval(self.DECK_INTERVAL, self._tick_decks)
         self.query_one("#prompt", PromptEditor).focus()
         if self._demo:
             self.run_worker(self._demo_script(), name="demo", exit_on_error=False)
@@ -402,6 +429,58 @@ class OpenXTui(App[None]):
         else:
             self.query_one("#spinner", StatusLine).set_busy(label,
                                                             started_at=time.monotonic())
+
+    # ── 状态层（deck：计划 / 队列 / Agents / 插件面板）──────────────
+
+    def attach_decks(
+        self,
+        *,
+        todos: Optional[Callable[[], Any]] = None,
+        fleet: Optional[Any] = None,
+        panels: Optional[Any] = None,
+    ) -> None:
+        """接线四路 deck 数据源（``TuiStream.start()`` 每回合调一次）。
+
+        回合结束**不解线**：计划面板与插件面板要留在屏上（``agent.todos``
+        本来就跨轮存活，``ui.panel`` 的桌面宠物/监控件按定义该常驻）。
+        Agents 的显隐不看这里，看 :attr:`_stream_active`。
+        """
+        self._decks.configure(todos=todos, fleet=fleet, panels=panels)
+        self._tick_decks()   # 立刻画一帧：别让 deck 晚 200ms 才出现
+
+    def detach_decks(self) -> None:
+        """解线（app 收摊时；此后 ``_tick_decks`` 也就早退了）。"""
+        self._decks.configure()
+
+    def _queued_items(self) -> list[str]:
+        """排队待发的跟进消息（``console._input_queue`` 的只读快照）。"""
+        console = self._openx_console
+        queue = getattr(console, "_input_queue", None) if console else None
+        return [str(item) for item in list(queue or [])]
+
+    def _tick_decks(self) -> None:
+        """5Hz：四路数据 → 两段行（上半进输入框之上，下半进其下）。
+
+        单一消费者纪律照旧——只有本定时器（app 主循环线程）写这两个控件。
+        高度有变化时补一次贴底滚动：deck 变高会压缩转录，用户正停在底部
+        时必须继续跟着底走（``_scroll_to_end`` 自己会放过"正在回看历史"
+        的情形）。
+        """
+        if self._tui_closed:
+            return
+        try:
+            top, bottom = self._decks.rows(
+                height=self.size.height,
+                turn_active=self._stream_active,
+                queue=self._queued_items(),
+            )
+            changed = self.query_one("#plan-deck", DeckView).set_rows(top)
+            changed = self.query_one(
+                "#agents-deck", DeckView).set_rows(bottom) or changed
+        except Exception:
+            return   # 控件树拆除后的迟到一拍：状态层不值得把退出路径炸掉
+        if changed:
+            self._scroll_to_end()
 
     # ── 弹窗（ModalScreen）──────────────────────────────────────
 
@@ -653,6 +732,7 @@ class OpenXTui(App[None]):
         if self._tui_closed:
             return
         self._tui_closed = True
+        self.detach_decks()   # 双保险：迟到的定时器拍子已被 _tui_closed 挡住
         for fut, default in list(self._pending_dialogs.items()):
             if not fut.done():
                 with contextlib.suppress(Exception):
@@ -672,15 +752,34 @@ class OpenXTui(App[None]):
     # ── 离线演示脚本 ────────────────────────────────────────────
 
     async def _demo_script(self) -> None:
-        """离线演示：用**真实事件**喂一遍 thinking / 工具块 / 答案。
+        """离线演示：用**真实事件**喂一遍 thinking / 工具块 / 答案 + 四块 deck。
 
         ``TuiStream`` 与生产路径共用同一条管线——演示即管线的自检，不另
-        造一条仿造路径（否则演示跑通证明不了任何事）。
+        造一条仿造路径（否则演示跑通证明不了任何事）。状态层同理：喂进去的
+        是 ``agent.todos`` 形状的列表、``FleetMonitor.snapshot()`` 形状的快照
+        与 ``UiPanelCollector.panels()`` 形状的收集器，于是计划 / 队列 /
+        Agents / 插件面板四块在演示里都能看到。
         """
         from ..agent import ToolResultEvent, ToolStartEvent
         from ..kernel.reasoning.provider import StreamReasoning
 
-        stream = TuiStream(self._console_stub(), app=self)
+        todos: list[dict] = [
+            {"content": "抽出 deck 行格式", "status": "completed",
+             "activeForm": ""},
+            {"content": "接全屏 deck 面板", "status": "in_progress",
+             "activeForm": "接全屏 deck 面板"},
+            {"content": "补测试与文档", "status": "pending", "activeForm": ""},
+        ]
+        console = self._console_stub()
+        # 队列面板读的是 console._input_queue（与真 REPL 同一条通道）
+        console._input_queue.append("顺手把 Agents 行也接上")
+        self.attach_console(console)
+        stream = TuiStream(
+            console, app=self,
+            todos_provider=lambda: todos,
+            fleet=_DemoFleet(),
+            panels=_DemoPanels(),
+        )
         exit_phrase = Text(
             "❯ 解释一下这个仓库的流式渲染是怎么做的", style=f"bold {ACCENT}"
         )
@@ -710,6 +809,10 @@ class OpenXTui(App[None]):
             name="grep", call_id="demo-2",
             output="openx/services/streaming.py:1370\n"
                    "openx/services/streaming.py:1576"))
+        # 计划面板推进一格（演示"下一拍就反映变化"）
+        todos[1]["status"] = "completed"
+        todos[2]["status"] = "in_progress"
+        todos[2]["activeForm"] = "补测试与文档"
         for chunk in (
             "## 结论\n\n",
             "全屏实现把「折叠」从**状态机**降级成**控件属性**：\n\n",
@@ -719,6 +822,9 @@ class OpenXTui(App[None]):
             stream.feed(chunk)
             await asyncio.sleep(0.2)
         stream.done()
+        # 收尾：计划全部完成 → 面板折叠成单行汇总
+        for item in todos:
+            item["status"] = "completed"
         # 演示"点开看"的等价状态：默认折叠的 thinking 块在此展开
         thinking = list(self.query(ThinkingBlock))
         if thinking:
@@ -729,6 +835,41 @@ class OpenXTui(App[None]):
         from types import SimpleNamespace
 
         return SimpleNamespace(_input_queue=[])
+
+
+class _DemoFleet:
+    """演示用舰队：形状与 ``FleetMonitor.snapshot()`` 逐键一致。"""
+
+    _SEEDS = (
+        {"id": 1, "label": "explore streaming", "status": "running",
+         "tools_count": 3, "elapsed": 4.2,
+         "last_tool": "read_file(services/streaming.py)"},
+        {"id": 2, "label": "review docs", "status": "done",
+         "tools_count": 5, "elapsed": 9.1, "last_tool": ""},
+    )
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def snapshot(self) -> list[dict]:
+        return [dict(view) for view in self._views]
+
+    def reset(self) -> None:
+        """演示里的"新一轮"= 回到初始两条（生产侧是清空）。"""
+        self._views = [dict(view) for view in self._SEEDS]
+
+
+class _DemoPanels:
+    """演示用插件面板收集器：形状与 ``UiPanelCollector.panels()`` 一致。"""
+
+    def __init__(self) -> None:
+        self._frame = 0
+
+    def panels(self) -> list[tuple[str, str, list[str]]]:
+        self._frame += 1
+        return [("pet", "demo-pet",
+                 [f"[dim](^_^)[/dim] [bold]demo-pet[/bold]"
+                  f" · 第 {self._frame} 帧"])]
 
 
 async def run_tui(agent: Any, console: Any) -> None:

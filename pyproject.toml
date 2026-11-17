@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openx"
-version = "0.1.33"
+version = "0.1.34"
 description = "OpenX - An open-source, verifiable and evolvable agent runtime"
 readme = "README.md"
 license = {text = "MIT"}
@@ -57,7 +57,8 @@ dependencies = [
     #     App.run_async、App.run_test(headless,size)→Pilot、Static.update、
     #     VerticalScroll 滚动面、TextArea（load_text/document/wrapped_document/
     #     Changed/placeholder，以及 _on_key 里 prevent_default 与 stop 的两条
-    #     键路）。上述任一改名都要在 tests/tui/ 先红。
+    #     键路）、Static.update + Widget.display/styles.height（状态层 deck 的
+    #     显隐与显式高度）。上述任一改名都要在 tests/tui/ 先红。
     "textual>=8,<9",
 ]
 

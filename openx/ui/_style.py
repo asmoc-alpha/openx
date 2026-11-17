@@ -13,6 +13,9 @@
   字形随平台漂移、与框线字符风格冲突，是旧界面"廉价感"的主因）。
 """
 
+import time
+from typing import Optional
+
 # ── 独立调试支持：允许直接运行本文件（python openx/.../xxx.py）──────
 if __name__ == "__main__" and not __package__:
     import sys as _sys
@@ -64,6 +67,30 @@ MARK_WORKING = "✻"
 # openx 暂不做平台探测，若出现字形兼容反馈再补。
 SPIN_FRAMES = ("·", "✢", "✳", "✶", "✻", "✽")
 SPIN_FRAME_MS = 120
+
+# 工具结果槽线符号（U+23BF）：行内与全屏的"⎿ 结果"缩进行共用。
+GUTTER = "⎿"
+
+
+def spin_glyph(
+    now: Optional[float] = None,
+    *,
+    frames: Optional[tuple[str, ...]] = None,
+    frame_ms: Optional[int] = None,
+) -> str:
+    """当前 spinner 帧（**绝对时钟**驱动：同一帧内多次调用取到同一字形）。
+
+    状态行、deck 计划面板、running 工具行、子代理行共用这一个来源——各处
+    各自算一遍相位，同一屏上就会看到几个不同步的转针（"各转各的"）。
+
+    ``frames``/``frame_ms`` 默认取本模块的家族；行内实现传它自己的
+    ``_SPIN``/``_SPIN_MS``（测试 monkeypatch 那两个名字来钉住相位），公式
+    仍只有这一份。``now`` 同理供测试直接指定时刻。
+    """
+    instant = time.monotonic() if now is None else now
+    glyphs = SPIN_FRAMES if frames is None else frames
+    period = SPIN_FRAME_MS if frame_ms is None else frame_ms
+    return glyphs[int(instant * 1000 / period) % len(glyphs)]
 
 
 if __name__ == "__main__":
