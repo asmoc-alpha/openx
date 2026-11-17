@@ -11,10 +11,10 @@ scrollback 就再也改不了，于是"折叠这段 thinking"、"窗口大小变
 "显示实时 subagent 面板"统统变成对一块程序并不拥有的区域做光标算术。它
 作为逃生门保留（`--inline`），不再是平级界面。
 
-> **状态：默认界面。** 流式、可折叠的 thinking/工具块、`Esc` 打断、权限
-> 审批 / 计划批准 / `ask_user` 模态弹窗与 slash 命令菜单都在 app 里跑。仍
-> 存的缺口：deck（计划 / 队列 / 舰队 / 插件面板）以转录文本呈现、输入行
-> 是单行（见[限制](#限制)）。
+> **状态：默认界面。** 流式、可折叠的 thinking/工具块、`Esc` 打断、多行
+> 输入行（历史 + slash 命令菜单）与权限审批 / 计划批准 / `ask_user` 模态
+> 弹窗都在 app 里跑。仍存的缺口：deck（计划 / 队列 / 舰队 / 插件面板）以
+> 转录文本呈现（见[限制](#限制)）。
 
 ```bash
 openx                          # 全屏界面（默认）
@@ -36,7 +36,7 @@ python -m openx.tui            # 离线演示：不起模型、不联网
 ├───────────────────────────────────────────────────────┤
 │  ✻ Thinking…  (3.4s)  ·  esc to interrupt             │  状态行
 ├───────────────────────────────────────────────────────┤
-│  Ask OpenX…  （输入 / 弹出斜杠命令菜单）                │  Input + SlashMenu
+│  Ask OpenX…  （输入 / 弹出斜杠命令菜单）              │  PromptEditor + SlashMenu
 └───────────────────────────────────────────────────────┘
 
 没有 Footer：`Ctrl+Q` / `Ctrl+R` / `Ctrl+T` 照常生效，但不在屏幕上常驻展示
@@ -49,7 +49,7 @@ python -m openx.tui            # 离线演示：不起模型、不联网
 | 缝 | 行内（`--inline`） | 默认（TUI） |
 |---|---|---|
 | 输出 | `Console._console` 是写 stdout 的 Rich `Console` | `Console._console` 是 `TuiSink`：`print()` 投递 renderable，由 app 挂成 widget |
-| 输入 | `print_user_prompt` 画输入框、跑 prompt_toolkit 编辑器 | `print_user_prompt` 转交 `app.ask()`——等 `Input` 控件的下一次提交 |
+| 输入 | `print_user_prompt` 画输入框、跑 prompt_toolkit 编辑器 | `print_user_prompt` 转交 `app.ask()`——等 `PromptEditor` 控件的下一次提交 |
 | 会话 | `asyncio.run(run_interactive(...))` | `run_tui` 让 app 与**同一个** REPL 协程在**一个事件循环**里并发跑 |
 | 弹窗 | tty 上的 raw 模式菜单（`ui/_components/dialogs.py`） | 浮在转录上的 `ModalScreen`（`openx/tui/modals.py`） |
 
@@ -62,9 +62,10 @@ python -m openx.tui            # 离线演示：不起模型、不联网
 的内部 Rich console 承担：漏网的直接写调用落进缓冲区，不会打到屏幕上。
 
 **输入。** `Console.attach_tui(app)` 记下 `_tui`，`print_user_prompt` 于是改为
-`await app.ask()`，不再画框。`ask()` 解析为下一次提交的那一行；界面关闭时返回
-`None`——与行内路径 EOF 语义完全一致，所以 `interactive.py` 不需要任何特判，
-`/quit` 仍照常干净退出。
+`await app.ask()`，不再画框。`ask()` 解析为下一次提交的文本（可能是多行）；
+界面关闭时返回 `None`——与行内路径 EOF 语义完全一致，所以 `interactive.py`
+不需要任何特判，`/quit` 仍照常干净退出。背后的控件是
+[`PromptEditor`](#输入行)，不是 Textual 的 `Input`。
 
 **会话。** `run_tui` 把 app 与 `run_interactive` 作为两个 task 放进同一个 loop，
 任一结束就收掉另一个：Ctrl+Q 用 `None` 唤醒正在等的 `ask()`（REPL 正常退出），
@@ -117,6 +118,57 @@ text/tool 交替——否则新文本会被拼进旧 Markdown、把工具块埋�
 
 流式期回车**排队**而不是立刻发送：行进 `console._input_queue`——行内 REPL 本
 就在每轮之间弹的那个通道——转录同时回显 `↳ queued: …`，让用户看见排了什么。
+
+## 输入行
+
+输入行是 `PromptEditor`（`openx/tui/prompt.py`），`TextArea` 的子类，不是
+Textual 的 `Input`。理由只有一条，但很硬：`Input` 的文档模型里没有 `\n`，多行
+粘贴会被压成一行、光标永远进不了第二行。`TextArea` 有真正的文档模型——软折行、
+选区、撤销、括号粘贴全部现成——代价是每条键位语义都得在这里自己定。
+
+| 按键 | 含义 |
+|---|---|
+| `Enter` | 提交（流式期：排队）；slash 菜单开着时先应用候选再提交 |
+| `Ctrl+J` | 插入字面换行 |
+| `Alt+Enter` / `Shift+Enter` | 同上（`ESC CR` 是可区分的字节对；`Shift+Enter` 需要能报出它的终端，如 kitty 键盘协议） |
+| `↑` / `↓` | 菜单开着：移动候选光标；否则**只在首/末行**翻历史，其余位置是光标移动 |
+| `Tab` | 菜单开着：应用候选 + 尾随空格；否则走框架的焦点链 |
+| `Esc` | 菜单开着：只收菜单；否则冒泡上去打断回合 |
+
+行内编辑器是 `multiline=False` + `("escape", "enter")` 绑成插入 `\n`，所以
+"回车提交、`Alt+Enter` 换行"在两侧是同一个契约；TUI 多的只是 `Ctrl+J`
+（不需要终端支持修饰键）。
+
+**框随内容长高。** `_sync_height` 设 `styles.height = 行数 + 2`（上下两条框线
+各占一行），行数取 `wrapped_document.height`——**软折行之后**的行数，长单行与
+多行粘贴一视同仁。上限 `MAX_ROWS = 8`，超出后内部滚动；没有这个上限，一次粘贴
+就能把转录顶出屏幕。高度在这里自己算，不赌框架的 auto-height 语义——对一个还带
+边框的控件，那是不值得下的注。
+
+**历史就是行内 REPL 那个文件。** `tui/history.py` 按 prompt_toolkit
+`FileHistory` 的格式读写 `~/.openx/history`——每条前面一行 `# <时间戳>` 头，
+随后每条逻辑行带 `+` 前缀——于是在 `--inline` 里敲过的命令回到全屏界面按 `↑`
+照样能翻到，反之亦然。写只追加（两个界面同时开着也不会互相截断），空行与相邻
+重复按行内 `OpenXHistory.store_string` 的规则过滤，任何 IO 失败静默降级：历史
+是锦上添花，绝不是输入行坏掉的理由。游标保留草稿——打了一半按 `↑` 翻历史，
+再按 `↓` 越过最新一条就把你打的字还回来。
+
+**斜杠菜单保持两条键路的分工。** `↑`/`↓`/`Tab`/`Esc` 的绑定用 `check_action`
+门控（菜单关时整体失效），而不是在 `_on_key` 里 `stop()`：Textual 的键路是两条
+——① MRO 分发的 `_on_key`（`TextArea` 在这里插字符、移动光标），② 冒泡到 app
+后的绑定求值。`prevent_default()` 只断 ①，`stop()` 把 ② 也断掉，按键于是永远
+到不了绑定 action。所以覆盖默认行为时用 `prevent_default()`，**完整处理完**一个
+键时才 `stop()`。这道门也正是 `Esc` 能有两种含义的原因：有菜单就收菜单，没有就
+打断回合。
+
+`Ctrl+R` / `Ctrl+T` 是界面级动作，而 `TextArea` 自带一整套编辑绑定（`ctrl+z`、
+`ctrl+k`…），所以这两个是 **priority** 绑定——将来 `TextArea` 若给 `ctrl+r`
+也绑一件事，也偷不走"折叠全部 thinking"。
+
+`TextScreen`（自由文本弹窗）挂的就是**同一个控件**：同一套键位、同一副长相、
+同样会随内容长高。`/skill add` 的多行 instructions 因此在一个弹窗里写完，而不是
+一行一个弹窗。它不接历史——一次性弹窗里翻转录的命令只会让人莫名其妙——并保留
+保守契约：空输入视为未作答，`Esc` 返回 `None`。
 
 ## 弹窗
 
@@ -179,14 +231,17 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
 | 按键 | 动作 |
 |---|---|
 | `Enter` | 提交输入行（流式期：排进下一回合） |
+| `Ctrl+J` / `Alt+Enter` | 在输入行内换行（输入框最高长到 8 行） |
+| `↑` / `↓` | slash 菜单开着：移动候选光标；关着：在首/末行翻历史 |
 | `Ctrl+Q` | 退出（用 EOF 唤醒正在等的输入） |
 | `Ctrl+R` | 切换所有 thinking 块 |
 | `Ctrl+T` | 全部展开；若已有折叠则全部折叠 |
-| `Tab` / `Shift+Tab` | 在块标题与输入行之间移动焦点 |
-| `Esc` | 打断当前回合（空闲时无动作）；关掉当前弹窗 |
+| `Tab` / `Shift+Tab` | slash 菜单开着：应用候选；关着：在块标题与输入行之间移动焦点 |
+| `Esc` | 打断当前回合（空闲时无动作）；收起 slash 菜单；关掉当前弹窗 |
 
 弹窗内：`↑`/`↓` 移动、`space` 勾选（仅多选）、`Enter` 确认、`Esc` 按最保守的
-答案取消。
+答案取消。弹窗里的自由输入行是**同一个** `PromptEditor`，所以 `Ctrl+J` 换行、
+框随内容长高——多行答案与 `/skill add` 的 instructions 都在一个弹窗里写完。
 
 点击块标题栏即可切换折叠；竖向滚动条与滚轮滚动转录，回看历史时视图不再
 追底。任何点击都不会把焦点从输入行带走——转录容器与弹窗正文不可聚焦，
@@ -195,10 +250,10 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
 
 ## 限制
 
-- **输入行是单行的。** 暂无历史、暂无多行粘贴（阶段 3）；斜杠命令补全菜单
-  已就位（`/` 起头弹候选，↑/↓/Tab/Enter/Esc 与行内 ptk 补全逐字同义，
-  `openx/tui/slash.py`）。
-  `/skill add` 的多行 instructions 因此变成每行一个模态——能用，不优雅。
+- **输入行是编辑器，但不是行内那个 ptk 编辑器。** 多行编辑、括号多行粘贴、
+  软折行与 `↑`/`↓` 历史（与行内 REPL 共用 `~/.openx/history`）都已就位；
+  仍缺行内编辑器的 `Ctrl+R` 反搜与终端鼠标选区。`/skill add` 的多行
+  instructions 现在一个弹窗就能写完。
 - **TUI 需要真终端。** 管道/CI 下 CLI 打印警告并回退到行内 REPL；
   `python -m openx.tui` 则直接以 2 退出。`textual` 本身缺失时，默认路径
   同样警告后回退；显式传 `--tui` 才以 2 退出并给安装指引。
@@ -232,14 +287,27 @@ sink 投递、attach/detach，以及 `ask()` 契约（返回提交的文本，�
 入口的守卫（挂上 app 后裸调 `_interactive_select` / `paste_aware_input` 抛
 `TuiInputNeeded`）保留——它是任何绕过异步入口的新调用点的绊线。
 
+`tests/tui/test_input.py` 端到端覆盖输入行。`PromptHistory`（不需要 Textual）
+对着行内 ptk 格式钉死：`# <时间戳>` 头 + `+` 前缀行、多行往返、垃圾行与坏字节
+容错、只追加写入、空行/相邻重复过滤、`max_entries` 只裁内存不裁文件，以及
+`↑`/`↓` 游标与草稿语义。控件侧：`Enter` 提交整段多行文本并清空（框缩回一行）、
+`Ctrl+J` / `Alt+Enter` / `Shift+Enter` 都能换行、多行粘贴原样进入、高度跟随
+`wrapped_document` 并封顶于 `MAX_ROWS`、`↑`/`↓` 只在首/末行翻历史（文本中间是
+光标移动）、不接历史的弹窗输入框无视方向键、菜单关时 `Tab` 仍走焦点链且 `Esc`
+仍冒泡成打断，提交落进历史文件——包括重复与空行不落盘。
+`tests/tui/conftest.py` 把 `HISTORY_PATH` 指到 `tmp_path`（整个目录自动生效），
+因此没有用例会写进用户真实的 `~/.openx/history`。
+
 Textual 的 `App.run_test()` + `Pilot` 直接断言**widget 状态**——这正是行内
-实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。三个文件都用
+实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。四个文件都用
 `pytest.importorskip("textual")` 守卫，默认路径不会因缺少可选依赖而红。
 
 依赖：`textual>=8,<9`（它要求 `rich>=14.2`，与本仓 `rich>=14,<16` 相容）。
 所依赖的 API 面——`Collapsible` 的 reactive `title`/`collapsed`、
 `CollapsibleTitle` 的点击与 Enter 处理、`run_async`、`run_test`、
 `Static.update`/`visual`、`OptionList` 的 `replace_option_prompt_at_index`、
+`TextArea`（`load_text`、`document`、`wrapped_document`、`Changed`、
+`placeholder`、`styles.height`）及其 `prevent_default` 与 `stop` 的两条键路、
 `ModalScreen`/`push_screen(screen, callback)`、`VerticalScroll`——逐条列在
 `pyproject.toml` 的依赖注释里；那边的改名应先在 `tests/tui/` 变红。
 

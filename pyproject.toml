@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openx"
-version = "0.1.31"
+version = "0.1.33"
 description = "OpenX - An open-source, verifiable and evolvable agent runtime"
 readme = "README.md"
 license = {text = "MIT"}
@@ -55,7 +55,9 @@ dependencies = [
     #   • 依赖的 API：Collapsible（title/collapsed 为 reactive，
     #     CollapsibleTitle 自带 _on_click→Toggle 与 enter 键切换）、
     #     App.run_async、App.run_test(headless,size)→Pilot、Static.update、
-    #     VerticalScroll 滚动面。上述任一改名都要在 tests/tui/ 先红。
+    #     VerticalScroll 滚动面、TextArea（load_text/document/wrapped_document/
+    #     Changed/placeholder，以及 _on_key 里 prevent_default 与 stop 的两条
+    #     键路）。上述任一改名都要在 tests/tui/ 先红。
     "textual>=8,<9",
 ]
 

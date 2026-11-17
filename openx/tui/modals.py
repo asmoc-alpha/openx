@@ -36,10 +36,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from ..ui._style import DIM
+from .prompt import PromptEditor
 
 #: 多选时的勾选标记（与单选的高亮区分：勾是"选中了"，高亮是"光标在这"）
 _CHECKED = "✓"
@@ -198,7 +199,12 @@ class ChoiceScreen(ModalScreen[Any]):
 
 
 class TextScreen(ModalScreen[Optional[str]]):
-    """自由文本屏（``ask_user`` 的 "Other" 分支用）。
+    """自由文本屏（``ask_user`` 的 "Other" 分支、``/skill add`` 等都走它）。
+
+    输入行复用主界面的 :class:`~openx.tui.prompt.PromptEditor`——**同一个控件**
+    意味着同一套键位与同一副长相：``Enter`` 确认、``Ctrl+J``/``Alt+Enter``
+    换行、内容超过一行时框自己长高。多行自由文本（典型是 ``/skill add`` 的
+    instructions）因此在一个弹窗里写完，而不是一行一个弹窗。
 
     返回 ``value.strip()``；空串视为未作答 → ``None``。``Esc`` 同样 ``None``。
     """
@@ -216,17 +222,26 @@ class TextScreen(ModalScreen[Optional[str]]):
         with Vertical(id="modal-card"):
             yield Static(Text(self._title_text, style="bold white"),
                          id="modal-title")
-            yield Input(placeholder=self._placeholder, id="modal-input")
-            yield Static(Text("(Enter to confirm, Esc to cancel)", style=DIM),
-                         id="modal-hint")
+            # 不接历史：弹窗里的输入是一次性的，翻历史只会让人莫名其妙
+            yield PromptEditor(
+                placeholder=self._placeholder,
+                id="modal-input",
+            )
+            yield Static(
+                Text("(Enter to confirm, Ctrl+J for a new line, Esc to cancel)",
+                     style=DIM),
+                id="modal-hint",
+            )
 
     def on_mount(self) -> None:
-        self.query_one("#modal-input", Input).focus()
+        self.query_one("#modal-input", PromptEditor).focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_prompt_editor_submitted(
+        self, event: PromptEditor.Submitted
+    ) -> None:
         value = (event.value or "").strip()
         self.dismiss(value or None)
 

@@ -15,10 +15,10 @@ arithmetic against a region the program does not own. It is kept as an escape
 hatch (`--inline`), not as a peer surface.
 
 > **Status: default interface.** Streaming, collapsible thinking/tool blocks,
-> `Esc` interrupt, permission / plan-approval / `ask_user` modal dialogs and the
-> slash-command menus all run in the app. Remaining gaps: the decks (plan /
-> queue / fleet / plugin panels) render as transcript text, and the input line
-> is single-line (see [Limits](#limits)).
+> `Esc` interrupt, the multi-line input line (history + slash-command menu) and
+> the permission / plan-approval / `ask_user` modal dialogs all run in the app.
+> Remaining gap: the decks (plan / queue / fleet / plugin panels) render as
+> transcript text (see [Limits](#limits)).
 
 ```bash
 openx                          # full-screen interface (default)
@@ -40,7 +40,7 @@ python -m openx.tui            # offline demo: no model, no network
 ├─────────────────────────────────────────────────────────┤
 │  ✻ Thinking…  (3.4s)  ·  esc to interrupt               │  status line
 ├─────────────────────────────────────────────────────────┤
-│  Ask OpenX…   (/ pops the slash-command menu)           │  Input + SlashMenu
+│  Ask OpenX…   (/ pops the slash-command menu)           │  PromptEditor + SlashMenu
 └─────────────────────────────────────────────────────────┘
 
 No footer: `Ctrl+Q` / `Ctrl+R` / `Ctrl+T` still work but are never displayed
@@ -54,7 +54,7 @@ things the inline implementation already abstracted.
 | Seam | Inline (`--inline`) | Default (TUI) |
 |---|---|---|
 | Output | `Console._console` is a Rich `Console` writing to stdout | `Console._console` is `TuiSink`: `print()` enqueues a renderable, the app mounts it as a widget |
-| Input | `print_user_prompt` draws a frame and runs the prompt_toolkit editor | `print_user_prompt` delegates to `app.ask()` — the `Input` widget's next submission |
+| Input | `print_user_prompt` draws a frame and runs the prompt_toolkit editor | `print_user_prompt` delegates to `app.ask()` — the `PromptEditor` widget's next submission |
 | Session | `asyncio.run(run_interactive(...))` | `run_tui` runs the app and the same REPL coroutine concurrently in **one event loop** |
 | Dialogs | raw-mode menus on the tty (`ui/_components/dialogs.py`) | `ModalScreen`s over the transcript (`openx/tui/modals.py`) |
 
@@ -71,9 +71,10 @@ on the screen.
 
 **Input.** `Console.attach_tui(app)` sets `_tui`, and `print_user_prompt` returns
 `await app.ask()` instead of drawing the frame. `ask()` resolves to the next
-submitted line, or `None` when the interface is closed — the same `None` the
-inline path returns on EOF, so `interactive.py` needs no special case and `/quit`
-still exits cleanly.
+submitted text (possibly multi-line), or `None` when the interface is closed —
+the same `None` the inline path returns on EOF, so `interactive.py` needs no
+special case and `/quit` still exits cleanly. The widget behind it is
+[`PromptEditor`](#the-input-line), not Textual's `Input`.
 
 **Session.** `run_tui` starts the app and `run_interactive` as two tasks in the
 same loop and stops both when either finishes: Ctrl+Q wakes a pending `ask()`
@@ -137,6 +138,69 @@ prompt) and re-raising. The handler is unbound on `done()`/`cancel()`, so a stra
 Enter during a turn **queues** the message instead of sending it: it goes into
 `console._input_queue`, the channel the inline REPL already drains between turns,
 and the transcript echoes `↳ queued: …` so the user sees what is waiting.
+
+## The input line
+
+The input line is `PromptEditor` (`openx/tui/prompt.py`), a `TextArea` subclass,
+not Textual's `Input`. The reason is a single hard fact: `Input`'s document model
+has no `\n`, so a multi-line paste is flattened onto one line and the caret can
+never reach a second one. `TextArea` has a real document — soft wrap, selection,
+undo, bracketed paste — and the price is that every key meaning has to be
+declared here.
+
+| Key | Meaning |
+|---|---|
+| `Enter` | submit (during a turn: queue it); with the slash menu open, apply the candidate first and submit that |
+| `Ctrl+J` | insert a literal newline |
+| `Alt+Enter` / `Shift+Enter` | same (`ESC CR` is a distinguishable byte pair; `Shift+Enter` needs a terminal that reports it, e.g. the kitty keyboard protocol) |
+| `↑` / `↓` | with the menu open: move the candidate cursor; otherwise recall history **at the first/last line only**, elsewhere they move the caret |
+| `Tab` | with the menu open: apply the candidate + trailing space; otherwise the framework's focus chain |
+| `Esc` | with the menu open: just close it; otherwise bubble up and interrupt the turn |
+
+The inline editor is `multiline=False` with `("escape", "enter")` bound to insert
+`\n`, so "Enter submits, `Alt+Enter` breaks the line" is the same contract on
+both surfaces; the TUI only adds `Ctrl+J` (no terminal modifier support needed).
+
+**The frame grows with the content.** `_sync_height` sets
+`styles.height = rows + 2` (the two horizontal rules are one row each), taking
+`rows` from `wrapped_document.height` — the height **after** soft wrap, so a long
+single line and a multi-line paste are treated alike. It is capped at
+`MAX_ROWS = 8` and the editor scrolls internally beyond that; without the cap a
+paste would push the transcript off screen. The height is computed here rather
+than left to the framework's auto-height semantics, which is a bet not worth
+taking on a widget that also has borders.
+
+**History is the inline REPL's file.** `tui/history.py` reads and appends
+`~/.openx/history` in prompt_toolkit's `FileHistory` format — a `# <timestamp>`
+header per entry, then each logical line prefixed with `+` — so a command typed
+in `--inline` is on `↑` in the full-screen interface and vice versa. Writes are
+append-only (two surfaces open at once cannot truncate each other), empty and
+adjacent-duplicate entries are skipped exactly like the inline
+`OpenXHistory.store_string`, and any IO failure degrades silently: history is a
+convenience, never a reason for the input line to break. The cursor keeps a
+draft — typing half a message, pressing `↑`, then `↓` past the newest entry
+returns what you had typed.
+
+**The slash menu keeps its two-path discipline.** Bindings for `↑`/`↓`/`Tab`/`Esc`
+are gated by `check_action` (dead while the menu is closed) instead of calling
+`stop()`, because Textual dispatches keys on two paths: the MRO `_on_key` (where
+`TextArea` inserts characters and moves the caret) and, after bubbling, the
+app's binding check. `prevent_default()` cuts only the first; `stop()` cuts both,
+and the key then never reaches the binding action. So the editor calls
+`prevent_default()` when overriding default behaviour and `stop()` only when it
+has fully handled the key. The same gate is what lets `Esc` mean two things:
+close the menu when one is open, interrupt the turn otherwise.
+
+Because `Ctrl+R` / `Ctrl+T` are app-level actions and `TextArea` ships its own
+editing bindings (`ctrl+z`, `ctrl+k`, …), those two are **priority** bindings —
+a future `ctrl+r` in `TextArea` cannot silently shadow "fold all thinking".
+
+`TextScreen` (the free-text modal) mounts the very same widget: same keys, same
+look, and a growing frame. That is what makes `/skill add`'s multi-line
+instructions fit in one dialog instead of one dialog per line. It passes no
+history — a one-shot modal that recalls the transcript's commands is confusing —
+and keeps the conservative contract: empty input means unanswered, `Esc` means
+`None`.
 
 ## Dialogs
 
@@ -211,14 +275,18 @@ layering needed for both meanings to coexist.
 | Key | Action |
 |---|---|
 | `Enter` | submit the input line (during a turn: queue it for the next turn) |
+| `Ctrl+J` / `Alt+Enter` | new line inside the input line (the input grows up to 8 rows) |
+| `↑` / `↓` | slash menu open: move the candidate cursor; closed: recall history at the first/last line |
 | `Ctrl+Q` | quit (wakes a pending input with EOF) |
 | `Ctrl+R` | toggle every thinking block |
 | `Ctrl+T` | expand all blocks, or collapse all if any is collapsed |
-| `Tab` / `Shift+Tab` | move focus between block titles and the input line |
-| `Esc` | interrupt the running turn (no-op when idle); cancel the open dialog |
+| `Tab` / `Shift+Tab` | slash menu open: apply the candidate; closed: move focus between block titles and the input line |
+| `Esc` | interrupt the running turn (no-op when idle); close the slash menu; cancel the open dialog |
 
 In a dialog: `↑`/`↓` move, `space` toggles (multi-select only), `Enter` confirms,
-`Esc` cancels with the conservative answer.
+`Esc` cancels with the conservative answer. A dialog's free-text input is the
+same `PromptEditor`, so `Ctrl+J` breaks the line and the box grows — multi-line
+answers and `/skill add` instructions are typed in one dialog.
 
 Clicking a block's title bar toggles it; the vertical scrollbar and mouse wheel
 scroll the transcript, and the view stops following the bottom while you are
@@ -230,11 +298,11 @@ a click (`Tab` still walks the focus chain; a focused title still toggles on
 
 ## Limits
 
-- **The input line is single-line.** No history, no multi-line paste yet
-  (stage 3); the slash-command completion menu is in place (typing `/` pops
-  candidates; ↑/↓/Tab/Enter/Esc match the inline ptk completer verbatim —
-  `openx/tui/slash.py`). `/skill add`'s multi-line instructions therefore read
-  one modal per line — usable, not pleasant.
+- **The input line is an editor, not the inline ptk one.** Multi-line editing,
+  bracketed multi-line paste, soft wrap and `↑`/`↓` history (the same
+  `~/.openx/history` file the inline REPL uses) are in. Still missing: the inline
+  editor's `Ctrl+R` reverse search, and terminal mouse selection. `/skill add`'s
+  multi-line instructions now fit in one modal.
 - **The TUI needs a real terminal.** On a pipe or in CI the CLI prints a
   warning and falls back to the inline REPL; `python -m openx.tui` exits 2
   instead. If `textual` itself is missing, the default path likewise falls
@@ -279,9 +347,24 @@ unmigrated-entry guard (`TuiInputNeeded` from a raw `_interactive_select` /
 `paste_aware_input` call under an attached app) remains as the tripwire for any
 future call site that bypasses the async entries.
 
+`tests/tui/test_input.py` covers the input line end to end. `PromptHistory`
+(no Textual needed) is pinned against the inline ptk format: `# <timestamp>` +
+`+`-prefixed lines, multi-line round trip, garbage and broken bytes tolerated,
+append-only writes, empty / adjacent-duplicate filtering, `max_entries` trimming
+memory but not the file, and the `↑`/`↓` cursor with its draft. On the widget
+side: `Enter` submits the whole multi-line text and clears (frame back to one
+row), `Ctrl+J` / `Alt+Enter` / `Shift+Enter` insert newlines, a multi-line paste
+arrives intact, height follows `wrapped_document` and caps at `MAX_ROWS`,
+`↑`/`↓` recall history only at the first/last line (inside the text they move
+the caret), a modal editor without history ignores them, `Tab` still walks the
+focus chain and `Esc` still bubbles into the interrupt when no menu is open, and
+submissions land in the history file — including that repeats and blank lines do
+not. `tests/tui/conftest.py` points `HISTORY_PATH` at `tmp_path` for the whole
+directory, so no test writes into the user's real `~/.openx/history`.
+
 Textual's `App.run_test()` + `Pilot` assert **widget state** directly, which is
 what the inline implementation cannot do — there, stream rendering is verified
-through `pyte` screen snapshots. All three files are
+through `pyte` screen snapshots. All four files are
 `pytest.importorskip("textual")`-guarded, so the default path never goes red for a
 missing optional dependency.
 
@@ -289,9 +372,11 @@ Dependency: `textual>=8,<9` (it requires `rich>=14.2`, compatible with this
 repo's `rich>=14,<16`). The API surface relied on — `Collapsible` with reactive
 `title`/`collapsed`, `CollapsibleTitle`'s click and Enter handlers, `run_async`,
 `run_test`, `Static.update`/`visual`, `OptionList` with
-`replace_option_prompt_at_index`, `ModalScreen`/`push_screen(screen, callback)`,
-`VerticalScroll` — is listed in the dependency comment in `pyproject.toml`; a
-rename there should go red in `tests/tui/` first.
+`replace_option_prompt_at_index`, `TextArea` (`load_text`, `document`,
+`wrapped_document`, `Changed`, `placeholder`, `styles.height`) with its
+`prevent_default`-vs-`stop` key layering, `ModalScreen`/`push_screen(screen,
+callback)`, `VerticalScroll` — is listed in the dependency comment in
+`pyproject.toml`; a rename there should go red in `tests/tui/` first.
 
 > One naming landmine worth knowing: `MessagePump._closed` is Textual's own
 > "message queue is closed" switch, and `post_message` **silently drops** anything

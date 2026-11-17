@@ -20,11 +20,10 @@ import pytest
 
 pytest.importorskip("textual", reason="--tui 依赖 textual")
 
-from textual.widgets import Input                                      # noqa: E402
-
 from openx.config import OpenXConfig                                   # noqa: E402
 from openx.tui.app import OpenXTui
 from openx.tui.blocks import ThinkingBlock, ToolBlock, markdown_answer
+from openx.tui.prompt import PromptEditor
 from openx.tui.sink import TuiSink
 from openx.ui.console import Console
 
@@ -110,7 +109,7 @@ class TestClickKeepsInputFocus:
         async with app.run_test(size=(80, 24)) as pilot:
             app.write_widget(ThinkingBlock())
             await pilot.pause()
-            prompt = app.query_one("#prompt", Input)
+            prompt = app.query_one("#prompt", PromptEditor)
             assert prompt.has_focus
 
             await pilot.click("#transcript", offset=(10, 3))
@@ -127,7 +126,7 @@ class TestClickKeepsInputFocus:
             block = ThinkingBlock()
             app.write_widget(block)
             await pilot.pause()
-            prompt = app.query_one("#prompt", Input)
+            prompt = app.query_one("#prompt", PromptEditor)
 
             await pilot.click(type(_title_widget(block)))
             await pilot.pause()

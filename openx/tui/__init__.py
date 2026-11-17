@@ -12,13 +12,17 @@
   ``StreamingService`` 同面的显示服务，只入队、不碰终端）。
 - :mod:`openx.tui.view` —— 事件 → widget 的管线（只在 app 定时器里驱动）。
 - :mod:`openx.tui.blocks` —— 可折叠块：thinking / 工具调用 / 状态行。
+- :mod:`openx.tui.prompt` —— 输入行（``TextArea`` 之上：多行编辑 + 历史 +
+  斜杠菜单键位）。
+- :mod:`openx.tui.history` —— 输入历史存储（与行内 REPL 共用
+  ``~/.openx/history``，不 import textual，可无 GUI 单测）。
+- :mod:`openx.tui.modals` —— 模态弹窗（权限 ASK / 计划批准 / ``ask_user``）。
 - :mod:`openx.tui.app` —— app 主体：排空、输入缝、按键、演示脚本。
 
-已落地：输出/输入/会话三缝、可折叠块、流式答案与思考、Esc 打断、排队输入。
-仍未迁移（均以行内实现为准）：**弹窗**（权限 ASK / 计划批准 / ``ask_user`` /
-设置浮层，直写 tty 的 raw 模式弹窗与 Textual 不兼容——在 modal screen 落地
-前用 ``-y`` / auto 模式跑）、**输入行历史与多行编辑**、**fleet 面板与插件
-``ui.panel`` 的 widget 化**。
+已落地：输出/输入/会话三缝、可折叠块、流式答案与思考、Esc 打断、排队输入、
+多行输入行 + 历史、模态弹窗与 slash 菜单。仍未迁移（均以行内实现为准）：
+**fleet 面板与插件 ``ui.panel`` 的 widget 化**（它们的渲染走 ``Console``，
+于是以文本形式落进转录）。
 
 设计纪律（沿既有架构约定）：
 

@@ -6,7 +6,7 @@
 
     ┌ transcript (VerticalScroll) ─ 会话流，块可折叠、可鼠标点开
     │ status line                  转帧 + Thinking…/Answering… + 耗时
-    │ Input                        输入行（Enter 提交；斜杠菜单见 slash.py）
+    │ PromptEditor                 输入行（Enter 提交 / Ctrl+J 换行 / ↑↓ 历史）
     └ SlashMenu                    输入行下方的 `/` 候选浮层
 
 三条缝在这里落地：
@@ -16,8 +16,9 @@
    定时排空并 mount widget。**同一时间只有一个消费者改 widget**（沿用
    ``ui/resize.py`` 的写屏纪律，只是消费者从 Live 线程换成 app 线程）。
 2. **输入缝**：:meth:`ask` 是 ``print_user_prompt`` 的 TUI 实现——聚焦输入
-   框后 ``await`` 一个队列；返回 ``None`` 表示 EOF/退出，与行内语义一致
-   （``interactive.py`` 见到 ``None`` 就干净退出，不改一行）。
+   行（:class:`~openx.tui.prompt.PromptEditor`）后 ``await`` 一个队列；返回
+   ``None`` 表示 EOF/退出，与行内语义一致（``interactive.py`` 见到 ``None``
+   就干净退出，不改一行）。
 3. **会话缝**：:func:`run_tui` 让现有 REPL 协程与 app 在**同一个 asyncio
    loop** 里并发跑，任一先结束就收掉另一个——不需要 ``call_from_thread``。
 
@@ -40,10 +41,11 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Static
 
 from ..ui._style import ACCENT
 from .blocks import StatusLine, ThinkingBlock
+from .history import PromptHistory
 from .modals import (
     _OTHER,
     ChoiceScreen,
@@ -52,6 +54,7 @@ from .modals import (
     permission_body,
     plan_body,
 )
+from .prompt import PromptEditor
 from .sink import SinkQueue, TuiSink
 from .slash import SlashMenu
 from .stream import Note, StreamStart, TuiStream, TurnAborted, TurnEnd
@@ -78,104 +81,6 @@ class RichEntry(Static):
         if source is not None:
             self.source = source
         super().update(source, **kwargs)
-
-
-class PromptInput(Input):
-    """输入行 + 斜杠命令菜单的键位路由。
-
-    行内 ptk 的语义（``editor.build_key_bindings``）逐条搬过来：
-
-    - 菜单开时 ``↑``/``↓`` 移动候选光标（不到输入历史里去——TUI 输入行
-      暂无历史，方向键不挪光标也符合"菜单优先"的行内行为）；
-    - ``Tab``：应用当前候选 + 尾随空格（参数位起编）；
-    - ``Enter``：应用当前候选并**提交**（行内 ``_enter_with_menu``）；
-    - ``Esc``：先收菜单（有菜单关菜单），无菜单时冒泡给 app 打断回合
-      （行内 ``_esc_closes_menu`` 同款分层）。
-
-    菜单本体是兄弟节点 ``#slash-menu``（compose 顺序紧贴输入行下方）；
-    路由方法在这里，弹与收由 :meth:`_refresh_slash_menu` 驱动。
-    """
-
-    BINDINGS: ClassVar[list[Binding]] = [
-        Binding("up", "slash_up", "上一个候选", show=False),
-        Binding("down", "slash_down", "下一个候选", show=False),
-        Binding("tab", "slash_tab", "应用候选", show=False),
-        Binding("escape", "slash_esc", "收菜单", show=False),
-    ]
-
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """菜单关时全部 slash 绑定整体失效——Esc 等键自然冒泡给 app。
-
-        不做这一层门控，Esc 绑定会先于 app 的 interrupt 吃掉按键：流式
-        打断永远不触发（回归于 test_esc_cancels_registered_task_once）。
-        """
-        if action.startswith("slash_"):
-            return self._menu_open()
-        return super().check_action(action, parameters)
-
-    async def _on_key(self, event: events.Key) -> None:
-        """菜单开时吃掉 ↑/↓/Tab/Esc 的**默认行为**，但放行冒泡。
-
-        Textual 的键路是两条：① MRO 分发的 ``_on_key``（Input 在这里把
-        可打印字符插入、把 ↑/↓ 交给光标/历史）；② 事件冒泡到 ``App`` 后
-        的 ``_check_bindings``（我们注册的 slash_* 绑定在这里触发）。
-        ``prevent_default`` 只断 ①（MRO 在本类之后 break），``stop`` 会
-        把 ② 也断掉——按键永远到不了绑定 action（实测：菜单开按 ↓ 光标
-        纹丝不动）。所以这里**只 prevent_default、绝不 stop**。
-        """
-        if self._menu_open() and event.key in ("up", "down", "tab", "escape"):
-            event.prevent_default()
-
-    @property
-    def _slash_menu(self) -> SlashMenu | None:
-        try:
-            return self.app.query_one("#slash-menu", SlashMenu)
-        except Exception:
-            return None
-
-    def _menu_open(self) -> bool:
-        menu = self._slash_menu
-        return menu is not None and bool(menu.matches)
-
-    def action_slash_up(self) -> None:
-        self._slash_menu.move(-1)
-
-    def action_slash_down(self) -> None:
-        self._slash_menu.move(1)
-
-    def action_slash_tab(self) -> None:
-        menu = self._slash_menu
-        if menu is None or not menu.matches:
-            return  # 无候选：不拦截（Textual Input 默认 Tab 是焦点移动）
-        applied = menu.apply(with_space=True)
-        if applied is not None:
-            self.value = applied
-            self.cursor_position = len(applied)
-            menu.hide()
-
-    def action_slash_esc(self) -> None:
-        self._slash_menu.hide()
-
-    async def action_submit(self) -> None:
-        """Enter：菜单开时先应用候选再提交（行内 ``_enter_with_menu``）。
-
-        菜单未开：默认提交原文。应用后 value 已是规范名（``/quit`` 而非
-        ``/qu``），随后的提交事件携带的就是它。
-        """
-        menu = self._slash_menu
-        if menu is not None and menu.matches:
-            applied = menu.apply()
-            if applied is not None:
-                self.value = applied
-                self.cursor_position = len(applied)
-        await super().action_submit()
-
-    def _refresh_slash_menu(self) -> None:
-        """输入变化 → 弹/收菜单（``Input.Changed`` 经 app 转发驱动）。"""
-        menu = self._slash_menu
-        if menu is None:
-            return
-        menu.refresh_for(self.value)
 
 
 class Transcript(VerticalScroll):
@@ -211,12 +116,20 @@ class OpenXTui(App[None]):
     /* 输入行 = 行内同款的"两条横线包着"（``print_user_prompt`` 的框）：
        顶、底各一条细线，**左右无边框**——不是 Textual 默认的长方形盒。
        #585858 = 256 色 240 号，即行内框线的 ``_style.CHROME``（grey35，
-       Textual 的 CSS 不认 Rich 颜色名，故写十六进制）。 */
-    #prompt {
+       Textual 的 CSS 不认 Rich 颜色名，故写十六进制）。
+       ``#prompt`` 是 ``PromptEditor``（TextArea）：TextArea 自带长方形边框
+       与 ``$surface`` 底色，这里逐项改写；高度由控件自己算（1–8 行 + 框线，
+       见 ``tui/prompt.py::_sync_height``），故此处不写死 height。 */
+    #prompt, #prompt:focus {
         height: 3;
         border: none;
         border-top: tall #585858;
         border-bottom: tall #585858;
+        background: transparent;
+        padding: 0 1;
+    }
+    #prompt .text-area--placeholder {
+        color: $text-muted;
     }
     .thinking-block > .block-body {
         color: grey;
@@ -275,12 +188,14 @@ class OpenXTui(App[None]):
     ChoiceScreen #modal-hint, TextScreen #modal-hint {
         padding: 1 0 0 0;
     }
-    /* 弹窗里的自由输入行：与主输入行同一视觉身份——两条横线包着。 */
-    TextScreen #modal-input {
+    /* 弹窗里的自由输入行：与主输入行同一视觉身份——两条横线包着。
+       同一个 ``PromptEditor``，所以 ``Enter`` 确认、``Ctrl+J`` 换行，
+       高度同样按内容长高（多行 instructions 因此能在一个弹窗里写完）。 */
+    TextScreen #modal-input, TextScreen #modal-input:focus {
         margin: 1 0 0 0;
         background: transparent;
-        padding: 0;
-        height: auto;
+        padding: 0 1;
+        height: 3;
         border: none;
         border-top: tall #585858;
         border-bottom: tall #585858;
@@ -291,9 +206,16 @@ class OpenXTui(App[None]):
         # 全部 show=False：界面没有 Footer，键位不在屏幕上常驻展示——
         # `Ctrl+Q`/`Ctrl+R`/`Ctrl+T` 照常生效，提示只在弹窗的提示行出现。
         Binding("ctrl+q", "quit_tui", "退出", show=False, priority=True),
-        Binding("ctrl+r", "toggle_thinking", "thinking", show=False),
-        Binding("ctrl+t", "toggle_all", "全部折叠/展开", show=False),
-        # **不加 priority**：`Input` 没有 escape 绑定，按键自然冒泡到 app，
+        # `Ctrl+R`/`Ctrl+T` 提权：输入行是 TextArea，自带一整套编辑键位
+        # （`ctrl+z`/`ctrl+y`/`ctrl+k`/…）。这两个是**全局界面**动作，必须
+        # 先于控件绑定求值——否则哪天 TextArea 给 `ctrl+r` 也绑一件事，
+        # 折叠就被静默吃掉（行内实现里 `ctrl+r` 恰好是历史反搜，语义更该
+        # 由 app 说了算）。模态屏不用这两个键，不会重犯 Esc 的覆辙。
+        Binding("ctrl+r", "toggle_thinking", "thinking", show=False,
+                priority=True),
+        Binding("ctrl+t", "toggle_all", "全部折叠/展开", show=False,
+                priority=True),
+        # **不加 priority**：输入行没有 escape 绑定，按键自然冒泡到 app，
         # 输入行聚焦时照样能打断。而加上 priority 会让 app 抢在**模态屏**
         # 之前吃掉 Esc——弹窗就再也取消不了了（priority 绑定先于屏幕绑定
         # 求值）。屏幕级绑定天然优先于 app 级绑定，正是这里要的分层。
@@ -332,6 +254,8 @@ class OpenXTui(App[None]):
         self._stream_active = False
         #: Esc 打断回调（``TuiStream.start()`` 接线，收尾解绑）
         self._interrupt_cb: Optional[Callable[[], None]] = None
+        #: 输入历史（与行内共用 ``~/.openx/history``，见 ``tui/history.py``）
+        self._history = PromptHistory()
         #: 挂起的弹窗：future → 取消默认值。app 被外部关掉时按默认值
         #: resolve——一个 await 着的工具绝不能永远挂着（那是死锁，不是退出）。
         self._pending_dialogs: dict[Any, Any] = {}
@@ -341,14 +265,18 @@ class OpenXTui(App[None]):
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
         yield StatusLine(id="spinner")
-        yield PromptInput(placeholder=IDLE_PLACEHOLDER, id="prompt")
+        yield PromptEditor(
+            placeholder=IDLE_PLACEHOLDER,
+            id="prompt",
+            prompt_history=self._history,
+        )
         yield SlashMenu()
 
     def on_mount(self) -> None:
         self._mounted_ready.set()
         self.set_interval(self.DRAIN_INTERVAL, self._drain)
         self.set_interval(self.SPINNER_INTERVAL, self._tick_spinner)
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptEditor).focus()
         if self._demo:
             self.run_worker(self._demo_script(), name="demo", exit_on_error=False)
 
@@ -368,8 +296,9 @@ class OpenXTui(App[None]):
         if len(self.screen_stack) > 1:
             return
         with contextlib.suppress(Exception):
-            if self.focused is not self.query_one("#prompt", Input):
-                self.query_one("#prompt", Input).focus()
+            prompt = self.query_one("#prompt", PromptEditor)
+            if self.focused is not prompt:
+                prompt.focus()
 
     # ── 输出缝 ──────────────────────────────────────────────────
 
@@ -458,9 +387,9 @@ class OpenXTui(App[None]):
         self._interrupt_cb = callback
 
     def set_placeholder(self, text: str) -> None:
-        """输入框占位文案（流式期提示"回车 = 排队"）。"""
+        """输入框占位文案（流式期提示"回车 = 排队"；空内容时才显示）。"""
         with contextlib.suppress(Exception):
-            self.query_one("#prompt", Input).placeholder = text
+            self.query_one("#prompt", PromptEditor).placeholder = text
 
     # ── 状态行 ──────────────────────────────────────────────────
 
@@ -639,12 +568,7 @@ class OpenXTui(App[None]):
 
     # ── 输入缝 ──────────────────────────────────────────────────
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        """输入变化 → 刷新斜杠菜单（``PromptInput`` 转发来的联动）。"""
-        if isinstance(event.input, PromptInput):
-            event.input._refresh_slash_menu()
-
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
         """Enter：流式期排队等本回合结束，空闲期交给 ``ask()``。
 
         与行内同语义（流式期回车 = "该回合结束后立即发送"）：行内由
@@ -652,15 +576,21 @@ class OpenXTui(App[None]):
         那个通道——主循环的下一拍就会取走它。
 
         菜单开着时先应用候选（行内 ``_enter_with_menu``：Enter = 提交所选
-        命令而不是原文）。
+        命令而不是原文）——那一步在 :meth:`PromptEditor.action_submit` 里
+        完成，到这里 ``event.value`` 已是定型文本。
+
+        提交即清空输入行（内容不属于"历史输入框"，它作为用户回合重绘在
+        转录里）并把这一条记进历史——空行不记，相邻重复也不记。
         """
         text = event.value
-        event.input.value = ""
+        editor = self.query_one("#prompt", PromptEditor)
+        editor.load_text("")
         # 提交后菜单即收（候选已应用或命令已定型）
         menu = self.query_one("#slash-menu", SlashMenu)
         menu.hide()
         if not text.strip():
             return
+        self._history.add(text)
         if self._stream_active and self._openx_console is not None:
             self._openx_console._input_queue.append(text)
             self.stream_queue.push(Note(f"↳ queued: {text}"))
@@ -668,13 +598,13 @@ class OpenXTui(App[None]):
         self._input_q.put_nowait(text)
 
     async def ask(self) -> Optional[str]:
-        """``print_user_prompt`` 的 TUI 实现：聚焦输入框并等一条输入。
+        """``print_user_prompt`` 的 TUI 实现：聚焦输入行并等一条输入。
 
         返回 ``None`` 表示界面已关闭（用户 Ctrl+Q / app 退出）——
         与行内路径的 EOF 语义一致，``interactive.py`` 据此干净退出。
         """
         await self._mounted_ready.wait()
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptEditor).focus()
         value = await self._input_q.get()
         return value
 

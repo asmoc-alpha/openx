@@ -1,4 +1,4 @@
-"""斜杠命令菜单（``openx/tui/slash.py`` + ``PromptInput`` 键位路由）。
+"""斜杠命令菜单（``openx/tui/slash.py`` + ``PromptEditor`` 键位路由）。
 
 对齐行内 ptk 补全菜单（``ui/_components/editor.py``）的承重语义：
 
@@ -27,7 +27,7 @@ def _menu(app) -> SlashMenu:
 
 
 async def _type(pilot, text: str) -> None:
-    """逐字符打进输入行（走 Input.Changed → 菜单联动真路径）。"""
+    """逐字符打进输入行（走 TextArea.Changed → 菜单联动真路径）。"""
     for ch in text:
         await pilot.press(*ch)
     await pilot.pause()

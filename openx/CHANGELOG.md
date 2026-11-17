@@ -4,6 +4,42 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.33 — The input line becomes a real editor
+
+- **The input line is now a `TextArea` (`PromptEditor`), not `Input`.** `Enter`
+  submits, `Ctrl+J` / `Alt+Enter` / `Shift+Enter` insert a newline, and the frame
+  grows with the content (1–8 rows, soft wrap included): a multi-line paste
+  arrives intact and the caret reaches every line — which `Input`'s document
+  model made impossible, since it has no `\n`
+- **History is the inline REPL's history.** `tui/history.py` reads and appends
+  `~/.openx/history` in prompt_toolkit's `FileHistory` format (a `# <timestamp>`
+  header plus `+`-prefixed lines), so a command typed in `--inline` is on `↑` in
+  the full-screen interface and vice versa. Append-only (two surfaces open at
+  once cannot truncate each other), empty lines and adjacent duplicates skipped
+  exactly like the inline `OpenXHistory.store_string`, and any IO failure
+  degrades to "no history" instead of breaking the input line. `↑`/`↓` recall
+  only at the first/last line — inside the text they move the caret — and a
+  half-typed draft comes back when you walk past the newest entry
+- **Dialogs type the same way**: `TextScreen` mounts the very same
+  `PromptEditor`, so `ask_user`'s "Other" and `/skill add`'s multi-line
+  instructions are written in one dialog instead of one dialog per line
+- `Ctrl+R` / `Ctrl+T` became priority bindings: `TextArea` ships its own editing
+  keys, and a future `ctrl+r` there must not silently shadow "fold all thinking"
+- The slash menu keeps its two-path discipline — `Tab` / `Esc` bindings are gated
+  by `check_action` (dead while the menu is closed) instead of calling `stop()`,
+  which would also cut the bubbling path that delivers the key to the binding
+  action. That gate is what lets `Esc` mean both "close the menu" and "interrupt
+  the turn"
+- `tests/tui/test_input.py` (39 cases) pins the ptk-compatible history format,
+  multi-line submit / paste / newline keys, the growing and capped frame,
+  history recall at the boundaries, `Tab` still walking the focus chain and `Esc`
+  still reaching the interrupt; `tests/tui/conftest.py` points `HISTORY_PATH` at
+  `tmp_path` for the whole directory, so tests never write into a real
+  `~/.openx/history`
+- `docs/subsystems/tui` (both languages) gains an "input line" section with the
+  key table and the revised limits; the `textual` API list in `pyproject.toml`
+  adds `TextArea`
+
 ## 0.1.32 — Clicks can no longer kill the input
 
 - **Fixed: one click on the transcript bricked the input line.** Textual hands

@@ -4,9 +4,10 @@
 空白时弹 prompt_toolkit 的 COLUMN 补全菜单：前缀同时匹配主名与别名，命中
 别名提交规范名，Enter 应用选中项并提交，Tab 应用 + 尾随空格，Esc 收菜单。
 
-全屏 TUI 的输入行是 Textual ``Input``，没有这层。这里用 ``Vertical`` +
-``Static`` 行拼同款菜单，数据源同一家（``cli.commands.menu_entries``，延迟
-导入断开 ui/tui → cli 顶层环），键位路由在 ``PromptInput``（app.py）。
+全屏 TUI 的输入行是自绘控件（``TextArea`` 之上，见 ``tui/prompt.py``），没有
+这层。这里用 ``Vertical`` + ``Static`` 行拼同款菜单，数据源同一家
+（``cli.commands.menu_entries``，延迟导入断开 ui/tui → cli 顶层环），键位
+路由在 ``PromptEditor``（``tui/prompt.py``：Tab 应用、Esc 收菜单、↑/↓ 移光标）。
 
 视觉对齐行内菜单（同 modals.py 的纪律）：裸列无框，选中行 ``●`` + 亮字
 加粗，其余 dim；每行主名 + dim 描述（ptk 的 display_meta 位）。
@@ -134,7 +135,7 @@ class SlashMenu(Vertical):
             line.append(meta, style=DIM)
         return line
 
-    # ── 光标移动（键位由 PromptInput 转发）──────────────────────
+    # ── 光标移动（键位由 PromptEditor 转发）─────────────────────
 
     def move(self, delta: int) -> bool:
         """``↑``/``↓`` 移动光标；有候选时返回 True（已消费）。"""
