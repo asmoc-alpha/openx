@@ -356,12 +356,13 @@ load_plugin("dataquery")
    （`collect_context_fragments` 并入系统提示、`trigger_lifecycle` 故障
    隔离回调、agent.startup 接 session_start）+ unload 的 **on_unload 状态
    落盘契约**（§1.2 卸载有状态性的兑现）+ 协议一致性 warning + write_plugin
-   按 type 生成三协议插件（PLUGIN_SPEC v2 常驻 + 注册面 AST 契约检查，类型
-   错配即拒）。单例协议（planner/compaction）列后续；checkpoint / resume
+   按 type 生成三协议插件（PLUGIN_SPEC v2 + 注册面 AST 契约检查，类型
+   错配即拒；该契约自 0.1.x 起改为按需加载的 `plugin-authoring` 提示包，
+   见 `docs/subsystems/prompt-packs.md`）。单例协议（planner/compaction）列后续；checkpoint / resume
    接线已随 v0.1.2 容灾落地（见 `docs/openx-kernel-design.md` §3.6）。
 5. ~~**P-E 轨迹升级**~~ **已完成**：事件账本补**成本字段**（`protocol.turn_usage`，逐回合 token/时长增量，由顶层 agent 在回合并口 emit）+ **eval 导出**（`services/eval_export.py`：会话账本 → 一行一会话的评测 JSONL，`/export-eval` 命令）。费用（USD）字段预留，待定价配置。
 6. ~~**P-F 模型自产插件**~~ **已完成**（2026-08-29）：`kernel/assembly/plugin_spec.py`
-   PluginSpec（常驻系统提示）+ `tools/write_plugin_tools.py` 三元工具（write ASK
+   PluginSpec（按需加载：`plugin-authoring` 提示包）+ `tools/write_plugin_tools.py` 三元工具（write ASK
    / test ALLOW / promote ASK）+ admit 管线（manifest 校验 → 语法/契约存在性 →
    **进程内 self_test** → 落盘 → load_plugin → 重建）+ `plugin_promoted` 决策事件。
    自测在进程内跑（D9 进程隔离为后续加固，write 的 ASK 闸是当前信任锚点）；

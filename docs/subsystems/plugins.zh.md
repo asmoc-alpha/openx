@@ -130,6 +130,10 @@ OPENX_PLUGIN_AUTORELOAD=1  # 插件文件变化自动重组
 没有注册面——只骑在一条内置 context 片段上。插件是**代码**：注册能力。
 两者不合并；协作方式 = skill 教模型"何时调用某插件工具"。
 
+[提示包](prompt-packs.zh.md) 是技能的*内置*对应物：插件编写契约本身就是
+一个提示包（`plugin-authoring`），在 `write_plugin` / `load_prompt` 激活它
+之前不占任何上下文。
+
 ## 协议钉扎
 
 插件可以钉住它编写时所依据的契约：

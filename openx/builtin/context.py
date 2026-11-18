@@ -1,17 +1,18 @@
 """base bundle 内置插件之一：内置 prompt 片段（builtin-context，K7 收口）。
 
 系统提示里那些**硬连线**的提示源--OPENX.md 指令（``instructions.py``）、
-skills 目录（``skills.py``）、记忆系统使用说明（``MEMORY_INSTRUCTIONS``）
---从 agent 的直连 import 升格为 **context/v1 注册项**（"一切能力皆插件"，
-断掉"loop 认识具体提示源"的零引用破洞）。
+skills 目录（``skills.py``）、记忆系统使用说明（``MEMORY_INSTRUCTIONS``）、
+按需加载的提示包目录/正文（``prompt_packs.py``）--从 agent 的直连 import
+升格为 **context/v1 注册项**（"一切能力皆插件"，断掉"loop 认识具体提示源"
+的零引用破洞）。
 
 消费面 = ``services/assembly.py::collect_context_fragments``：pre-inference
 阶段按 **priority 升序** + 字符预算 + 单插件崩溃隔离征集，片段并入系统提示。
 片段生产者按**形参容量**收到只读 ``PromptHost``（``kernel/assembly/context.py``）
 --``host is None``（子代理 / 测试的无 host 调用）时本插件零贡献，安全。
 
-优先级排列复刻收口前的提示顺序：指令(10) → 记忆提示(40) → skills(50)，
-用户上下文插件走默认 100（= 永远排在内置片段之后）。
+优先级排列复刻收口前的提示顺序：指令(10) → 记忆提示(40) → skills(50) →
+提示包(60)，用户上下文插件走默认 100（= 永远排在内置片段之后）。
 
 失败语义：内置插件 apply 抛异常 = 致命（产品带病不该运行）；禁用表对
 内置 id 无效。
@@ -36,17 +37,20 @@ __openx_meta__ = {
     "type": "context.memory",
     "mount": "loop.pre-inference",
     "trust": "builtin",
-    "summary": "内置 prompt 片段：OPENX.md 指令 / skills 目录 / 记忆系统说明",
+    "summary": "内置 prompt 片段：OPENX.md 指令 / skills 目录 / 记忆系统说明 / 提示包目录",
     "cost": {"schemaTokens": 0},
 }
 
 from ..instructions import format_instructions
+from ..prompt_packs import render_prompt_packs
 from ..skills import build_skills_prompt
 
 # 内置片段的优先级（复刻收口前的提示顺序；用户插件默认 100 恒在其后）
 PRIORITY_INSTRUCTIONS = 10
 PRIORITY_MEMORY_HINTS = 40
 PRIORITY_SKILLS = 50
+# 提示包排在 skills 之后：目录恒在、正文只在激活后展开（按需加载）
+PRIORITY_PROMPT_PACKS = 60
 
 
 # ── 记忆系统使用说明（K7 从 tools/memory_tool.py 迁来）──────────────
@@ -101,8 +105,22 @@ def contribute_skills(host=None):
     return build_skills_prompt(dict(getattr(host, "skills", None) or {})).strip()
 
 
+def contribute_prompt_packs(host=None):
+    """提示包目录 + 已激活正文（按需加载：目录恒在，正文懒加载）。
+
+    host 上没有 ``prompt_packs``（子代理 / 无 host 调用）→ 零贡献：
+    没有目录就没有引导，正文更不该出现。
+    """
+    registry = getattr(host, "prompt_packs", None) if host is not None else None
+    if registry is None:
+        return ""
+    return render_prompt_packs(
+        registry, getattr(host, "active_prompt_packs", ())
+    ).strip()
+
+
 def apply(ctx) -> None:
-    """内置插件入口：注册三条 context/v1 贡献（priority 决定征集序）。"""
+    """内置插件入口：注册四条 context/v1 贡献（priority 决定征集序）。"""
     ctx.register_context(
         "instructions", contribute_instructions, priority=PRIORITY_INSTRUCTIONS
     )
@@ -112,6 +130,9 @@ def apply(ctx) -> None:
     ctx.register_context(
         "skills", contribute_skills, priority=PRIORITY_SKILLS
     )
+    ctx.register_context(
+        "prompt_packs", contribute_prompt_packs, priority=PRIORITY_PROMPT_PACKS
+    )
 
 
 def _self_check() -> None:
@@ -120,10 +141,12 @@ def _self_check() -> None:
 
     from ..instructions import InstructionLevel, InstructionRegistry, InstructionSet
     from ..kernel.assembly.context import PromptHost
+    from ..prompt_packs import load_prompt_packs
 
     # 无 host（子代理 / 测试的无 host 调用）-> 零贡献，不炸
     assert contribute_instructions() == ""
     assert contribute_skills() == ""
+    assert contribute_prompt_packs() == ""
     assert contribute_memory_hints(), "记忆提示是常驻常量，与 host 无关"
 
     reg = InstructionRegistry(
@@ -136,6 +159,21 @@ def _self_check() -> None:
     host = PromptHost(workspace="/ws", instructions=reg, skills={})
     out = contribute_instructions(host)
     assert "Always run the tests." in out and "## Project Instructions" in out
+    # host 上没有 prompt_packs（未接线 / 子代理）-> 仍零贡献
+    assert contribute_prompt_packs(host) == ""
+
+    # 接了 registry：目录恒在、正文只在激活后出现
+    packs = load_prompt_packs()
+    host2 = PromptHost(workspace="/ws", prompt_packs=packs, active_prompt_packs=())
+    catalog = contribute_prompt_packs(host2)
+    assert "## Prompt Packs" in catalog and "`plugin-authoring`" in catalog
+    assert "__openx_meta__" not in catalog, "未激活时正文不得进提示"
+    host3 = PromptHost(
+        workspace="/ws", prompt_packs=packs, active_prompt_packs={"plugin-authoring"}
+    )
+    loaded = contribute_prompt_packs(host3)
+    assert "__openx_meta__" in loaded and "[loaded]" in loaded
+    assert not loaded.startswith("\n"), "片段不得带前导空行（契约）"
     print("openx/builtin/context.py OK ✓")
 
 

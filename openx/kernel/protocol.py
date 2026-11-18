@@ -582,6 +582,30 @@ def memory_recall(
     }
 
 
+def prompt_pack(
+    pack: str,
+    reason: str = "manual",
+    chars: int = 0,
+) -> dict[str, Any]:
+    """一次提示包（prompt pack）激活/摘除（会话账本事件）。
+
+    "模型怎么会突然知道插件编写契约"要有痕可查：``reason`` 记录它来自哪条
+    通道——``keyword``（用户请求命中关键词自动激活）/ ``tool``（模型调
+    ``load_prompt``）/ ``command``（用户 ``/prompt``）/ ``write_plugin``
+    （写插件时的兜底激活）/ ``deactivate``（``/prompt off`` 摘下）。
+    ``chars`` 是该 pack 正文的字符数（上下文预算核对用），摘除时为 0。
+
+    会话账本事件，**非**跨会话事实——不入 ``DECISION_EVENTS`` / 全局账本
+    （与 ``memory_recall`` 同一条归属纪律）。
+    """
+    return {
+        "type": "prompt_pack",
+        "pack": str(pack),
+        "reason": str(reason),
+        "chars": int(chars),
+    }
+
+
 def resume_event(
     verdict: str,
     checkpoint_seq: int = 0,

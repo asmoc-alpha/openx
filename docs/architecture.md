@@ -21,6 +21,7 @@ openx/
 │   ├── model_groups.py    # modelGroups schema + per-role resolution (the only model/provider config)
 │   ├── coding_memory.py   # Coding memory (project conventions/decisions, project-scoped)
 │   ├── skills.py          # Skills: SKILL.md instruction packs (progressive disclosure)
+│   ├── prompt_packs.py    # Built-in prompt fragments loaded on demand (catalog + body)
 │   ├── changelog.py       # CHANGELOG.md parsing (What's-new panel, /release-notes)
 │   ├── app/
 │   │   ├── cli/           # commands.py (slash registry) / interactive.py (REPL +
@@ -112,7 +113,7 @@ Permission checks and hook invocations happen during serial preparation, inside
 | Kernel | `kernel/` (five-piece: assembly/reasoning/audit/trace/sandbox, incl. protocol & hooks), `agent.py`, `services/tool_executor.py`, `services/streaming.py` | Turn loop, tool dispatch (serial prepare → parallel execute), stream display, verdicts & ledger |
 | Model | `llm/` | Provider implementations (openai-compat / anthropic-compat), streaming; retry/backoff lives in the kernel (`kernel/reasoning/`) |
 | Capabilities | `tools/`, `mcp/` | Model-facing tools (fs, shell, search, git, web, todo, plan, task, workflow) and external MCP tools |
-| Context & memory | `instructions.py`, `memory.py`, `orchestration/history.py` | Instruction files (OPENX.md / AGENT.md / AGENTS.md), persistent memory, history + compaction |
+| Context & memory | `instructions.py`, `memory.py`, `skills.py`, `prompt_packs.py`, `orchestration/history.py` | Instruction files (OPENX.md / AGENT.md / AGENTS.md), persistent memory, progressively disclosed skills & prompt packs, history + compaction |
 | Orchestration | `orchestration/subagent.py`, `orchestration/workflow.py`, `orchestration/tasks.py`, `orchestration/fleet.py` | Subagents, deterministic workflows, background tasks (hard-wired, P2+ plugin-ization) |
 | State | `orchestration/sessions.py`, `config.py`, `kernel/recovery/` | Session persistence/resume, layered configuration, turn-level checkpoints & interrupt recovery |
 | Collaboration | `permissions.py` | Permission tiers, stored rules, dangerous-command gate |

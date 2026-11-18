@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Optional, Union
+from typing import Any, Awaitable, Callable, Collection, Mapping, Optional, Union
 
 # 命令 handler 签名与内置一致：async (agent, console, args) -> bool
 CommandHandler = Callable[..., Awaitable[bool]]
@@ -81,7 +81,8 @@ class PromptHost:
     哲学——片段生产者在**征集期**拿到的一份只读数据投影，拿不到 loop /
     闸门 / console。面上字段按"首个真实消费方才加入"最小化：当前内置
     prompt 源（OPENX.md 指令 / skills 目录 / 记忆提示常量，见
-    ``openx/builtin/context.py``）恰好只需这些。
+    ``openx/builtin/context.py``；以及按需加载的 prompt packs，见
+    ``openx/prompt_packs.py``）恰好只需这些。
 
     仅承载 prompt **源**；记忆内容后端（``memory`` / ``coding_memory``）
     属设计中的 ``memory_backends`` 注册项，不在本面（P2+ 再收口）。
@@ -91,6 +92,10 @@ class PromptHost:
     instructions: Optional[Any] = None            # InstructionRegistry
     skills: Mapping[str, Any] = field(default_factory=dict)  # {name: Skill}
     budget: Optional[int] = None                  # 本次征集字符预算
+    # 按需加载的提示包：registry 承载"目录 + 正文"，active 是本次提示要
+    # 展开的 pack 名集合。两者都可缺省（子代理 / 无 pack 调用 → 零贡献）。
+    prompt_packs: Optional[Any] = None            # PromptPackRegistry
+    active_prompt_packs: Collection[str] = frozenset()   # 已激活 pack 名
 
 
 @dataclass

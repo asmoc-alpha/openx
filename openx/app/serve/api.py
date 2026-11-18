@@ -783,6 +783,59 @@ async def mcp_delete(request: web.Request) -> web.Response:
     return _ok({"deleted": name, "restartRequired": True})
 
 
+# ── prompt packs ────────────────────────────────────────────────
+
+
+async def prompt_packs_get(request: web.Request) -> web.Response:
+    """GET /api/prompts → 提示包目录 + 哪些已激活。
+
+    与 `/prompt` 命令同一数据（同一个 registry、同一个激活集合）：Web 端只
+    需要展示目录与状态，正文由模型侧 `load_prompt` 拉——把正文也塞进这个
+    响应等于让 UI 替模型付一遍 token，没有意义。
+    """
+    from ...prompt_packs import CATALOG_HEADER, active_names
+
+    agent = _agent(request)
+    registry = getattr(agent, "prompt_packs", None)
+    if registry is None:
+        return _ok({"packs": [], "active": [], "header": CATALOG_HEADER})
+    active = active_names(getattr(agent, "_active_prompt_packs", ()), registry)
+    items = [
+        {
+            "name": pack.name,
+            "summary": pack.summary,
+            "chars": pack.chars,
+            "triggers": list(pack.triggers),
+            "active": pack.name in active,
+        }
+        for pack in registry.packs.values()
+    ]
+    return _ok({"packs": items, "active": active, "header": CATALOG_HEADER})
+
+
+async def prompt_packs_post(request: web.Request) -> web.Response:
+    """POST /api/prompts → 激活/摘除一个提示包（``{"name", "active"}``）。
+
+    副作用与 `/prompt <name>` 完全一致（共用 ``agent.activate_prompt_pack``）：
+    记一条 ``prompt_pack`` 账本事件 + 重建系统提示，下一轮请求生效。
+    """
+    agent = _agent(request)
+    body = await _body(request)
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return _fail("prompt pack name required")
+    desired = bool(body.get("active", True))
+    try:
+        if desired:
+            pack = agent.activate_prompt_pack(name, reason="command")
+            return _ok({"name": pack.name, "active": True, "chars": pack.chars})
+        removed = agent.deactivate_prompt_pack(name)
+        return _ok({"name": name, "active": False, "removed": bool(removed)})
+    except KeyError:
+        available = ", ".join(sorted(getattr(agent, "prompt_packs", {}) or [])) or "(none)"
+        return _fail(f"prompt pack not found: {name}. Available: {available}")
+
+
 # ── skill ───────────────────────────────────────────────────────
 
 async def skills_get(request: web.Request) -> web.Response:
@@ -1452,6 +1505,9 @@ def register_api(app: web.Application, session: Any, workspace: str) -> None:
     app.router.add_get("/api/skills", skills_get)
     app.router.add_post("/api/skills", skills_save)
     app.router.add_delete("/api/skills/{name}", skills_delete)
+
+    app.router.add_get("/api/prompts", prompt_packs_get)
+    app.router.add_post("/api/prompts", prompt_packs_post)
 
     app.router.add_get("/api/plugins", plugins_get)
     app.router.add_post("/api/plugins/{id}/toggle", plugins_toggle)

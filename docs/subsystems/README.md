@@ -15,6 +15,7 @@ in [user/](../user/index.md); step-by-step how-tos in [cookbook/](../cookbook/ex
 | Hooks | [hooks.md](hooks.md) | Claude-Code-compatible shell hooks on eight lifecycle events |
 | MCP | [mcp.md](mcp.md) | Model Context Protocol servers over stdio, zero extra dependencies |
 | Skills | [skills.md](skills.md) | `SKILL.md` instruction packs: progressive disclosure, session-scoped `allowed-tools`, on-demand loading |
+| Prompt packs | [prompt-packs.md](prompt-packs.md) | Built-in system-prompt fragments loaded on demand: catalog always in context, bodies only when active (`load_prompt` / `/prompt` / keyword) |
 | Scaffolds | [scaffolds.md](scaffolds.md) | Declare why a compensating module exists and when it retires; retire/restore with a ledger trail |
 | Composition | [composition.md](composition.md) | Resolve the load bundle from model profile × user/project overlay; promotion writes back |
 | Offline analysis | [offline-analysis.md](offline-analysis.md) | Cluster the session ledger into human-readable reports (gap report `/gaps`, assembly report `/assembly`) |

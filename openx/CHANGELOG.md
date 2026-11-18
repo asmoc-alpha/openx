@@ -4,6 +4,52 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.36 — The plugin contract stops riding along on every request
+
+- **The system prompt now carries a catalog of `prompt packs`, not their text.**
+  `plugin-authoring` — the plugin/component authoring contract — used to be appended to
+  every top-level system prompt: 2,749 characters, paid on every request of every session,
+  including the overwhelming majority that never write a plugin. It is now one line in a
+  catalog (723 characters), and the body enters the prompt only once it is active. Net
+  saving when idle: **2,026 characters per request**; the cost of the trade is 821 extra
+  characters while a pack *is* active — one pack body plus the catalog line that says so.
+- **One implementation, four ways in.** Activation means exactly three things — add the
+  name to the session set, emit a `prompt_pack` ledger event, rebuild the cached prompt —
+  and they happen in one place (`agent.activate_prompt_pack`). The channels: the model
+  calls the new **`load_prompt` tool** (the intended path — the catalog line tells it what
+  it does not have); the user types **`/prompt <name>`**; the user's message *matches a
+  trigger* (substring, so 「帮我写个插件」 hits `插件`); or **`write_plugin`** is called and
+  activates it as a fallback, because the admission gate validates precisely that contract.
+  Activation is idempotent, so a model that calls `load_prompt` twice does not leave two
+  events in the ledger. `_sync_system_message` already re-reads the prompt each round, so a
+  `load_prompt` inside a turn affects **the next round of that same turn** — not the next
+  user message.
+- **`prompt_pack` is a ledger event with a `reason`.** "How did the model suddenly know
+  this contract" gets an answer that survives the session: `tool` / `command` / `keyword` /
+  `write_plugin` / `deactivate`, plus the body's character count for budget accounting.
+  Session-scoped (like `memory_recall`), not a cross-session decision.
+- **Triggers are lowercase by contract.** `PromptPackRegistry.match` lowercases the input
+  and leaves triggers alone, so an uppercase trigger can never fire — a test pins it for
+  every built-in pack. Substring matching over tokenization, because Chinese has no spaces
+  to split on. Kept deliberately narrow: a false positive costs a whole body of tokens, a
+  false negative costs one `load_prompt` call.
+- **Subagents get nothing.** Capability inheritance is a subset of the parent's: a child
+  gets an empty registry, no catalog line, and no `load_prompt` tool — the delegated job
+  should not inherit, or pay for, the top-level authoring contract.
+- **Removing a resident fragment is a two-part edit.** The `PLUGIN_SPEC` import and its
+  single use had to go together; either one alone is a `NameError` at agent construction.
+  `write_plugin`'s description also had to change — it told the model to "follow the plugin
+  format in your instructions", a place that no longer exists, so it now names the pack.
+- **`/prompt`** (`/prompts`): list packs with `○`/`●` and their sizes, `/prompt <name>` to
+  load, `/prompt off [name]` to unload (bare `off` = all). Loading prints the character
+  count and says plainly that the text lands in the *next* request.
+- Documented as a subsystem: [prompt-packs.md](docs/subsystems/prompt-packs.md)
+  ([中文](docs/subsystems/prompt-packs.zh.md)), and the context fragment is a fourth
+  `builtin-context` registration (priority 60, after instructions / memory hints / skills).
+- **`GET` / `POST /api/prompts`** for the Web surface: the catalog with `active` flags
+  (no bodies — the UI should not pay for tokens the model may never need) and a toggle that
+  calls the same `activate_prompt_pack` as the command, so the ledger event is identical.
+
 ## 0.1.35 — The Agents panel becomes navigable, and one diff gets one color
 
 - **`Ctrl+O` / `Alt+0…9` in the full-screen surface open a subagent's detail

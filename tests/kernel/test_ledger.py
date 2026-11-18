@@ -91,9 +91,10 @@ class TestMutationEvents:
         assert types.count("plugin_loaded") == 4  # 三个内置 + hello
         assert sink.events[1].payload["plugin"] == "builtin-tools"
         # 工具工厂 + 各 provider 工厂（openai-compat 恒在、anthropic 视 SDK）
-        # + 三个内置上下文片段 + hello 工具 + hi 命令
+        # + 四个内置上下文片段（指令/记忆说明/skills 目录/提示包目录）
+        # + hello 工具 + hi 命令
         n_providers = len(get_kernel().registry("providers"))
-        assert types.count("registered") == 6 + n_providers
+        assert types.count("registered") == 7 + n_providers
         comp = sink.of("composition_resolved")
         assert len(comp) == 1
         assert comp[0].payload["plugins"] == [

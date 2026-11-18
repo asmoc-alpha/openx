@@ -102,7 +102,6 @@ from .orchestration.sessions import SessionMeta, SessionStore
 from .orchestration.subagent import CHILD_EXCLUDED_TOOLS, load_subagent_specs
 from .kernel.sandbox.host import ToolHost
 from .kernel.assembly.context import PromptHost
-from .kernel.assembly.plugin_spec import PLUGIN_SPEC
 from .kernel.audit.admission import Contribution
 from .kernel.audit.guard import Verdict
 from .services import assembly
@@ -126,6 +125,7 @@ from .tools.plugin_manager_tool import PluginInspectTool, PluginManagerTool
 from .tools.subagent_tool import TaskTool
 from .tools.workflow_tool import WorkflowTool
 from .tools.skill_tool import SkillTool
+from .tools.prompt_tool import LoadPromptTool
 from .orchestration.tasks import TaskRegistry
 from .memory import MemoryStore
 from .coding_memory import CodingMemoryStore
@@ -136,6 +136,14 @@ from .skills import (
     list_supporting_files,
     load_skill_body,
     load_skills,
+)
+# 按需加载的提示包（渐进披露的第二条通道，区别于用户可装的 skills）：
+# 目录常驻、正文懒加载。装载纯内存，不可能失败。
+from .prompt_packs import (
+    PromptPack,
+    PromptPackRegistry,
+    active_names as _active_pack_names,
+    load_prompt_packs,
 )
 from .tools.base import Tool
 from .tools.structured_output import StructuredOutputTool
@@ -465,6 +473,17 @@ class OpenXAgent:
         # 绝不落盘；deactivate/reload 时摘下）
         self._active_skills: dict[str, list[str]] = {}
 
+        # 提示包（prompt packs，渐进披露的第二条通道）：目录恒在系统提示，
+        # 正文只在激活后展开。**子代理恒为空 registry** —— 能力继承 = 父集
+        # 的子集（与工具实例化、context 片段同款口径）：委派下去的活儿不该
+        # 顺带继承"写插件"这类顶层契约，白付 token 还会误导它去改插件。
+        self.prompt_packs: PromptPackRegistry = (
+            load_prompt_packs() if parent is None else PromptPackRegistry()
+        )
+        # 本次会话已激活的 pack 名（会话内存态，绝不落盘——重启即回到
+        # "只背目录"的初始状态，这正是按需加载的意义）
+        self._active_prompt_packs: set[str] = set()
+
         # 加载 OPENX.md 指令文件，并构建初始系统提示
         self._instructions: InstructionRegistry = load_instructions(self.workspace)
         self._system_prompt = self._build_system_prompt()
@@ -519,11 +538,11 @@ class OpenXAgent:
         self._emit_memory_recall(recalled)
 
         # 上下文协议（context/v1，K7 收口）：按 priority 升序征集片段--
-        # 内置片段在前（OPENX.md 指令 10 / 记忆说明 40 / skills 目录 50），
-        # 用户插件片段走默认 100，恒在内置之后。子代理不继承用户插件贡献
-        # （能力继承 = 父集的子集，与工具实例化同款口径）；单插件崩溃由
-        # 征集侧隔离，不炸提示组装。host 是只读投影（PromptHost）--片段
-        # 生产者拿不到 agent 本体，且按**形参容量**接收。
+        # 内置片段在前（OPENX.md 指令 10 / 记忆说明 40 / skills 目录 50 /
+        # 提示包目录 60），用户插件片段走默认 100，恒在内置之后。子代理不
+        # 继承用户插件贡献（能力继承 = 父集的子集，与工具实例化同款口径）；
+        # 单插件崩溃由征集侧隔离，不炸提示组装。host 是只读投影
+        # （PromptHost）--片段生产者拿不到 agent 本体，且按**形参容量**接收。
         try:
             from .kernel import get_kernel
 
@@ -536,6 +555,10 @@ class OpenXAgent:
                     instructions=self._instructions,
                     skills=self.skills,
                     budget=assembly.CONTEXT_BUDGET,
+                    # 提示包：目录恒在，正文只对已激活的展开。子代理是空
+                    # registry → 片段零贡献（见 __init__）。
+                    prompt_packs=self.prompt_packs,
+                    active_prompt_packs=self._active_prompt_packs,
                 ),
             )
         except Exception:
@@ -567,9 +590,9 @@ class OpenXAgent:
             elif self._mode == "auto" and self.plan_entry_enabled:
                 # 计划入口不可用（headless）时连提都不提：工具本来就看不见
                 prompt += AUTO_MODE_INSTRUCTIONS
-            # P-F 模型自产插件：write_plugin 的编写契约常驻（体积极小，
-            # 只读这一份就能生成合规插件）。
-            prompt += "\n\n" + PLUGIN_SPEC
+            # P-F 模型自产插件：编写契约**不再常驻**——它是 ``plugin-authoring``
+            # 提示包（``prompt_packs.py``），目录在提示里、正文按需加载。
+            # 契约体积不小，而"这轮并不需要写插件"才是绝大多数回合。
 
         # 子代理模式（Phase 8）：规格 .md 正文的角色指令 + 子代理行为契约
         # （最终文本即返回值、不得提问、结果自包含）
@@ -690,6 +713,116 @@ class OpenXAgent:
             parts.append("legacy flat layout")
         return "\n".join(parts)
 
+    # ── Prompt packs（渐进披露的第二条通道）──────────────────────
+    #
+    # 与 skills 同一条哲学（目录常驻、正文按需），区别在归属：skills 是用户/
+    # 项目的指令包（可安装、可含附带文件），prompt packs 是产品内置的专业化
+    # 片段（``prompt_packs.py`` 是唯一真源），随版本走、不需要安装。
+    #
+    # 三条激活通道全部落在 :meth:`activate_prompt_pack` 这一个实现上：
+    # ``load_prompt`` 工具（模型主动）/ ``/prompt`` 命令（用户显式）/
+    # 关键词自动（:meth:`auto_activate_prompt_packs`）；``write_plugin`` 还有
+    # 一条兜底激活（见 ``tools/write_plugin_tools.py``）。
+
+    @property
+    def active_prompt_packs(self) -> list[str]:
+        """已激活的 pack 名（注册序，未知名已滤掉）。"""
+        return _active_pack_names(self._active_prompt_packs, self.prompt_packs)
+
+    def activate_prompt_pack(
+        self, name: str, *, reason: str = "manual"
+    ) -> PromptPack:
+        """激活一个提示包：正文下一轮进系统提示。
+
+        - 未知名抛 ``KeyError``（调用方转成用户可读提示）；
+        - **幂等**：已激活则直接返回，不重复记账、不重复重建提示——模型一个
+          回合里连调两次 ``load_prompt`` 不该在账本里留两条；
+        - 副作用三件套（集合 + 账本事件 + 提示重建）都在这里，故三条激活
+          通道共享同一语义。
+
+        ``reason`` 记它从哪条通道来（``keyword`` / ``tool`` / ``command`` /
+        ``write_plugin``），见 ``kernel.protocol.prompt_pack``。
+        """
+        pack = self.prompt_packs.get(name)
+        if pack is None:
+            raise KeyError(str(name or "").strip())
+        if pack.name in self._active_prompt_packs:
+            return pack
+        self._active_prompt_packs.add(pack.name)
+        self._emit_prompt_pack(pack.name, reason, pack.chars)
+        # 目录里的 [loaded] 标记 + 正文本身：下一轮请求前由
+        # _sync_system_message 同步进消息序列。
+        self._system_prompt = self._build_system_prompt()
+        return pack
+
+    def deactivate_prompt_pack(self, name: str) -> bool:
+        """摘下一个提示包（幂等）：正文退出系统提示，目录仍在。
+
+        返回是否真的摘下——``/prompt off <name>`` 据此区分"摘了"与"本来
+        就没开"。
+        """
+        target = str(name or "").strip()
+        if target not in self._active_prompt_packs:
+            return False
+        self._active_prompt_packs.discard(target)
+        self._emit_prompt_pack(target, "deactivate", 0)
+        self._system_prompt = self._build_system_prompt()
+        return True
+
+    def auto_activate_prompt_packs(
+        self, text: str | list[dict[str, Any]] | None
+    ) -> list[str]:
+        """关键词自动激活（用户消息进来时调用）：返回本次**新**激活的 pack 名。
+
+        triggers 是子串匹配（中文没有空格可切，见 ``prompt_packs.match``），
+        「宁窄勿宽」由 pack 表本身把关；误命中代价只是白付一份正文 token，
+        漏命中有 ``load_prompt`` 与 ``/prompt`` 两条人工通道兜着。
+        """
+        payload = self._user_text(text)
+        if not payload:
+            return []
+        activated: list[str] = []
+        for name in self.prompt_packs.match(payload):
+            try:
+                self.activate_prompt_pack(name, reason="keyword")
+            except KeyError:  # pragma: no cover - match 只回已注册名
+                continue
+            activated.append(name)
+        return activated
+
+    @staticmethod
+    def _user_text(user_message: Any) -> str:
+        """从用户消息里取纯文本（多模回合是 content parts 列表）。"""
+        if isinstance(user_message, str):
+            return user_message
+        if not isinstance(user_message, list):
+            return ""
+        return "\n".join(
+            str(part.get("text") or "")
+            for part in user_message
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+
+    def _emit_prompt_pack(self, name: str, reason: str, chars: int) -> None:
+        """记账：``prompt_pack`` 事件（"模型怎么会突然知道这份契约"）。
+
+        与 ``_emit_memory_recall`` 同一条纪律：仅持有 ``session_store`` 的
+        顶层 agent 落账（子代理共享内核但不落盘）；emit 异常绝不打断激活。
+        """
+        if self.session_store is None:
+            return
+        try:
+            from .kernel import get_kernel
+            from .kernel.protocol import prompt_pack
+
+            get_kernel().emit(
+                "prompt_pack",
+                prompt_pack(name, reason, chars=chars),
+                origin="kernel",
+            )
+        except Exception:
+            pass
+
     def reload_instructions(self) -> InstructionRegistry:
         """从磁盘重新加载 OPENX.md。
 
@@ -788,8 +921,9 @@ class OpenXAgent:
                 # manager（ASK：install/set_enabled/list）+ inspect（ALLOW 只读）。
                 PluginManagerTool(kernel, self),
                 PluginInspectTool(kernel),
-                # 渐进披露的模型侧入口（skill）：按需加载 skill 正文。
+                # 渐进披露的模型侧入口（skill / prompt pack）：按需加载正文。
                 SkillTool(self),
+                LoadPromptTool(self),
             ):
                 registry[tool.name] = tool
                 reserved[tool.name] = "builtin-structural"
@@ -2082,6 +2216,12 @@ class OpenXAgent:
         """
         resume = self._consume_resume(resume)
         state = AgentState()
+        # 关键词自动激活（提示包的三条通道之一）：用户这句话本身提到"写插件"
+        # 之类，就在本轮请求前把正文放进系统提示——模型不必先想起去调
+        # ``load_prompt``。恢复回合不重复判定（激活集合是会话态的，中断前
+        # 已生效的仍在，判定只会白跑一遍重建）。
+        if resume is None:
+            self.auto_activate_prompt_packs(user_message)
         if resume is not None and resume.new_turn:
             state.tool_rounds = int(resume.tool_rounds or 0)
             state.messages = self._fold_for_provider([
@@ -2116,9 +2256,10 @@ class OpenXAgent:
     def _sync_system_message(self, state: AgentState) -> None:
         """把**最新**的系统提示同步进本轮消息序列（每轮请求前调用）。
 
-        系统提示只在 ``_seed_turn`` 写一次，而模式、插件装配、指令文件都能在
-        回合中途改变（``set_mode`` / ``_rebuild_tools`` / ``reload_instructions``
-        都只重建 ``self._system_prompt`` 这个字段）。工具 schema 每轮重读，
+        系统提示只在 ``_seed_turn`` 写一次，而模式、插件装配、指令文件、提示包
+        都能在回合中途改变（``set_mode`` / ``_rebuild_tools`` /
+        ``reload_instructions`` / ``activate_prompt_pack`` 都只重建
+        ``self._system_prompt`` 这个字段）。工具 schema 每轮重读，
         提示若不跟着走就会出现"写工具已经消失、模型却还拿着旧提示"的错配：
         回合中切进 plan 模式的模型看不到 ``PLAN_MODE_INSTRUCTIONS``，于是既
         没有写工具、也不知道该去探索并提交计划。

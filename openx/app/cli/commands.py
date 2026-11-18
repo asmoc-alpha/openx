@@ -1999,6 +1999,76 @@ def _sync_skill_commands(agent) -> list[str]:
 
 
 @register(
+    "prompt",
+    description="Prompt packs (list / <name> / off [name])",
+    aliases=["prompts"],
+)
+async def _cmd_prompt(agent, console, args):
+    """按需加载的提示包（prompt packs）——目录看 ``/prompt``，装正文
+    ``/prompt <name>``，摘下 ``/prompt off [name]``。
+
+    与 ``load_prompt`` 工具、关键词自动激活共用 ``agent.activate_prompt_pack``
+    一个实现：命令这一条只是"用户显式"的那条通道（且能看到目录 / 手动摘）。
+    """
+    registry = getattr(agent, "prompt_packs", None)
+    if not registry or not len(registry):
+        console.print_warning("No prompt packs available (子代理不继承提示包).")
+        return True
+
+    active = list(getattr(agent, "active_prompt_packs", []))
+    subcmd = args[0].strip().lower() if args else ""
+
+    # ── /prompt off [name] — 摘下（无名字 = 全摘）────────────────
+    if subcmd in ("off", "unload", "deactivate"):
+        targets = args[1:] or active
+        if not targets:
+            console.print_info("No prompt pack is loaded.")
+            return True
+        removed = [n for n in targets if agent.deactivate_prompt_pack(n)]
+        for name in targets:
+            if name not in removed:
+                console.print_warning(f"Not loaded: {name}")
+        if removed:
+            console.print_success(f"Unloaded: {', '.join(removed)}")
+        return True
+
+    # ── /prompt [list] — 目录（含已加载标记 + 体积）──────────────
+    if not subcmd or subcmd in ("list", "ls"):
+        console.raw.print("\n[bold]Prompt packs[/bold] [dim](load on demand)[/dim]\n")
+        for pack in registry.packs.values():
+            mark = "[green]●[/green]" if pack.name in active else "[dim]○[/dim]"
+            console.raw.print(
+                f"  {mark} [cyan]{pack.name}[/cyan] "
+                f"[dim]({pack.chars} chars)[/dim] — {pack.summary}"
+            )
+        console.raw.print(
+            "\n[dim]Load: /prompt <name>  |  Unload: /prompt off <name>"
+            "  |  Model-side: load_prompt tool[/dim]"
+        )
+        return True
+
+    # ── /prompt <name> — 激活（正文下一轮进系统提示）─────────────
+    name = args[0].strip()
+    was_active = name in active
+    try:
+        pack = agent.activate_prompt_pack(name, reason="command")
+    except KeyError:
+        console.print_error(
+            f"Prompt pack not found: {name}. "
+            f"Available: {', '.join(sorted(registry)) or '(none)'}"
+        )
+        return True
+    if was_active:
+        console.print_info(f"Prompt pack '{pack.name}' is already loaded.")
+        return True
+    console.print_success(
+        f"Loaded prompt pack '{pack.name}' ({pack.chars} chars) — "
+        "its full text is in the next request's system prompt."
+    )
+    return True
+
+
+@register(
     "skill",
     description="Manage skills (list / add / install / show / remove)",
     aliases=["skills"],

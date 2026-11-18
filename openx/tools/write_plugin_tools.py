@@ -171,8 +171,10 @@ class WritePluginTool(Tool):
     name = "write_plugin"
     description = (
         "Generate a new plugin from code: validate it and run its self_test, "
-        "then load it into this session (requires user approval). Follow the "
-        "plugin format in your instructions."
+        "then load it into this session (requires user approval). The exact "
+        "format lives in the `plugin-authoring` prompt pack — call `load_prompt` "
+        "with that name before writing (this tool activates it, but only after "
+        "you have already written the code)."
     )
     parameters = {
         "type": "object",
@@ -200,6 +202,20 @@ class WritePluginTool(Tool):
         self._kernel = kernel
         self._agent = agent
 
+    def _activate_contract(self) -> None:
+        """把 ``plugin-authoring`` 提示包装上（缺 agent / 缺 pack 表则跳过）。
+
+        契约正文与 admit 门的校验真源是同一份 ``PLUGIN_SPEC``；工具类不该
+        因此崩掉——提示没装上只是"这一轮模型少了说明书"，不是错误。
+        """
+        activate = getattr(self._agent, "activate_prompt_pack", None)
+        if not callable(activate):
+            return
+        try:
+            activate("plugin-authoring", reason="write_plugin")
+        except Exception:
+            pass
+
     @property
     def permission(self) -> Permission:
         return Permission(
@@ -218,6 +234,11 @@ class WritePluginTool(Tool):
         permissions: Optional[list] = None,
     ) -> ToolResult:
         plugin_id = _auto_id(name)
+        # 兜底激活契约：编写格式（``PLUGIN_SPEC``）现在是 ``plugin-authoring``
+        # 提示包，模型若没先 ``load_prompt`` 就动手，这里补一次激活——admit
+        # 门校验的正是这份契约，不装进上下文只能靠猜。放在最前面：即便本次
+        # 参数校验失败，下一轮也已经拿得到格式说明（代价是至多白付一份正文）。
+        self._activate_contract()
         # type -> 协议（未知拒绝，不走默认路由）；mount 由协议表派生
         proto, why_not = _resolve_protocol(type)
         if proto is None:

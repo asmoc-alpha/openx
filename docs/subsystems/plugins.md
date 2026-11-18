@@ -143,6 +143,10 @@ context fragment. Plugins are **code**: they register capabilities. The two
 do not merge; they cooperate (a skill teaches the model when to call a
 plugin's tool).
 
+[Prompt packs](prompt-packs.md) are the *built-in* counterpart of skills: the
+plugin-writing contract itself is one (`plugin-authoring`), so it costs no
+context until `write_plugin` / `load_prompt` activates it.
+
 ## Protocol pinning
 
 A plugin may pin the contract it was written against:

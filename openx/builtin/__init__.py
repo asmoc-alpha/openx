@@ -13,7 +13,8 @@ openx 顶层；内核加载处遍历 ``BUILTIN_PLUGINS`` 装配（列表序即�
 - ``providers``（builtin-providers）：openai-compat 恒在，anthropic 视
   可选 SDK（``pip install openx[anthropic]``）而定；
 - ``context``（builtin-context）：内置 prompt 片段（OPENX.md 指令 / skills
-  目录 / 记忆系统说明），context/v1 注册项（K7 收口）。
+  目录 / 记忆系统说明 / 提示包目录），context/v1 注册项（K7 收口；
+  提示包正文按需加载，见 ``openx/prompt_packs.py``）。
 """
 
 from __future__ import annotations

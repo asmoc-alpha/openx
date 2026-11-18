@@ -36,6 +36,7 @@ All commands registered in the REPL (see `openx/cli/commands.py`):
 | `/distill [json\|save\|recall]` | Distill candidate experiences from recent sessions into memory (see [experience distillation](../subsystems/experience.md)) |
 | `/mcp` | Show MCP server status |
 | `/skill [list\|add\|install\|show\|remove]` (alias `/skills`) | Manage `SKILL.md` instruction packs; invoke an installed one with `/<skill-name>` (see [skills](../subsystems/skills.md)) |
+| `/prompt [list\|<name>\|off [name]]` (alias `/prompts`) | List or load built-in prompt packs; `off` unloads (`/prompt off` = all) — see [prompt packs](../subsystems/prompt-packs.md) |
 | `/workflow [name]` (alias `/workflows`) | List or run saved workflows (`.openx/workflows/`) |
 | `/todos` | Show the agent's task list |
 | `/cost` | Show cumulative token usage |

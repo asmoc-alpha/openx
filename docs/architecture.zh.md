@@ -19,6 +19,7 @@ openx/
 │   ├── model_groups.py    # modelGroups schema + 逐角色解析（唯一的模型/provider 配置入口）
 │   ├── coding_memory.py   # 编程记忆（项目约定/决策，项目级隔离）
 │   ├── skills.py          # 技能：SKILL.md 指令包（渐进披露）
+│   ├── prompt_packs.py    # 提示包：内置提示片段按需加载（目录 + 正文）
 │   ├── changelog.py       # CHANGELOG.md 解析（What's-new 面板、/release-notes）
 │   ├── app/
 │   │   ├── cli/           # commands.py（斜杠命令注册表）/ interactive.py（REPL +
@@ -108,7 +109,7 @@ openx/
 | 内核 | `kernel/`（五件套：装配/推理/审计/轨迹/沙箱，含协议与 hooks）、`agent.py`、`services/tool_executor.py`、`services/streaming.py` | turn 循环、工具分发（串行准备 → 并行执行）、流式显示、裁决与账本 |
 | 模型层 | `llm/` | provider 实现（openai-compat / anthropic-compat）、流式；重试/退避在内核（`kernel/reasoning/`） |
 | 能力层 | `tools/`、`mcp/` | 面向模型的工具（fs、shell、搜索、git、web、todo、plan、task、workflow）与外部 MCP 工具 |
-| 上下文与记忆 | `instructions.py`、`memory.py`、`orchestration/history.py` | 指令文件（OPENX.md / AGENT.md / AGENTS.md）、持久记忆、历史 + 压缩 |
+| 上下文与记忆 | `instructions.py`、`memory.py`、`skills.py`、`prompt_packs.py`、`orchestration/history.py` | 指令文件（OPENX.md / AGENT.md / AGENTS.md）、持久记忆、渐进披露的技能与提示包、历史 + 压缩 |
 | 编排层 | `orchestration/subagent.py`、`orchestration/workflow.py`、`orchestration/tasks.py`、`orchestration/fleet.py` | subagents、确定性 workflows、后台任务（硬连线，P2+ 插件化） |
 | 状态层 | `orchestration/sessions.py`、`config.py`、`kernel/recovery/` | 会话持久化/恢复、分层配置、回合级 checkpoint 与中断恢复 |
 | 协作层 | `permissions.py` | 权限分级、已存储规则、危险命令门控 |
