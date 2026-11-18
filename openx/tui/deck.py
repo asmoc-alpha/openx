@@ -1,4 +1,5 @@
-"""状态层（deck）的全屏实现：数据 → 行（:class:`DeckSource`）+ 承载行（:class:`DeckView`）。
+"""状态层（deck）的全屏实现：取数（:class:`DeckSource`）+ 承载
+（:class:`DeckView` / :class:`DetailView`）。
 
 行内把四块 deck 一帧一构塞进 Rich ``Live``；全屏没有"一帧"，有的是常驻
 widget。于是这里只切两刀：
@@ -7,13 +8,15 @@ widget。于是这里只切两刀：
    ``agent.fleet.snapshot()`` / ``agent.ui_panels.panels()`` 四路数据按各自
    的预算切成行。行怎么拼**不在这里**：那是 ``ui/_deck.py``，与行内共用
    同一份（两个界面看到同样的 Plan/Queue/Agents 行）。
-2. :class:`DeckView` —— **承载**：把行列表塞进一个 ``Static``，空则整块
-   隐藏。高度是显式 ``len(rows)``（deck 行恒 ``no_wrap``，一行 ≡ 一行），
-   不赌框架的 auto-height —— 与 ``tui/prompt.py::_sync_height`` 同纪律。
+2. :class:`DeckView` / :class:`DetailView` —— **承载**：把行列表塞进 ``Static``，
+   空则整块隐藏。高度是显式的（deck 行恒 ``no_wrap``，一行 ≡ 一行；详情正文
+   反过来可折行、住在滚动容器里），不赌框架的 auto-height —— 与
+   ``tui/prompt.py::_sync_height`` 同纪律。
 
 布局（对齐行内）：
 
 ```
+#transcript   （或 #detail —— 二者互斥，详情占据转录的位置）
 #plan-deck    Plan + Queue        ← 输入框之上、状态行之上，隔 1 空行
 #spinner      Thinking…/Answering…
 #prompt       输入行
@@ -27,20 +30,33 @@ widget。于是这里只切两刀：
   监控小部件按定义就该常驻。
 - **Agents**：只在回合进行中显示（舰队本就是每轮重建的临时活动）。
 
-不做的事：``↓``/``Enter`` 选择条目与 Ctrl-O 详情视图（那要换掉整块转录，
-是另一个功能），因此 Agents 头行不带 ``· ↓ select · ↵ view`` 提示——**头行
-不能承诺按不动的键**。
+子代理详情视图（``Ctrl+O`` 循环切换）换掉整块转录，而不是叠在它上面：与行内
+"正文区切到某个子代理"是同一处位置。按键不用方向键——全屏的输入行始终可
+编辑，``↑``/``↓`` 的第一含义是翻历史/移光标，那两条语义都有测试钉着。
 """
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Callable, Optional, Sequence
 
 from rich.console import Group
 from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from ..ui._deck import deck_line, fleet_lines, plan_queue_lines, plugin_lines
+from ..ui._deck import (
+    deck_line, detail_body, detail_header, fleet_lines, plan_queue_lines,
+    plugin_lines,
+)
+
+#: 舰队头行的操作提示（全屏）：``Ctrl+O`` 循环切换主视图与各子代理详情。
+#: 行内是 ``↓`` 选中 + ``↵`` 确认——同一块面板、不同按键，故提示文案按界面
+#: 传参（见 ``ui/_deck.fleet_lines`` 的 ``hints``）。
+FLEET_HINT_TUI = "· ^O switch"
+#: 详情视图头行的操作提示（全屏）：``Ctrl+O`` 下一个、``alt+0`` 回主视图。
+DETAIL_HINT_TUI = "^O next · alt+0 main"
 
 #: 单个 deck 最多占视口的多少分之一（两个 deck 合计 ≤ 半屏）
 _DECK_SHARE = 4
@@ -138,6 +154,10 @@ class DeckSource:
         except Exception:
             return []
 
+    def fleet_snapshot(self) -> list[dict]:
+        """舰队快照的公开面（``Ctrl+O`` 导航与详情视图复用同一份取数）。"""
+        return self._fleet_snapshot()
+
     def _panel_list(self) -> list[Any]:
         if self._panels is None:
             return []
@@ -154,12 +174,14 @@ class DeckSource:
         height: int,
         turn_active: bool,
         queue: Sequence[str] = (),
+        marked: int = -1,
     ) -> tuple[list[Text], list[Text]]:
         """``(上半行, 下半行)``。空列表 = 该 deck 隐藏（不占行）。
 
         ``queue`` 由调用方给（app 从 ``console._input_queue`` 取）而不是
         ``DeckSource`` 自己持有：排队通道属于 ``Console``，这里不该再长一个
-        对它的引用。
+        对它的引用。``marked`` 同理——它是"当前在看哪个子代理"的界面状态
+        （0 = 主视图），由 app 持有并经 ``fleet_lines`` 的 ``❯`` 标记回显。
         """
         budget = deck_budget(height)
         top = self._clamp(
@@ -168,7 +190,8 @@ class DeckSource:
         bottom: list[Text] = []
         if turn_active:
             bottom += fleet_lines(
-                self._fleet_snapshot(), budget=budget, hints=False)
+                self._fleet_snapshot(), budget=budget, marked=marked,
+                hints=FLEET_HINT_TUI)
         # 插件面板与 Agents 共用**下半**那一个预算：两段加起来不超预算，
         # 否则"每段各自守规矩"合起来仍能把转录挤没。
         bottom += plugin_lines(
@@ -248,10 +271,107 @@ class DeckView(Static):
         return True
 
 
+class DetailView(VerticalScroll):
+    """子代理详情视图：**占据转录的位置**，跑 `Ctrl+O` 时换上来。
+
+    行内实现把详情塞进 ``Live`` 的正文槽（``_focus > 0`` 时不画易变正文）；
+    全屏的等价物是把 ``#transcript`` 隐藏、这块顶上去——同一处位置、同样的
+    "输入行与 deck 都还在"。
+
+    两个承重细节：
+
+    1. **头行与正文分开两个 ``Static``**：头行含转帧与耗时，每拍都在变；
+       正文是子代理的捕获流，只在真有新行时变。合成一个控件就得按前者的
+       节奏重渲后者（≤200 行 × 5Hz 是白烧布局），所以正文按 ``plain`` 签名
+       去重（同 :class:`DeckView`）。
+    2. **正文可折行**：它是子代理的原始输出，截断比折行更糟；高度交给框架
+       （滚动容器里），不参与 deck 的"1 行 ≡ 1 终端行"算式——头行才是单行。
+
+    与转录容器同样 ``can_focus = False``：点详情不该把焦点从输入行带走。
+    """
+
+    can_focus = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        #: 上一次写进正文的行签名（内容没变就别重渲）
+        self._signature: tuple[str, ...] = ()
+        #: 上一次写进头行的纯文本（诊断与测试；不摸 ``Static`` 的私有内容）
+        self._head_plain = ""
+        #: 当前显示的视图编号（None = 没在显示）
+        self._view_id: Optional[int] = None
+        self.display = False   # 出厂隐藏：没选子代理时不占一行
+
+    def compose(self) -> ComposeResult:
+        # 两个子控件在 compose 期一次性建好，运行期只 update、绝不增删——
+        # SlashMenu 踩过的坑：容器在"已 remove、未 mount"之间会以空 visual
+        # 参与渲染（render_strips 崩）。两者也**永远有内容**（正文最少一行
+        # "(no output yet)"），同一个坑的第二个保险。
+        yield Static(Text(""), id="detail-head")
+        yield Static(Text(""), id="detail-body")
+
+    # ── 读（测试与诊断）─────────────────────────────────────────
+
+    @property
+    def showing(self) -> bool:
+        return bool(self.display) and self._view_id is not None
+
+    @property
+    def view_id(self) -> Optional[int]:
+        """当前显示的子代理编号（None = 主视图/未显示）。"""
+        return self._view_id
+
+    def head_text(self) -> str:
+        """头行的纯文本（测试断言用）。"""
+        return self._head_plain
+
+    def body_text(self) -> list[str]:
+        """正文行（纯文本）。测试断言内容用。"""
+        return list(self._signature)
+
+    # ── 写（唯一消费者是 app 的 deck 定时器）──────────────────────
+
+    def show(self, view: dict, *, hint: str = DETAIL_HINT_TUI) -> bool:
+        """显示某个子代理视图。返回**是否发生了可见变化**。
+
+        头行每拍都写（耗时/转帧本就逐拍变）；正文按签名去重——子代理没输出
+        新行就不碰它。
+        """
+        changed = not self.display or self._view_id != view.get("id")
+        header = detail_header(view, hint=hint)
+        self._head_plain = header.plain
+        with contextlib.suppress(Exception):
+            self.query_one("#detail-head", Static).update(header)
+        rows = detail_body(view)
+        signature = tuple(row.plain for row in rows)
+        if signature != self._signature:
+            self._signature = signature
+            with contextlib.suppress(Exception):
+                self.query_one("#detail-body", Static).update(Group(*rows))
+            changed = True
+        self._view_id = view.get("id")
+        if not self.display:
+            self.display = True
+            changed = True
+        return changed
+
+    def hide(self) -> bool:
+        """收起来（回主视图）。返回是否发生变化。"""
+        if not self.display:
+            return False
+        self.display = False
+        self._view_id = None
+        self._signature = ()   # 下次进来必须重画（内容可能已变）
+        return True
+
+
 __all__ = [
+    "DETAIL_HINT_TUI",
+    "FLEET_HINT_TUI",
     "MAX_DECK_ROWS",
     "MIN_TRANSCRIPT_ROWS",
     "DeckSource",
     "DeckView",
+    "DetailView",
     "deck_budget",
 ]

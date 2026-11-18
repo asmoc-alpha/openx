@@ -259,16 +259,19 @@ function applyEvent(ev) {
       break;
     case "tool_use":
       // target 由服务端从工具入参派生（绝不原样回传入参）；无目标时退回摘要
+      // diff：文本操作的变更预览（服务端已按 ui/_diff.py 分类），到结果时才画
       Chat.appendToolStart(
         ev.name || "tool",
         ev.target || ev.args_summary || "",
-        ev.call_id || ""
+        ev.call_id || "",
+        ev.diff || null
       );
       TaskPanel.onToolUse(ev);
       break;
     case "tool_result":
       Chat.appendToolResult(
-        ev.name || "tool", Boolean(ev.is_error), ev.output || "", ev.call_id || ""
+        ev.name || "tool", Boolean(ev.is_error), ev.output || "",
+        ev.call_id || "", ev.diff || null
       );
       TaskPanel.onToolResult(ev);
       break;

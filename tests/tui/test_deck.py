@@ -28,6 +28,7 @@ from openx.tui.deck import (                                           # noqa: E
     MAX_DECK_ROWS,
     DeckSource,
     DeckView,
+    DetailView,
     deck_budget,
 )
 from openx.tui.prompt import PromptEditor                              # noqa: E402
@@ -36,6 +37,9 @@ from openx.ui._deck import (                                           # noqa: E
     DECK_FLEET_ROWS,
     DECK_PLAN_ROWS,
     DECK_QUEUE_ROWS,
+    detail_body,
+    detail_header,
+    detail_lines,
     fleet_lines,
     plan_queue_lines,
     plugin_lines,
@@ -71,7 +75,14 @@ class _Panels:
         return list(self._panels)
 
 
-def _view(idx: int, *, status: str = "running", last_tool: str = "") -> dict:
+def _view(
+    idx: int,
+    *,
+    status: str = "running",
+    last_tool: str = "",
+    lines: list[str] | None = None,
+    pending: str = "",
+) -> dict:
     return {
         "id": idx,
         "label": f"sub {idx}",
@@ -79,6 +90,8 @@ def _view(idx: int, *, status: str = "running", last_tool: str = "") -> dict:
         "tools_count": 2,
         "elapsed": 3.4,
         "last_tool": last_tool,
+        "lines": list(lines if lines is not None else [f"line {idx}"]),
+        "pending": pending,
     }
 
 
@@ -201,11 +214,15 @@ class TestFleetLines:
         assert "sub 1" in lines[2]
         assert "2 tools" in lines[2]
 
-    def test_hints_optional(self):
-        """全屏没有 ↓/Enter 选择，头行就不能承诺那两个键。"""
-        assert "↓ select" in _planes(fleet_lines([_view(1)], budget=10))[0]
+    def test_hints_are_per_surface(self):
+        """头行那句提示按界面传：行内是 ↓/↵，全屏是 ^O——都不能空口承诺按键。"""
+        header = _planes(fleet_lines([_view(1)], budget=10))[0]
+        assert "↓ select" in header
         assert "↓ select" not in _planes(
             fleet_lines([_view(1)], budget=10, hints=False))[0]
+        custom = _planes(fleet_lines([_view(1)], budget=10,
+                                     hints="· ^O switch"))[0]
+        assert "^O switch" in custom and "↓ select" not in custom
 
     def test_running_agent_gets_activity_line(self):
         running = _view(1, status="running", last_tool="read_file(a.py)")
@@ -238,6 +255,65 @@ class TestFleetLines:
 
     def test_empty_snapshot_renders_nothing(self):
         assert fleet_lines([], budget=10) == []
+
+
+class TestDetailLines:
+    """子代理详情视图的行（``detail_header`` / ``detail_body``）——两端共用。"""
+
+    def test_header_carries_identity_state_and_keys(self):
+        view = _view(2, status="running")
+        header = detail_header(view, hint="^O next").plain
+        assert "Agent 2: sub 2" in header
+        assert "running" in header
+        assert "2 tools" in header
+        assert "3s" in header                      # fmt_duration(3.4)
+        assert "^O next" in header
+        assert header.isprintable()
+
+    def test_hint_is_per_surface(self):
+        """默认提示是行内那串（`alt+0 back` 被行内测试钉着）。"""
+        view = _view(1)
+        assert "alt+0 back" in detail_header(view).plain
+        assert "alt+0 main" in detail_header(view, hint="^O next · alt+0 main").plain
+
+    def test_header_is_single_line(self):
+        """头行是 deck 行：no_wrap，长标签靠 ellipsis 收——不折行。"""
+        view = _view(1)
+        view["label"] = "长" * 200
+        assert detail_header(view).no_wrap is True
+
+    def test_body_windows_to_budget(self):
+        view = _view(1, lines=[f"l{i}" for i in range(10)])
+        assert [r.plain for r in detail_body(view, budget=3)] == ["l7", "l8", "l9"]
+
+    def test_body_without_budget_gives_everything(self):
+        """全屏界面不裁正文：它住在滚动容器里，能翻就别替用户裁。"""
+        view = _view(1, lines=[f"l{i}" for i in range(250)])
+        assert len(detail_body(view)) == 250
+
+    def test_pending_tail_is_shown(self):
+        """未遇换行的尾片段也要可见，否则正在写的那一行要等下一个 \\n。"""
+        view = _view(1, lines=["done line"], pending="still typing")
+        assert [r.plain for r in detail_body(view)] == ["done line", "still typing"]
+
+    def test_empty_body_says_no_output_yet(self):
+        assert [r.plain for r in detail_body({})] == ["  (no output yet)"]
+        # 预算为 0 也不至于抛（行内 max(3, …) 保底，但别让负数成为地雷）
+        assert [r.plain for r in detail_body(_view(1), budget=0)] == \
+            ["  (no output yet)"]
+
+    def test_bad_markup_degrades_to_plain_text(self):
+        """子代理的 raw token 会带着裸 `[` 进来——一行坏标签不该让整屏消失。"""
+        view = _view(1, lines=["[dim]● grep[/dim]", "见 [TODO] 清单"])
+        rows = detail_body(view)
+        assert rows[0].plain == "● grep"            # 好 markup 照常解析
+        assert rows[1].plain == "见 [TODO] 清单"     # 坏的回落纯文本，不抛
+
+    def test_detail_lines_is_header_plus_body(self):
+        view = _view(1, lines=["a", "b"])
+        rows = _planes(detail_lines(view, budget=1))
+        assert rows[0].startswith(" Agent 1: sub 1")
+        assert rows[1:] == ["b"]
 
 
 class TestPluginLines:
@@ -391,6 +467,184 @@ class TestDeckView:
             await pilot.click("#plan-deck")
             await pilot.pause()
             assert isinstance(app.focused, PromptEditor)
+
+
+class TestFleetNavigation:
+    """``Ctrl+O`` / ``Alt+0..9``：主回答 ⇄ 子代理详情（顶掉转录，同行内语义）。"""
+
+    async def _nav(self, app, pilot, views) -> tuple[_Fleet, TuiStream]:
+        """起一个真回合的接线：``start()`` 会 reset 舰队，登记必须在它之后。"""
+        console = type("_C", (), {"_input_queue": []})()
+        app.attach_console(console)
+        fleet = _Fleet([])
+        stream = TuiStream(console, app=app, fleet=fleet)
+        stream.start()
+        fleet.views = list(views)
+        _pump(app)
+        await pilot.pause()
+        return fleet, stream
+
+    async def test_ctrl_o_opens_detail_and_hides_transcript(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [_view(1, lines=["● grep", "找到了"])])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            detail = app.query_one("#detail", DetailView)
+            assert app._fleet_focus == 1
+            assert detail.showing is True
+            assert app.query_one("#transcript").display is False
+            assert "Agent 1: sub 1" in detail.head_text()
+            assert "^O next" in detail.head_text()    # 全屏的键位提示
+            assert detail.body_text() == ["● grep", "找到了"]
+
+    async def test_ctrl_o_cycles_through_agents_and_back(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [_view(1), _view(2)])
+            seen = []
+            for _ in range(3):
+                await pilot.press("ctrl+o")
+                await pilot.pause()
+                seen.append(app._fleet_focus)
+            assert seen == [1, 2, 0], "主回答 → 1 → 2 → 主回答"
+            detail = app.query_one("#detail", DetailView)
+            assert detail.showing is False
+            assert app.query_one("#transcript").display is True
+
+    async def test_alt_digit_jumps_directly(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [_view(1), _view(2, status="done")])
+            await pilot.press("alt+2")
+            await pilot.pause()
+            assert app._fleet_focus == 2
+            assert "Agent 2: sub 2" in app.query_one("#detail", DetailView).head_text()
+            await pilot.press("alt+0")
+            await pilot.pause()
+            assert app._fleet_focus == 0
+            assert app.query_one("#transcript").display is True
+
+    async def test_alt_digit_out_of_range_clamps(self):
+        """越界钳到最后一个：按键必须总有响应（同行内）。"""
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [_view(1)])
+            app.action_fleet_select(7)
+            await pilot.pause()
+            assert app._fleet_focus == 1
+
+    async def test_deck_marks_the_view_you_are_in(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [_view(1), _view(2)])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            rows = _planes(app.query_one("#agents-deck", DeckView).rows())
+            assert any(r.startswith("❯1") for r in rows), rows
+            assert any(r.startswith(" 0 main") for r in rows), "主条目不再被标记"
+
+    async def test_ctrl_o_without_agents_is_a_noop(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            assert app._fleet_focus == 0
+            assert app.query_one("#detail", DetailView).showing is False
+
+    async def test_focus_resets_on_new_turn(self):
+        """新回合的干净起点：绝不还停在上一轮某个子代理的详情上。"""
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            _fleet, _stream = await self._nav(app, pilot, [_view(1)])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            assert app._fleet_focus == 1
+
+            app.attach_decks(fleet=_Fleet([]))   # = 下一回合的 start()
+            await pilot.pause()
+            assert app._fleet_focus == 0
+            assert app.query_one("#detail", DetailView).showing is False
+            assert app.query_one("#transcript").display is True
+
+    async def test_empty_fleet_clamps_focus_back_to_main(self):
+        """舰队被清空（reset）而焦点还在子代理上 → 回主视图，不留悬空详情。"""
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            fleet, _stream = await self._nav(app, pilot, [_view(1)])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            assert app.query_one("#detail", DetailView).showing is True
+
+            fleet.views = []
+            app._tick_decks()
+            await pilot.pause()
+            assert app._fleet_focus == 0
+            assert app.query_one("#detail", DetailView).showing is False
+            assert app.query_one("#transcript").display is True
+
+    async def test_body_rewrites_only_on_new_output(self):
+        """头行逐拍刷新（耗时/转帧），正文按签名去重——不白烧布局。"""
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            fleet, _stream = await self._nav(app, pilot, [_view(1, lines=["a"])])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            assert app._sync_detail() is False, "内容没变：不该重写正文"
+
+            fleet.views[0]["lines"] = ["a", "b"]
+            assert app._sync_detail() is True
+            assert app.query_one("#detail", DetailView).body_text() == ["a", "b"]
+
+    async def test_header_follows_elapsed_time(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            fleet, _stream = await self._nav(app, pilot, [_view(1)])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            fleet.views[0]["elapsed"] = 42.0
+            app._tick_decks()
+            await pilot.pause()
+            assert "42s" in app.query_one("#detail", DetailView).head_text()
+
+    async def test_click_on_detail_keeps_input_focus(self):
+        app = OpenXTui()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self._nav(app, pilot, [_view(1, lines=["x"])])
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            await pilot.click("#detail")
+            await pilot.pause()
+            assert isinstance(app.focused, PromptEditor)
+            # 点击不该把详情关掉（它不是"点外面返回"的浮层）
+            assert app.query_one("#detail", DetailView).showing is True
+
+    async def test_detail_leaves_room_on_short_terminal(self):
+        """12 行终端上详情接管转录的位置，两个 deck 仍守预算、不炸布局。"""
+        app = OpenXTui()
+        async with app.run_test(size=(60, 12)) as pilot:
+            todos = [{"content": f"t{i}", "status": "pending"} for i in range(9)]
+            console = type("_C", (), {"_input_queue": []})()
+            app.attach_console(console)
+            fleet = _Fleet([])
+            stream = TuiStream(console, app=app, todos_provider=lambda: todos,
+                               fleet=fleet)
+            stream.start()
+            fleet.views = [_view(i, last_tool="t") for i in range(1, 9)]
+            _pump(app)
+            await pilot.pause()
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            detail = app.query_one("#detail", DetailView)
+            assert detail.showing is True
+            assert detail.size.height >= 1, "详情接管了转录的空间"
+            assert app.query_one("#transcript").size.height == 0
+            assert app.query_one("#plan-deck", DeckView).size.height \
+                <= deck_budget(12)
+            assert app.query_one("#agents-deck", DeckView).size.height \
+                <= deck_budget(12)
+            assert app.query_one("#prompt").size.height >= 1
 
 
 # ── 5. 接线：布局顺序、回合生命周期、TuiStream ──────────────────────

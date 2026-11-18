@@ -956,6 +956,21 @@ body.is-resizing #task-panel { transition: none; }
 }
 .tool-card.open .tool-output { display: block; }
 
+/* 文本操作的变更着色：行的 kind 由服务端 ui/_diff.py 分类，这里只上色。
+   绿色 = 新增行，红色 = 删除行，灰色 = @@ 块头 / 统计 / 截断提示——
+   与行内转录、全屏工具块同一份判定。 */
+.tool-diff-row {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tool-diff-row.d-add  { color: var(--green); }
+.tool-diff-row.d-del  { color: var(--red); }
+.tool-diff-row.d-hunk { color: var(--text-faint); }
+.tool-diff-row.d-ctx  { color: var(--text-dim); }
+.tool-diff-row.d-more,
+.tool-diff-row.d-stat { color: var(--text-faint); font-style: italic; }
+
 /* 兼容旧 .tool（历史） */
 .tool {
   align-self: stretch;

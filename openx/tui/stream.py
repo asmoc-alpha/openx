@@ -68,11 +68,17 @@ class ToolStarted:
 
     ``call_id`` 非空时结果按 id 精确配对（``ToolResultEvent`` 自带）；为空
     （旧 provider / 测试）退回"同名先到先配"，与行内实现同语义。
+
+    ``diff``：文本操作（``write_file`` / ``edit_file``）的变更预览
+    ``(path, old, new)``——ToolStart 发生在执行**之前**，所以此刻取到的是
+    真实的"变更前"内容，工具块据此渲染彩色 diff（行内 ``record.diff`` 的
+    对位）。探测失败/非文本操作 → ``None``（回退纯输出渲染）。
     """
 
     name: str
     summary: str = ""
     call_id: str = ""
+    diff: Optional[tuple[str, str, str]] = None
 
 
 @dataclass
@@ -257,10 +263,15 @@ class TuiStream:
                 # 记录。
                 self._pending_task_desc.append(arg_summary(chunk.arguments))
             else:
+                # 文本操作：执行前探测变更预览（彩色 diff 的来源）。有预览
+                # 时标题摘要用路径——比 ``file_path=…`` 的 key=value 清楚。
+                preview = self._preview_text_op(chunk.name, chunk.arguments)
                 self._queue.push(ToolStarted(
                     name=chunk.name,
-                    summary=arg_summary(chunk.arguments),
+                    summary=(preview[0] if preview
+                             else arg_summary(chunk.arguments)),
                     call_id=getattr(chunk, "call_id", "") or "",
+                    diff=preview,
                 ))
         elif isinstance(chunk, ToolResultEvent):
             if chunk.name == "task":
@@ -283,6 +294,43 @@ class TuiStream:
                 ))
         elif isinstance(chunk, str):
             self._queue.push(Answer(chunk))
+
+    def _preview_text_op(self, name: str, arguments: str
+                         ) -> Optional[tuple[str, str, str]]:
+        """文本操作的变更预览 ``(path, old, new)``（只读、fail-open）。
+
+        与行内 ``StreamingService._preview_text_op`` 逐条同纪律：经
+        ``tool_lookup`` 取工具实例、调它自己的 ``preview_diff(args)``
+        （base 默认 None，仅 ``write_file`` / ``edit_file`` 覆写，且与
+        ``execute`` 的校验语义严格镜像）。无 tool_lookup / 坏 JSON / 探测
+        抛错 → None（工具块回退纯输出渲染，绝不因装饰性预览而炸掉回合）。
+        """
+        lookup = self._tool_lookup
+        if lookup is None:
+            return None
+        try:
+            tool = lookup(name)
+            if tool is None:
+                return None
+            preview = getattr(tool, "preview_diff", None)
+            if preview is None:
+                return None
+            try:
+                args = json.loads(arguments) if arguments else {}
+            except (ValueError, TypeError):
+                return None
+            if not isinstance(args, dict):
+                return None
+            result = preview(args)
+        except Exception:
+            return None
+        if not result:
+            return None
+        try:
+            path, old, new = result
+        except (TypeError, ValueError):
+            return None
+        return (str(path), str(old), str(new))
 
     def done(self) -> float:
         """正常收尾：入队 ``TurnEnd``、解绑 Esc，返回耗时。"""

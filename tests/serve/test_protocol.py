@@ -237,12 +237,26 @@ def test_tool_use_carries_pairing_and_round():
     assert ev["args_summary"] == "a.py" and ev["target"] == "a.py"
     bare = protocol.tool_use("read_file")
     assert bare["call_id"] == "" and bare["round"] == 0
+    # 变更载荷：不传就不出现该键（headless NDJSON 消费者零改动）
+    assert "diff" not in bare
+
+
+def test_tool_use_carries_diff_payload():
+    """tool_use 的 diff 原样下发，且可 JSON 序列化（下行就是 JSON）。"""
+    payload = {"path": "a.py", "added": 1, "removed": 1,
+               "rows": [{"kind": "add", "text": "+x = 1"}]}
+    ev = protocol.tool_use("edit_file", "a.py", "a.py", diff=payload)
+    assert ev["diff"] == payload
+    import json
+
+    assert json.loads(json.dumps(ev))["diff"]["rows"][0]["kind"] == "add"
 
 
 def test_tool_result_duration_omitted_when_unknown():
     """测不到耗时 → 键不出现：绝不填 0 冒充"瞬间完成"。"""
     ev = protocol.tool_result("read_file", False, "body")
     assert "duration_ms" not in ev
+    assert "diff" not in ev            # 同一纪律：没有 diff 就不带这个键
     assert ev["output_chars"] == 0 and ev["truncated"] is False
     timed = protocol.tool_result(
         "read_file", True, "boom", call_id="c1", round=3,
@@ -251,6 +265,13 @@ def test_tool_result_duration_omitted_when_unknown():
     assert timed["duration_ms"] == 42 and timed["is_error"] is True
     assert timed["output_chars"] == 9000 and timed["truncated"] is True
     assert timed["call_id"] == "c1" and timed["round"] == 3
+
+
+def test_tool_result_carries_diff_rows_only():
+    """退路载荷只有 rows（无 path/added/removed——那条路上确实不知道）。"""
+    diff = {"rows": [{"kind": "del", "text": "-old"}]}
+    ev = protocol.tool_result("edit_file", False, "x", diff=diff)
+    assert ev["diff"] == diff
 
 
 def test_interaction_open_and_close_shape():

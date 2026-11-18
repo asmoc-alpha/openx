@@ -28,6 +28,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 from textual.widgets import Collapsible, Static
 
+from ..ui._diff import TEXT_OP_TOOLS, colorized_output_lines, text_op_lines
 from ..ui._helpers import fmt_duration
 from ..ui._math_text import render_math
 from ..ui._style import DIM, ERROR_STYLE, MARK_INFO, MARK_PENDING
@@ -114,15 +115,32 @@ class ToolBlock(Collapsible):
     状态语义沿用行内实现的三态：running（dim）/ done（绿）/ error（红）。
     结果正文默认折叠——长输出（测试日志、grep 结果）在行内实现里靠"折叠 3
     行 + ctrl+t"省屏，这里由 Collapsible 直接承载。
+
+    **正文分三层着色**（语义判定来自 ``ui/_diff.py``，与行内同一份）：
+
+    1. 文本操作且有变更预览（``diff`` 三元组）→ ``⎿ +A −D`` 统计行 + 按扩展名
+       做语言高亮的 diff（绿增/红删/头行 dim），**不再回显原始输出**——否则
+       diff 在屏上出现两遍；
+    2. 其余工具的原始输出 → 逐行原样；``edit_file`` / ``write_file`` 的输出
+       里那段 unified diff 按 diff 语义着色（``+`` 绿、``-`` 红、``@@`` dim）；
+    3. 出错 → 整段红，且**绝不展示预览的 diff**：预览是执行前探测的，操作失败
+       意味着那个变更并未发生（同行内 ``_text_op_body`` 的纪律）。
     """
 
+    #: 正文最多展开多少行（超出折成一行 dim 提示）。行内折叠是 3 行 + ctrl+t；
+    #: 这里整块可折叠，正文可以给得更宽，但仍要挡住"工具吐了 5000 行"。
+    MAX_BODY_LINES = 40
+
     def __init__(self, name: str, summary: str = "", *,
+                 diff: Optional[tuple[str, str, str]] = None,
                  collapsed: bool = True, **kwargs) -> None:
         # 注意：不能叫 ``self.name``——``Widget.name`` 是 Textual 的
         # reactive，在 super().__init__() 之前赋值会炸、之后赋值会覆盖
         # 控件自身的名字语义。工具名单独放 ``tool_name``。
         self.tool_name = name
         self.summary = summary
+        #: 变更预览 ``(path, old, new)``；None = 非文本操作 / 探测失败
+        self.diff = diff
         self._output = ""
         super().__init__(
             Static(Text("  running…", style=DIM), classes=BODY_CLASS),
@@ -138,6 +156,11 @@ class ToolBlock(Collapsible):
         return self._status
 
     @property
+    def is_text_op(self) -> bool:
+        """有变更预览的文本操作——正文按 diff 渲染。"""
+        return self.diff is not None and self._status != "error"
+
+    @property
     def body(self) -> Static:
         return self.query_one(f".{BODY_CLASS}", Static)
 
@@ -148,13 +171,29 @@ class ToolBlock(Collapsible):
     def on_mount(self) -> None:
         self._sync_body()
 
+    def _body_rows(self) -> list[Text]:
+        """正文行（``Text`` 列表）——分三层，见类 docstring。"""
+        if self._status == "error":
+            text = self._output or "(no output)"
+            return [Text(text, style=ERROR_STYLE)]
+        if self.is_text_op:
+            return text_op_lines(self.diff, max_lines=self.MAX_BODY_LINES)
+        if not self._output:
+            return [Text("(no output)")]
+        return colorized_output_lines(
+            self._output,
+            is_edit=self.tool_name in TEXT_OP_TOOLS,
+            limit=self.MAX_BODY_LINES,
+        )
+
     def _sync_body(self) -> None:
         body = self._body_or_none()
         if body is None:
             return
-        text = self._output or "(no output)"
-        body.update(Text(text, style=ERROR_STYLE) if self._status == "error"
-                    else Text(text))
+        rows = self._body_rows()
+        # **必须仍是单个 ``Text``**：``body.visual.plain`` 是既有测试的断言面，
+        # 而 ``Group`` 没有 ``.plain``。多行 + spans 一样能着色。
+        body.update(Text("\n").join(rows))
 
     def _make_title(self, status: str) -> str:
         # 不能叫 ``_title``：``Collapsible`` 自己持有 ``self._title``

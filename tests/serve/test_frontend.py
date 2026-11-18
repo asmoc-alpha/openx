@@ -317,12 +317,63 @@ def test_flow_endpoint_registered():
 def test_transcript_pairs_parallel_tools_by_call_id():
     """对话区的工具卡也按 call_id 配对（并行同名工具各归各位，不乱填）。"""
     chat = _read("chat.js")
-    assert "appendToolStart(name, desc, callId)" in chat
-    assert "appendToolResult(name, isError, output, callId)" in chat
+    # 末位 diff 是文本操作的变更载荷（服务端分类好）；配对键仍是 callId
+    assert "appendToolStart(name, desc, callId, diff)" in chat
+    assert "appendToolResult(name, isError, output, callId, diff)" in chat
     # 按 id 索引配对，而不是只认"最近一个"
     assert "toolIndex" in chat and "index[callId]" in chat
     app = _read("app.js")
     assert "ev.call_id" in app
+
+
+# ── 文本操作的变更着色（三个界面同一份判定） ─────────────────────────
+
+
+def test_chat_renders_diff_by_kind():
+    """diff 载荷 → CSS 类：kind 白名单映射，行文本走 textContent。
+
+    颜色判定在服务端（``ui/_diff.py``）——前端不解析 diff 语法，也不把
+    服务端字符串拼进类名或 HTML。
+    """
+    chat = _read("chat.js")
+    assert "DIFF_CLASSES" in chat and "diffClass(" in chat
+    assert 'd-" + diffClass(' in chat
+    # XSS 纪律：行文本走 textContent（与面板行同一条）
+    assert "line.textContent = String(" in chat
+    # 统计行只在服务端真的给了统计时出现（不知道就不写 +0 −0）
+    assert "diff.added !== undefined" in chat
+    # 出错时两份 diff 都不用：失败的变更并未发生
+    assert "isError ? null : (t.diff || diff || null)" in chat
+
+
+def test_appjs_forwards_diff_payload():
+    """app.js 把 tool_use / tool_result 的 diff 透传给工具卡。"""
+    app = _read("app.js")
+    assert app.count("ev.diff || null") >= 2
+
+
+def test_css_has_diff_styles():
+    css = _read("style.css")
+    for cls in (".d-add", ".d-del", ".d-hunk", ".d-ctx", ".d-more", ".d-stat"):
+        assert cls in css, cls
+    assert "--green" in css and "--red" in css
+
+
+def test_diff_classification_lives_server_side():
+    """前端不得自己判 diff 行：`+`/`-` 的语义只在 ui/_diff.py 里。
+
+    这条是"三个界面一个颜色"的守卫——谁在 JS 里重新实现一遍行首判定，
+    就等着和终端版本漂移。
+    """
+    chat = _read("chat.js")
+    assert "startsWith(\"+\")" not in chat
+    assert 'startsWith("-")' not in chat
+    from openx.ui._diff import diff_line_kind, diff_payload
+
+    payload = diff_payload(("a.py", "x = 1\n", "x = 2\n"))
+    kinds = {row["kind"] for row in payload["rows"]}
+    assert {"add", "del", "hunk"} <= kinds, kinds
+    assert diff_line_kind("--- a/x") == "hunk"   # 头行优先于删除行
 
 
 def test_taskpanel_truncation_reports_original_size():

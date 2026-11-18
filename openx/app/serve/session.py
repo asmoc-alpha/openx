@@ -42,6 +42,7 @@ if __name__ == "__main__" and not __package__:
 
 import asyncio
 import io
+import json
 import logging
 import re
 import shutil
@@ -831,9 +832,13 @@ class ServeSession:
 
         文本 token 剥 rich 标签（压缩提示等）；tool 事件截断输出上限，
         并补**服务端实测**的配对键与耗时（任务流据此分组/配对/报耗时）。
+        文本操作（``edit_file`` / ``write_file``）另带 ``diff`` 载荷：行已由
+        ``ui/_diff.py`` 分类好，前端只负责挂 CSS 类——同一个变更在行内、
+        全屏、浏览器三处不该出现三种颜色判定。
         """
         from ...agent import ToolResultEvent, ToolStartEvent
         from ...llm import StreamReasoning
+        from ...ui._diff import TEXT_OP_TOOLS, diff_payload, output_payload
 
         if isinstance(ev, ToolStartEvent):
             # 展示字段（摘要 / 目标路径）由入参派生后同行下发——端不再只
@@ -843,15 +848,23 @@ class ServeSession:
             summary, target = tool_display(ev.name, ev.arguments)
             call_id = str(getattr(ev, "call_id", "") or "")
             self._note_tool_start(call_id, ev.name)
+            preview = self._preview_text_op(ev.name, ev.arguments)
             return protocol.tool_use(
                 ev.name, summary, target,
                 call_id=call_id,
                 round=int(getattr(ev, "round", 0) or 0),
+                diff=diff_payload(preview) if preview else None,
             )
         if isinstance(ev, ToolResultEvent):
             output = ev.output or ""
             full = len(output)
             clipped = output[:_STREAM_TOOL_OUTPUT_LIMIT]
+            # 退路：预览没探到（文件过大 / 无 tools 表 / 探测失败）但结果里
+            # 自带 unified diff 时，仍按 diff 语义分类下发。出错不下发——
+            # 失败意味着那个变更并未发生（同行内与全屏的纪律）。
+            diff = None
+            if not ev.is_error and ev.name in TEXT_OP_TOOLS:
+                diff = output_payload(clipped, is_diff=True)
             return protocol.tool_result(
                 ev.name,
                 ev.is_error,
@@ -863,6 +876,7 @@ class ServeSession:
                 ),
                 output_chars=full,
                 truncated=full > len(clipped),
+                diff=diff,
             )
         if isinstance(ev, StreamReasoning):
             return protocol.thinking_delta(ev.text)
@@ -871,6 +885,43 @@ class ServeSession:
             if text:
                 return protocol.text_delta(text)
         return None
+
+    def _preview_text_op(self, name: str, arguments: str) -> Optional[tuple]:
+        """文本操作的变更预览 ``(path, old, new)``（只读、fail-open）。
+
+        与行内 ``StreamingService`` / 全屏 ``TuiStream`` 的同名探测逐条同纪律：
+        经 agent 自己的 tools 表取工具实例、调它的 ``preview_diff(args)``
+        （base 默认 None，仅写类工具覆写，且与 ``execute`` 的校验语义严格
+        镜像）。ToolStart 发生在执行**之前**，所以此刻取到的是真实"变更前"
+        内容。无 tools 表 / 坏 JSON / 探测抛错 → None（前端退回纯输出渲染），
+        装饰性的预览绝不该让事件面消失。
+        """
+        tools = getattr(self.agent, "tools", None)
+        if not isinstance(tools, dict):
+            return None
+        try:
+            tool = tools.get(name)
+            if tool is None:
+                return None
+            preview = getattr(tool, "preview_diff", None)
+            if preview is None:
+                return None
+            try:
+                args = json.loads(arguments) if arguments else {}
+            except (ValueError, TypeError):
+                return None
+            if not isinstance(args, dict):
+                return None
+            result = preview(args)
+        except Exception:
+            return None
+        if not result:
+            return None
+        try:
+            path, old, new = result
+        except (TypeError, ValueError):
+            return None
+        return (str(path), str(old), str(new))
 
     def _note_tool_start(self, call_id: str, name: str) -> None:
         """记一次工具开始的时刻（测耗时用）；键缺 id 时退化为工具名队列。"""

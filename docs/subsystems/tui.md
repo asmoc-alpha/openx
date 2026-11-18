@@ -16,9 +16,10 @@ hatch (`--inline`), not as a peer surface.
 
 > **Status: default interface.** Streaming, collapsible thinking/tool blocks,
 > `Esc` interrupt, the multi-line input line (history + slash-command menu), the
-> pinned decks (plan / queue / agents / plugin panels) and the permission /
-> plan-approval / `ask_user` modal dialogs all run in the app. Remaining gaps are
-> listed under [Limits](#limits).
+> pinned decks (plan / queue / agents / plugin panels), the navigable Agents panel
+> with a subagent detail view, and the permission / plan-approval / `ask_user`
+> modal dialogs all run in the app. Remaining gaps are listed under
+> [Limits](#limits).
 
 ```bash
 openx                          # full-screen interface (default)
@@ -49,15 +50,30 @@ python -m openx.tui            # offline demo: no model, no network
 │  Ask OpenX…   (/ pops the slash-command menu)           │  PromptEditor + SlashMenu
 ├─────────────────────────────────────────────────────────┤
 │   Agents (2)                              ← #agents-deck│  agents + plugins
-│  ❯0 main · main answer                                  │
-│   1 ✻ explore streaming · 3 tools · 4s                  │
+│  ❯1 explore streaming · 3 tools · 4s · ^O switch        │
 │        ⎿  read_file(services/streaming.py)              │
 │   2 ✓ review docs · 5 tools · 9s                        │
+│   0 main · main answer                                  │
 │  (^_^) demo-pet · frame 12                              │
 └─────────────────────────────────────────────────────────┘
 
 No footer: `Ctrl+Q` / `Ctrl+R` / `Ctrl+T` still work but are never displayed
 on screen (the input placeholder and the dialogs' hint lines carry the hints).
+
+`Ctrl+O` swaps the transcript block for a subagent's detail view (`#detail` —
+the screen's other `1fr` child, so the two never compete for height):
+
+```
+┌ detail ──────────────────────────────── VerticalScroll ─┐
+│  Agent 1: explore streaming · ✻ running · 3 tools · 4s  │  ← #detail-head
+│  ● read_file (services/streaming.py)                    │  ← #detail-body
+│    ⎿ 1 2200 lines / watermark                           │
+│    正在核对 deck 预算与视口裁剪…                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+The status line, the input line and both decks stay where they are, so following
+up on *this* subagent is still one keystroke away.
 
 ## The three seams
 
@@ -105,7 +121,7 @@ most cursor arithmetic on:
 | Block | Default | Toggle | Content |
 |---|---|---|---|
 | `ThinkingBlock` | collapsed | click the title bar, or focus it and press Enter | plain dim `Text` — **never** Markdown (fences and backticks get reflowed) |
-| `ToolBlock` | collapsed | same | result text; the title carries the state dot (`○` running, `●` done, `✕` error) plus `name (summary)` |
+| `ToolBlock` | collapsed | same | result text, **diff-colored** for text operations: `+` green, `-` red, `@@`/`---`/`+++` dim. With a change preview (`edit_file` / `write_file`, probed before execution) the body becomes `⎿ +A −D` plus a syntax-highlighted diff instead of the raw output — the same decision `ui/_diff.py` makes for the inline transcript and for `openx serve`'s `diff` payload, so no surface can color a line the others leave white. The title carries the state dot (`○` running, `●` done, `✕` error) plus `name (summary)` |
 
 `feed()` appends tokens, `freeze(elapsed)` rewrites the title to `● Thought for
 Ns`. Unlike the inline implementation, a frozen block **stays foldable** — the
@@ -264,6 +280,47 @@ a container that briefly renders an empty visual crashes `render_strips`). When 
 deck changes height the app re-pins the transcript to the bottom, so growth does
 not silently stop the follow-scroll.
 
+### Agent detail view
+
+`Ctrl+O` cycles the viewing target (`Alt+0…9` jumps): target `0` is the main
+answer, `1..N` is a subagent. Picking one hides `#transcript` and shows `#detail`
+in its place — the inline surface's "body slot switches to that subagent", with
+the input line and both decks left alone so you can still queue a follow-up
+while reading.
+
+**Why not `↓` and `Enter`?** The inline deck uses `↓` to select and `Enter` to
+confirm, which works there only because the inline input line stops taking edits
+while a turn streams. Here the input line is always editable and `↑`/`↓` already
+mean "recall history / move the caret" (`tests/tui/test_input.py` pins both), so
+the keys are `Ctrl+O` (cycle) and `Alt+0…9` (jump). The Agents header says
+`· ^O switch` — the shared renderer takes the hint text as a parameter
+(`fleet_lines(hints=…)` accepts `True` / `False` / a string) because a header
+must never advertise keys that do nothing, and "nothing" is not the only
+alternative to the inline wording.
+
+**Header and body are two `Static`s.** The header carries the spinner and the
+elapsed time, so it is rewritten every 5 Hz tick; the body is the subagent's
+captured stream, which only changes when new lines land (it is deduped by a
+`plain` signature, same as `DeckView`). One widget would force the second to
+follow the first's cadence — 200 lines × 5 Hz of pure layout churn. The body
+rows are the one place in this file that **may wrap**: they are a subagent's raw
+output, where truncation hurts more than wrapping, and they live in a scroll
+container rather than in the deck's "one row ≡ one terminal row" geometry.
+
+Rows come from `ui/_deck.py` (`detail_header` / `detail_body`), shared with the
+inline `_detail_view`. That is also why a stray `[` in subagent output no longer
+kills the frame: `format_stream_event` returns model text unescaped, so the
+inline surface used to raise `MarkupError` on it; `detail_body` now degrades
+that single line to plain text.
+
+**Lifecycle.** The target resets to `0` on every turn (`attach_decks`), so a new
+turn never opens on a view that no longer exists. If the fleet shrinks under the
+current target (`reset()`, a finished run), the app clamps back to the main
+answer on the next tick. A modal dialog suppresses the switch: the detail view
+would replace the transcript the dialog is drawn over. Esc does not close the
+detail view (Esc already means "interrupt" and "dismiss dialog") — `Alt+0` or
+cycling back does.
+
 ## Dialogs
 
 The inline prompts are the part of the old surface that a widget tree cannot
@@ -342,6 +399,8 @@ layering needed for both meanings to coexist.
 | `Ctrl+Q` | quit (wakes a pending input with EOF) |
 | `Ctrl+R` | toggle every thinking block |
 | `Ctrl+T` | expand all blocks, or collapse all if any is collapsed |
+| `Ctrl+O` | cycle the viewing target: main answer → subagent 1 → … → back to main |
+| `Alt+0` … `Alt+9` | jump straight to a target (`0` = main answer; out of range clamps to the last) |
 | `Tab` / `Shift+Tab` | slash menu open: apply the candidate; closed: move focus between block titles and the input line |
 | `Esc` | interrupt the running turn (no-op when idle); close the slash menu; cancel the open dialog |
 
@@ -373,12 +432,11 @@ a click (`Tab` still walks the focus chain; a focused title still toggles on
 - The TUI is mutually exclusive with `--serve` and with a one-shot prompt
   argument — those surfaces own stdout in ways a full-screen app cannot share
   (use `--inline` with a prompt if you need the inline surface).
-- **The Agents panel is read-only here.** The inline deck has `↓` selection and
-  `Ctrl+O` for a subagent detail view; in a full-screen surface that means
-  swapping out the whole transcript, which is a different feature. The Agents
-  header therefore does not advertise those keys (the shared renderer takes a
-  `hints` flag) — a header must never promise keys that do nothing. Toggling,
-  scrolling and `Esc` are unaffected.
+- **The Agents panel is navigable but not clickable.** `Ctrl+O` / `Alt+0…9` reach
+  the subagent detail view (see [Agent detail view](#agent-detail-view)); what is
+  still missing is the inline surface's two-step `↓` select + `Enter` confirm, a
+  click-to-open on a fleet row, and a way to dismiss the detail view with `Esc`
+  (`Alt+0` returns instead). The header advertises only the keys that work.
 - Long answers re-render as Markdown at 10 Hz while streaming; a very long answer
   on a slow terminal is correspondingly heavier than the inline line-commit path.
 
@@ -389,6 +447,29 @@ Enter-toggle, `Ctrl+T`, thinking content staying plain text, tool result states,
 Rich/Markdown/math fidelity inside `Static`, sink delivery, attach/detach, and
 the `ask()` contract (submitted text, or `None` on quit).
 
+`tests/tui/test_deck.py` covers the status layer on both sides of the split. The
+pure half (`ui/_deck.py`, no app) pins the row semantics: plan's three states and
+`activeForm`, the fold-to-one-line summary, `+N more` overflows, queue FIFO and
+its count, the shared plan/queue budget (and that the larger block shrinks
+first), fleet rows with the activity line counted toward the budget, `hints`
+turning the `↓ select · ↵ view` hint off (or replacing it per surface), plugin
+panels skipping `svg:` lines and dropping only the panel with bad markup, and
+every provider failing open. The detail-view row builders are pinned the same
+way: header identity/state/elapsed plus the per-surface hint, the body window
+(`budget`), the trailing `pending` fragment, `(no output yet)`, and the bad-markup
+fallback. The widget half pins `DeckView` (hidden when empty without spending a
+row, height equal to the row count, no wrapping, click never stealing the input
+focus), the compose order (`transcript` → `detail` → `plan-deck` → status line
+→ prompt → `agents-deck`), the per-turn lifecycle (`TuiStream.start()` fills all
+four decks, `TurnEnd` retires Agents while Plan and plugin panels stay,
+`todos[:] = …` shows up on the next tick, the fleet is reset per turn) and a
+12-row terminal where both decks stay inside their budget and the transcript
+keeps its three rows. `TestFleetNavigation` drives the detail view through real
+key presses: `Ctrl+O` cycles and hides the transcript, `Alt+N` jumps and clamps,
+the `❯` marker follows the target in the Agents deck, a new turn resets the
+target, an emptied fleet clamps back to the main answer, the body skips rewriting
+itself when nothing changed, and clicking the detail view keeps the input focus.
+
 `tests/tui/test_streaming.py` drives the pipeline with **real event objects**
 (`StreamReasoning`, `ToolStartEvent`, `ToolResultEvent`): segment splitting,
 parallel same-name pairing by `call_id`, orphan results not being dropped,
@@ -396,6 +477,11 @@ parallel same-name pairing by `call_id`, orphan results not being dropped,
 `Esc` latch and its unbinding, queued input routing, and one end-to-end run of
 `_stream_response` that asserts widgets are fed **and** that no inline
 `InputCapture` is started (cbreak would fight Textual for stdin).
+`TestToolBlockDiff` pins the diff coloring: an `edit_file` result renders `-`
+red / `+` green / headers dim, a probed preview replaces the raw output with
+`⎿ +A −D` plus a highlighted diff (no duplicate echo), a failed operation never
+shows the unapplied preview, other tools keep their output uncolored, and a
+failing or absent `tool_lookup` degrades to the plain path.
 
 `tests/tui/test_dialogs.py` covers the migrated dialogs: widget shape (two
 screens, no third for a fourth question), fail-closed cancellation, the
@@ -424,21 +510,6 @@ focus chain and `Esc` still bubbles into the interrupt when no menu is open, and
 submissions land in the history file — including that repeats and blank lines do
 not. `tests/tui/conftest.py` points `HISTORY_PATH` at `tmp_path` for the whole
 directory, so no test writes into the user's real `~/.openx/history`.
-
-`tests/tui/test_deck.py` covers the status layer on both sides of the split. The
-pure half (`ui/_deck.py`, no app) pins the row semantics: plan's three states and
-`activeForm`, the fold-to-one-line summary, `+N more` overflows, queue FIFO and
-its count, the shared plan/queue budget (and that the larger block shrinks
-first), fleet rows with the activity line counted toward the budget, `hints`
-turning the `↓ select · ↵ view` hint off, plugin panels skipping `svg:` lines and
-dropping only the panel with bad markup, and every provider failing open. The
-widget half pins `DeckView` (hidden when empty without spending a row, height
-equal to the row count, no wrapping, click never stealing the input focus), the
-compose order (`plan-deck` above the status line above the prompt above
-`agents-deck`), the per-turn lifecycle (`TuiStream.start()` fills all four decks,
-`TurnEnd` retires Agents while Plan and plugin panels stay, `todos[:] = …` shows
-up on the next tick, the fleet is reset per turn) and a 12-row terminal where both
-decks stay inside their budget and the transcript keeps its three rows.
 
 Textual's `App.run_test()` + `Pilot` assert **widget state** directly, which is
 what the inline implementation cannot do — there, stream rendering is verified

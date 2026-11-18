@@ -1,11 +1,13 @@
 """状态层（deck）渲染：**行内与全屏共用的唯一一份**行格式。
 
 deck 是输入框上下那几块"钉住"的状态面板——计划（todos）、排队待发的跟进
-消息（queue）、子代理舰队（fleet）、插件 ``ui.panel`` 面板。两个界面消费同一
-份数据、也要长得一样，所以行怎么拼只写在这里：
+消息（queue）、子代理舰队（fleet）、插件 ``ui.panel`` 面板；此外**子代理
+详情视图**（``Ctrl-O`` 切过去的那一屏）也在这里成行。两个界面消费同一份
+数据、也要长得一样，所以行怎么拼只写在这里：
 
 行内 ``StreamingService._build_renderable`` 每帧把 ``Group`` 塞进 ``Live``；
-全屏 ``tui/deck.py::DeckView`` 把同一个 ``Group`` 塞进一个 ``Static``。
+全屏 ``tui/deck.py::DeckView``（deck）与 ``tui/deck.py::DetailView``（详情）
+把同一个 ``Group`` 塞进 ``Static``。
 
 两端各自只负责**预算**（自己还有多少行可花）与**摆放**（框上 / 框下），
 行内容与语义一律来自本模块。这是 ``ui/_style.py`` 那条纪律的延伸：字形与
@@ -13,12 +15,17 @@ deck 是输入框上下那几块"钉住"的状态面板——计划（todos）�
 
 两条硬不变量：
 
-1. **1 deck 行 ≡ 1 终端行**：每行 ``no_wrap=True, overflow="ellipsis"``。
-   行内靠它算视口预算与擦除行数，全屏靠它把 ``styles.height`` 钉成
-   ``len(rows)``——任何一行偷偷折行，两边的几何都会崩。
+1. **1 deck 行 ≡ 1 终端行**：deck 行每行 ``no_wrap=True,
+   overflow="ellipsis"``。行内靠它算视口预算与擦除行数，全屏靠它把
+   ``styles.height`` 钉成 ``len(rows)``——任何一行偷偷折行，两边的几何都会崩。
+   **详情视图的正文行是这条的例外**（见 :func:`detail_body`）：它们承载子
+   代理的原始输出，折行比截断有用；住滚动容器里、高度交给框架，不参与
+   deck 的行数算式。头部行仍是 ``no_wrap`` 的单行。
 2. **fail-open 是调用方的责任**：本模块只做纯数据 → 行，不抓 provider
    异常（那属于取数的一侧）；但**坏 markup 单面板兜底**在
-   :func:`plugin_lines` 内部（插件面板是外部输入，一行坏标签不该让整帧消失）。
+   :func:`plugin_lines` 内部（插件面板是外部输入，一行坏标签不该让整帧消失），
+   **坏 markup 单行兜底**在 :func:`detail_body` 内部（子代理输出是模型文本，
+   一个裸 ``[`` 不该让整屏消失）。
 
 ``budget`` 由调用方给：行内是 ``height - _VIEWPORT_RESERVE - 5``（保证正文
 窗口恒 ≥ 5 行），全屏是视口的一个比例（见 ``tui/deck.py::deck_budget``）。
@@ -35,8 +42,8 @@ from rich.text import Text
 
 from ._helpers import fmt_duration
 from ._style import (
-    ACCENT, ACCENT_BOLD, DIM, GUTTER, MARK_BULLET, MARK_FAIL, MARK_OK,
-    MARK_PENDING, SUCCESS_STYLE, spin_glyph,
+    ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, GUTTER, MARK_BULLET, MARK_FAIL,
+    MARK_OK, MARK_PENDING, SUCCESS_STYLE, spin_glyph,
 )
 
 #: 各块的行数上限（超出折叠成 "+N more"）。实际渲染还会被 ``budget``
@@ -44,6 +51,12 @@ from ._style import (
 DECK_PLAN_ROWS = 6
 DECK_QUEUE_ROWS = 4
 DECK_FLEET_ROWS = 4
+
+#: 舰队头行的操作提示（行内）：``↓`` 选中 + ``↵`` 确认切主视图。
+FLEET_HINT_INLINE = "· ↓ select · ↵ view"
+#: 子代理详情视图头行的操作提示（行内）：``↑``/``↓`` 在视图间循环、
+#: ``alt+0`` 回主视图。
+DETAIL_HINT_INLINE = "↑/↓ switch · alt+0 back"
 
 
 def deck_line(text: str, style: str = "") -> Text:
@@ -161,7 +174,7 @@ def fleet_lines(
     *,
     budget: int,
     marked: int = -1,
-    hints: bool = True,
+    hints: "bool | str" = True,
     spin: Callable[[], str] = spin_glyph,
 ) -> list[Text]:
     """子代理舰队面板（渲染在输入框**之下**）→ 行列表。
@@ -172,9 +185,15 @@ def fleet_lines(
     活动行（``⎿ 工具(摘要)``）——已结束的代理没有"当前活动"可言，硬留一行
     是噪音；活动行**必须计入行数**，否则整组会撑爆预算。
 
-    ``hints``：头行是否带 ``· ↓ select · ↵ view``。行内 deck 支持方向键
-    选择与 Ctrl-O 详情视图，全屏界面本阶段没有这两个动作——**头行不能
-    承诺按不动的键**，故那边传 ``False``。
+    ``hints``：头行那句操作提示，按界面传——
+
+    - ``True``（默认）→ :data:`FLEET_HINT_INLINE`，行内 deck 的 ``↓`` 选择
+      + ``↵`` 确认；
+    - ``str`` → 原样（全屏界面用 ``Ctrl+O`` 循环切换，键不同、文案就该不同）；
+    - ``False`` → 什么都不写。
+
+    **头行不能承诺按不动的键**——所以这不是"有/无提示"的布尔开关，而是
+    "提示是什么"的参数。
     """
     snap = list(snap or [])
     if not snap or budget <= 0:
@@ -198,7 +217,7 @@ def fleet_lines(
 
     header = f" [bold]Agents[/bold] [dim]({len(snap)})"
     if hints:
-        header += " · ↓ select · ↵ view"
+        header += FLEET_HINT_INLINE if hints is True else str(hints)
     header += "[/dim]"
     rows: list[Text] = [deck_markup(header)]
     # 主代理条目（0）：选中它 = 回到主回答视图
@@ -276,6 +295,85 @@ def plugin_lines(
     return rows
 
 
+def detail_header(
+    view: dict,
+    *,
+    hint: str = DETAIL_HINT_INLINE,
+    spin: Callable[[], str] = spin_glyph,
+) -> Text:
+    """子代理详情视图的**头行**（单行 ``no_wrap``）。
+
+    ``Agent N: 标签 · running · 3 tools · 4.2s · <hint>``——编号与标签给出
+    "现在看的是谁"，状态/工具数/耗时给出"它到哪儿了"，末尾那句是按键提示
+    （行内 ``↑/↓ switch · alt+0 back``，全屏 ``^O next · alt+0 main``）。
+
+    标签经 ``escape``：子代理描述是模型生成的，可能含方括号。
+    """
+    status_label = {
+        "running": f"[{ACCENT}]{spin()} running[/{ACCENT}]",
+        "done": f"[{SUCCESS_STYLE}]{MARK_OK} done[/{SUCCESS_STYLE}]",
+        "error": f"[{ERROR_STYLE}]{MARK_FAIL} error[/{ERROR_STYLE}]",
+    }.get(view["status"], str(view["status"]))
+    return deck_markup(
+        f" [bold]Agent {view['id']}: {escape(str(view['label']))}[/bold]"
+        f" [dim]·[/dim] {status_label}"
+        f" [dim]· {view['tools_count']} tools"
+        f" · {fmt_duration(view['elapsed'])}"
+        f" · {hint}[/dim]",
+    )
+
+
+def _output_line(raw: str) -> Text:
+    """子代理输出的一行 → ``Text``。坏 markup 回落纯文本，绝不抛。
+
+    子代理的 ``str`` token 由 ``format_stream_event`` **原样**返回（不转义），
+    所以模型输出里一个裸 ``[``（比如 markdown 链接、``[TODO]``）就足以让
+    ``Text.from_markup`` 抛 ``MarkupError``——在行内那等于整帧消失。输出是
+    外部输入，兜底在这里：能解析就保留颜色，解析不了就把它当纯文本显示。
+    """
+    try:
+        return Text.from_markup(raw)
+    except Exception:
+        return Text(raw)
+
+
+def detail_body(view: dict, *, budget: Optional[int] = None) -> list[Text]:
+    """子代理详情视图的**正文行**（捕获事件流的末尾窗口）。
+
+    ``budget``：最多给几行；``None`` = 全部（全屏界面用——正文住在滚动容器
+    里，能翻就别替用户裁）。末尾的 ``pending``（未遇 ``\\n`` 的尾片段）一并
+    展示，否则正在写的那一行要等下一个换行才可见。
+
+    **这几行允许折行**（不加 ``no_wrap``）：它们是子代理的原始输出，长行截断
+    比折行更糟；因此它们不是 deck 行、不参与"1 行 ≡ 1 终端行"的几何算式。
+    """
+    lines = [str(ln) for ln in (view.get("lines") or ())]
+    pending = view.get("pending") or ""
+    if pending:
+        lines.append(str(pending))
+    if budget is not None:
+        lines = lines[-budget:] if budget > 0 else []
+    if not lines:
+        return [Text("  (no output yet)", style="dim")]
+    return [_output_line(ln) for ln in lines]
+
+
+def detail_lines(
+    view: dict,
+    *,
+    budget: int,
+    hint: str = DETAIL_HINT_INLINE,
+    spin: Callable[[], str] = spin_glyph,
+) -> list[Text]:
+    """详情视图的完整行列表（头行 + 正文窗口）——行内 ``_detail_view`` 用。
+
+    ``budget`` 只约束正文行数（头行恒在）：行内把它算成
+    ``height - _VIEWPORT_RESERVE - deck_h - 1``。
+    """
+    return [detail_header(view, hint=hint, spin=spin),
+            *detail_body(view, budget=budget)]
+
+
 def to_group(rows: Optional[Sequence[Text]]) -> Optional[Group]:
     """行列表 → ``Group``（两个界面都塞进 Rich 渲染面）。空 → ``None``。"""
     if not rows:
@@ -287,8 +385,13 @@ __all__ = [
     "DECK_FLEET_ROWS",
     "DECK_PLAN_ROWS",
     "DECK_QUEUE_ROWS",
+    "DETAIL_HINT_INLINE",
+    "FLEET_HINT_INLINE",
     "deck_line",
     "deck_markup",
+    "detail_body",
+    "detail_header",
+    "detail_lines",
     "fleet_lines",
     "plan_queue_lines",
     "plugin_lines",

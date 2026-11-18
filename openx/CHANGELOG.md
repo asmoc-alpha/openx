@@ -4,6 +4,73 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.35 — The Agents panel becomes navigable, and one diff gets one color
+
+- **`Ctrl+O` / `Alt+0…9` in the full-screen surface open a subagent's detail
+  view.** `#detail` is the screen's second `1fr` child (the transcript is the
+  other), so picking a target swaps the transcript block out and leaves the
+  status line, the input line and both decks in place — the inline surface's
+  "body slot switches to that subagent", without losing the ability to queue a
+  follow-up while reading. The rows come from `ui/_deck.py`
+  (`detail_header` / `detail_body`), the same builders the inline
+  `_detail_view` uses. Deliberately **not** `↓` select + `Enter`: the input line
+  is always editable here and `↑`/`↓` already mean history/caret
+  (`tests/tui/test_input.py` pins both), so the Agents header says `· ^O switch`
+  instead — `fleet_lines(hints=…)` now takes `True` / `False` / a string, because
+  a header must advertise the keys that actually work, and "nothing" is not the
+  only alternative to the inline wording
+- **Header and body are two `Static`s.** The header carries the spinner and the
+  elapsed time (rewritten at 5 Hz); the body is the subagent's captured stream,
+  rewritten only when new lines land. One widget would force the second to
+  follow the first's cadence — 200 lines × 5 Hz of pure layout churn. The body
+  is the one place in the deck module that **may wrap** (it is raw subagent
+  output in a scroll container, where truncation hurts more than wrapping), and
+  `detail_body` degrades a line with bad markup to plain text — `format_stream_event`
+  returns model text unescaped, so a stray `[` used to be able to kill the frame
+- **The edit diff is now colored on every surface, from one decision.**
+  `ui/_diff.py` gained `diff_line_style` / `diff_line_kind` (header lines win over
+  `-`, so `--- a/x` is dim and not "deleted") plus `TEXT_OP_TOOLS` — the set of
+  tools whose output carries a unified diff. The inline transcript, the
+  full-screen `ToolBlock` and the `openx serve` web client all defer to it:
+  green means "added" in all three, and adding a new file-writing tool is one
+  name in one place
+- **`ToolBlock` bodies are layered now**: with a change preview
+  (`edit_file` / `write_file`, probed *before* execution) the body is
+  `⎿ +A −D` plus a syntax-highlighted diff and the raw output is **not** echoed
+  a second time; otherwise the output is classified per line; on error the body
+  stays red and the previewed diff is withheld — a failed edit means the change
+  did not happen. `TuiStream` had been accepting `tool_lookup` and never using
+  it, which is why the full-screen surface showed a `+`/`-` diff in one flat
+  colour
+- **`openx serve` ships the classification, not the syntax.** `tool_use` and
+  `tool_result` carry an optional `diff` payload (`{"path","added","removed",
+  "rows"}` where each row is `{"kind": "add"|"del"|"hunk"|"ctx"|"more", "text"}`)
+  and the browser only maps `kind` to a CSS class — the frontend never parses
+  diff syntax, so it cannot drift from the terminals. The payload is omitted
+  entirely when there is nothing to say (no preview probe, non-text tools,
+  errors), and the fallback path sends `rows` **without** `path`/`added`/
+  `removed` — the same "unknown means the key is absent" discipline as
+  `duration_ms`. Row text goes through `textContent` and unknown kinds fall back
+  to plain text, so a hostile filename cannot become either markup or a class
+- **The inline surface keeps its behaviour byte for byte**: `_result_line_markup`
+  and `_text_op_body` are now thin wrappers over the shared helpers, which
+  `tests/ui/test_text_op_render.py` and `tests/orchestration/test_fleet_view.py`
+  verify without a single changed assertion
+- `tests/tui/test_streaming.py::TestToolBlockDiff` pins the TUI side (colored
+  `+`/`-`/headers, a preview replacing the raw echo, errors withholding the
+  diff, `ls -la` output staying uncolored, a failing `tool_lookup` degrading
+  cleanly); `tests/serve/test_serve_session.py` pins the protocol side (preview
+  → `tool_use.diff`, fallback rows → `tool_result.diff`, no diff on error, none
+  for non-text tools, a raising probe degrading silently);
+  `tests/serve/test_frontend.py` pins the web contract (kind whitelist,
+  `textContent`, CSS classes, and a guard that the browser never re-implements
+  the line test); `python -m openx.tui`'s demo now runs one real `edit_file`
+  through the preview → diff path, so the demo keeps self-checking it
+- Docs (both languages): a Decks subsection on the detail view, the Blocks table
+  and key table updated, the "Agents panel is read-only" limit replaced by what
+  is actually still missing (click-to-open, `↓`+`↵`, `Esc` to dismiss);
+  `docs/openx-serve.md` documents the `diff` field and the coloring
+
 ## 0.1.34 — The status decks become panels
 
 - **Plan, Queue, Agents and plugin `ui.panel` slots are pinned widgets now**

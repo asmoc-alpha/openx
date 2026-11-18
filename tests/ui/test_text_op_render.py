@@ -29,9 +29,15 @@ from openx.services.streaming import StreamingService
 from openx.tools.file_tools import EditFileTool, WriteFileTool
 from openx.ui._diff import (
     classify_text_op,
+    colorized_output_lines,
     detect_lexer,
+    diff_line_kind,
+    diff_line_style,
+    diff_payload,
     diff_stat,
+    output_payload,
     render_diff_lines,
+    text_op_lines,
 )
 
 # ── 单元：lexer 探测 / 分类 / 统计 ───────────────────────────────
@@ -125,6 +131,114 @@ class TestRenderDiffLines:
 
     def test_identical_returns_empty(self):
         assert render_diff_lines("same\n", "same\n", "a.py") == []
+
+
+# ── 单元：行级语义色 / 输出着色 / 文本操作块（两个界面共用）────────
+
+
+class TestDiffLineStyle:
+    def test_markers(self):
+        assert diff_line_style("+new line") == "green"
+        assert diff_line_style("-old line") == "red"
+
+    def test_headers_win_over_dash(self):
+        """``--- a/x`` 也以 - 开头：头行必须先判成 dim，否则被染成"删除行"。"""
+        assert diff_line_style("--- a/x.py") == "dim"
+        assert diff_line_style("+++ b/x.py") == "dim"
+        assert diff_line_style("@@ -1,3 +1,3 @@") == "dim"
+
+    def test_non_diff_lines_unstyled(self):
+        assert diff_line_style(" context") is None
+        assert diff_line_style("... (diff truncated, 2 more lines)") is None
+
+
+class TestColorizedOutputLines:
+    def test_edit_output_is_row_styled(self):
+        rows = colorized_output_lines("--- a/x\n-o\n+n\n ctx", is_edit=True)
+        assert [r.style for r in rows] == ["dim", "red", "green", None]
+
+    def test_other_tools_are_never_styled(self):
+        """``ls -la`` 的输出以 - 开头，但它不是 diff——不该被染红。"""
+        rows = colorized_output_lines("-rw-r--r-- 1 a b c", is_edit=False)
+        assert rows[0].style is None
+
+    def test_limit_appends_dim_tail(self):
+        rows = colorized_output_lines("a\nb\nc", is_edit=False, limit=2)
+        assert [r.plain for r in rows] == ["a", "b", "… +1 lines"]
+        assert rows[-1].style == "dim"
+
+    def test_empty_output(self):
+        assert colorized_output_lines("", is_edit=True) == []
+
+
+class TestTextOpLines:
+    def test_stat_line_and_indented_diff(self):
+        rows = text_op_lines(("m.py", "a = 1\n", "a = 2\n"))
+        assert rows[0].plain.strip().startswith("⎿")
+        assert "+1" in rows[0].plain and "−1" in rows[0].plain
+        assert any(r.plain.startswith("     ") and r.plain.strip().startswith("+")
+                   for r in rows[1:]), [r.plain for r in rows]
+
+    def test_added_line_carries_green_marker(self):
+        rows = text_op_lines(("m.py", "a = 1\n", "a = 2\n"))
+        plus = [r for r in rows if r.plain.strip().startswith("+")]
+        assert plus and any("green" in str(s.style) for s in plus[0].spans)
+
+    def test_indent_is_caller_controlled(self):
+        rows = text_op_lines(("m.py", "a = 1\n", "a = 2\n"), indent="  ")
+        assert all(not r.plain.startswith("      ") for r in rows)
+
+    def test_no_change(self):
+        rows = text_op_lines(("m.py", "same\n", "same\n"))
+        assert rows[-1].plain.strip() == "(no content change)"
+
+
+class TestDiffPayload:
+    """serve 下发的载荷：与终端同一份分类，只是换成 kind + 明文。"""
+
+    def test_kind_mirrors_style(self):
+        assert diff_line_kind("+x") == "add"
+        assert diff_line_kind("-x") == "del"
+        assert diff_line_kind(" ctx") == "text"
+        assert diff_line_kind("--- a/x") == "hunk"   # 头行优先，不是 del
+        assert diff_line_kind("@@ -1 +1 @@") == "hunk"
+
+    def test_payload_shape_and_stats(self):
+        payload = diff_payload(("a.py", "x = 1\n", "x = 2\n"))
+        assert payload["path"] == "a.py"
+        assert (payload["added"], payload["removed"]) == (1, 1)
+        assert {"kind", "text"} <= set(payload["rows"][0])
+
+    def test_payload_is_json_serializable(self):
+        payload = diff_payload(("a.py", "x = 1\n", "x = 2\n"))
+        assert json.loads(json.dumps(payload)) == payload
+
+    def test_payload_truncates_with_more_row(self):
+        old = "\n".join(f"o{i}" for i in range(50))
+        new = "\n".join(f"n{i}" for i in range(50))
+        payload = diff_payload(("big.py", old, new), max_lines=4)
+        assert payload["rows"][-1]["kind"] == "more"
+        assert payload["rows"][-1]["text"].startswith("… +")
+
+    def test_payload_no_change_has_no_rows(self):
+        assert diff_payload(("a.py", "same\n", "same\n"))["rows"] == []
+
+    def test_output_payload_gates_on_is_diff(self):
+        """``ls -la`` 的输出不是 diff：没开闸门就全按普通文本。"""
+        plain = output_payload("-rw-r--r-- 1 a b c")
+        assert [r["kind"] for r in plain["rows"]] == ["text"]
+        typed = output_payload("--- a/x\n+x\n-y", is_diff=True)
+        assert [r["kind"] for r in typed["rows"]] == ["hunk", "add", "del"]
+
+    def test_output_payload_omits_unknown_keys(self):
+        """这条路上确实不知道路径与统计——就不出现这些键（同 duration_ms）。"""
+        payload = output_payload("x")
+        assert "path" not in payload and "added" not in payload
+        assert "removed" not in payload
+
+    def test_output_payload_limit(self):
+        rows = output_payload("a\nb\nc", limit=2)["rows"]
+        assert [r["kind"] for r in rows] == ["text", "text", "more"]
 
 
 # ── 流式接线 ─────────────────────────────────────────────────────

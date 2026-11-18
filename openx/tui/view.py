@@ -157,7 +157,9 @@ class StreamView:
     def _on_tool_started(self, event: ToolStarted) -> None:
         self._freeze_thinking()
         self._close_answer()
-        block = ToolBlock(event.name, event.summary)
+        # ``diff`` 是执行前探测到的变更预览（文本操作才有）：工具块据此
+        # 渲染彩色 diff，与行内 ``record.diff`` 同一来源。
+        block = ToolBlock(event.name, event.summary, diff=event.diff)
         self._app.write_widget(block)
         self._blocks.append(block)
         self._produced = True

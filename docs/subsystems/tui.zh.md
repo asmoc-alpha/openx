@@ -13,8 +13,8 @@ scrollback 就再也改不了，于是"折叠这段 thinking"、"窗口大小变
 
 > **状态：默认界面。** 流式、可折叠的 thinking/工具块、`Esc` 打断、多行
 > 输入行（历史 + slash 命令菜单）、钉住的状态层（计划 / 队列 / Agents /
-> 插件面板）与权限审批 / 计划批准 / `ask_user` 模态弹窗都在 app 里跑。仍存
-> 的缺口见[限制](#限制)。
+> 插件面板）、可键盘导航的 Agents 面板与子代理详情视图，以及权限审批 /
+> 计划批准 / `ask_user` 模态弹窗都在 app 里跑。仍存的缺口见[限制](#限制)。
 
 ```bash
 openx                          # 全屏界面（默认）
@@ -45,15 +45,30 @@ python -m openx.tui            # 离线演示：不起模型、不联网
 │  Ask OpenX…  （输入 / 弹出斜杠命令菜单）              │  PromptEditor + SlashMenu
 ├───────────────────────────────────────────────────────┤
 │   Agents (2)                            ← #agents-deck│  Agents + 插件面板
-│  ❯0 main · main answer                                │
-│   1 ✻ explore streaming · 3 tools · 4s                │
+│  ❯1 explore streaming · 3 tools · 4s · ^O switch      │
 │        ⎿  read_file(services/streaming.py)            │
 │   2 ✓ review docs · 5 tools · 9s                      │
+│   0 main · main answer                                │
 │  (^_^) demo-pet · 第 12 帧                            │
 └───────────────────────────────────────────────────────┘
 
 没有 Footer：`Ctrl+Q` / `Ctrl+R` / `Ctrl+T` 照常生效，但不在屏幕上常驻展示
 （键位提示只出现在输入行占位符与弹窗的提示行里）。
+
+`Ctrl+O` 把上面那块转录整个换成某个子代理的详情视图（`#detail`——屏幕的另
+一个 `1fr` 子控件，两者因此不会抢高度）：
+
+```
+┌ 详情 ─────────────────────────────── VerticalScroll ──┐
+│  Agent 1: explore streaming · ✻ running · 3 tools · 4s │  ← #detail-head
+│  ● read_file (services/streaming.py)                   │  ← #detail-body
+│    ⎿ 1 2200 行 / 水印                                  │
+│    正在核对 deck 预算与视口裁剪…                        │
+└───────────────────────────────────────────────────────┘
+```
+
+状态行、输入行与两块 deck 都留在原位——看着**这个**子代理时，插一句跟进仍
+然只差一次回车。
 
 ## 三条缝
 
@@ -94,7 +109,7 @@ python -m openx.tui            # 离线演示：不起模型、不联网
 | 块 | 默认 | 切换方式 | 内容 |
 |---|---|---|---|
 | `ThinkingBlock` | 折叠 | 点标题栏，或聚焦标题栏后按 Enter | 纯 dim `Text`，**绝不**走 Markdown（围栏与反引号会被重排乱） |
-| `ToolBlock` | 折叠 | 同上 | 结果正文；标题带状态点（`○` 运行中、`●` 完成、`✕` 出错）与 `名字 (摘要)` |
+| `ToolBlock` | 折叠 | 同上 | 结果正文，文本操作**按 diff 着色**：`+` 绿、`-` 红、`@@`/`---`/`+++` dim。有变更预览时（`edit_file` / `write_file`，执行前探测）正文换成 `⎿ +A −D` + 语法高亮 diff，不再回显原始输出——判定来自 `ui/_diff.py`，与行内转录、`openx serve` 的 `diff` 载荷同一份，所以不会出现"一个界面染了色、另一个留白"。标题带状态点（`○` 运行中、`●` 完成、`✕` 出错）与 `名字 (摘要)` |
 
 `feed()` 追加 token，`freeze(elapsed)` 把标题改成 `● Thought for Ns`。与行内
 实现不同，冻结后的块**仍然可折叠**——widget 还在，重渲即可。
@@ -222,6 +237,35 @@ auto-height（deck 行恒 `no_wrap`，一行就是一个终端行）；空时用
 参与渲染会让 `render_strips` 崩）。deck 高度变化后 app 会补一次贴底滚动，
 免得"长高了就不再跟随"。
 
+### 子代理详情视图
+
+`Ctrl+O` 循环切换观看目标（`Alt+0…9` 直选）：目标 `0` 是主回答、`1..N` 是第 N
+个子代理。选中时隐藏 `#transcript`、在原位显示 `#detail`——正是行内"正文槽切到
+那个子代理"，而输入行与两块 deck 原地不动，于是看着它的时候仍能插一句跟进。
+
+**为什么不用 `↓` 和 `Enter`？** 行内 deck 是"`↓` 选中 + `Enter` 确认"，那能成立
+只因为行内输入行在流式期不接收编辑。全屏的输入行始终可编辑，而 `↑`/`↓` 的第一
+含义已经是"翻历史 / 移光标"（`tests/tui/test_input.py` 两条都钉着），所以按键是
+`Ctrl+O`（循环）与 `Alt+0…9`（直选）。Agents 头行写的是 `· ^O switch`——共享渲染
+函数把提示文案做成参数（`fleet_lines(hints=…)` 接受 `True` / `False` / 字符串）：
+头行绝不能承诺按不动的键，而"不动"并不是行内文案之外唯一的选择。
+
+**头行与正文是两个 `Static`。** 头行带转帧与耗时，每 5Hz 一拍都要重写；正文是
+子代理的捕获流，只有来了新行才变（按 `plain` 签名去重，与 `DeckView` 同款）。
+合成一个控件就等于逼后者跟着前者的节奏重排——200 行 × 5Hz 纯属浪费。正文行是
+本文件里**唯一允许折行**的地方：那是子代理的原始输出，截断比折行更糟；它们住在
+滚动容器里，不参与 deck 的"一行 ≡ 一个终端行"几何。
+
+行从 `ui/_deck.py` 来（`detail_header` / `detail_body`），与行内 `_detail_view`
+共用。也正因为如此，子代理输出里一个裸 `[` 不再能炸掉整帧：`format_stream_event`
+返回模型文本时不做转义，行内界面此前会因此抛 `MarkupError`；现在 `detail_body`
+把那一行降级成纯文本。
+
+**生命周期。** 每个回合开始时目标归 `0`（`attach_decks`），新回合绝不会一上来就
+停在已经不存在的视图上。舰队在背后变短（`reset()`、跑完）时，下一拍钳回主回答。
+模态弹窗在场时**不切**：详情视图会顶掉弹窗正压着的转录。`Esc` 不关详情（`Esc`
+已经是"打断"与"取消弹窗"）——要回去就 `Alt+0` 或继续循环。
+
 ## 弹窗
 
 行内提示框是旧界面里 widget 树**无法共用**的那部分：`ui/_components/dialogs.py`
@@ -288,6 +332,8 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
 | `Ctrl+Q` | 退出（用 EOF 唤醒正在等的输入） |
 | `Ctrl+R` | 切换所有 thinking 块 |
 | `Ctrl+T` | 全部展开；若已有折叠则全部折叠 |
+| `Ctrl+O` | 循环切换观看目标：主回答 → 子代理 1 → … → 回主回答 |
+| `Alt+0` … `Alt+9` | 直选目标（`0` = 主回答；越界钳到最后一个） |
 | `Tab` / `Shift+Tab` | slash 菜单开着：应用候选；关着：在块标题与输入行之间移动焦点 |
 | `Esc` | 打断当前回合（空闲时无动作）；收起 slash 菜单；关掉当前弹窗 |
 
@@ -311,10 +357,10 @@ renderable、选项表）——加第四种弹窗不该需要写第三个屏。
   同样警告后回退；显式传 `--tui` 才以 2 退出并给安装指引。
 - TUI 与 `--serve`、以及一次性 prompt 参数互斥——那两条路径对 stdout 的
   占用方式，全屏 app 无法共享（要行内界面配 prompt 就加 `--inline`）。
-- **Agents 面板在这里是只读的。** 行内 deck 有 `↓` 选择与 `Ctrl+O` 子代理详情
-  视图；全屏界面里那意味着把整块转录换掉，是另一个功能。因此 Agents 头行不写
-  那两个键（共享渲染函数带 `hints` 开关）——头行绝不能承诺按不动的键。
-  折叠、滚动与 `Esc` 不受影响。
+- **Agents 面板可键盘导航，但点不动。** `Ctrl+O` / `Alt+0…9` 能到达子代理详情
+  视图（见[子代理详情视图](#子代理详情视图)）；仍缺的是行内那套两步式 `↓` 选中 +
+  `Enter` 确认、点舰队行开详情、以及用 `Esc` 关掉详情（现在是 `Alt+0` 回去）。
+  头行只写真正能按的键。
 - 长答案流式期按 10Hz 重渲 Markdown；慢终端上的超长答案因此比行内的逐行固化
   路径更重。
 
@@ -329,6 +375,10 @@ sink 投递、attach/detach，以及 `ask()` 契约（返回提交的文本，�
 配对、孤立结果不丢、`task` 起始抑制与结果回显、完成/打断收尾行、`Esc` 闩与
 解绑、排队输入路由，以及一次 `_stream_response` 端到端——断言 widget 有内容
 **且**没有起行内 `InputCapture`（cbreak 会与 Textual 抢 stdin）。
+`TestToolBlockDiff` 钉住 diff 着色：`edit_file` 结果里 `-` 红 / `+` 绿 / 头行
+dim；探测到预览时正文换成 `⎿ +A −D` + 高亮 diff 且**不重复回显**原始输出；
+失败的操作绝不展示未发生的 diff；其余工具输出不被误着色；`tool_lookup` 抛错
+或缺失时退回无预览路径。
 
 `tests/tui/test_dialogs.py` 覆盖迁移后的弹窗：控件形态（两个屏，不给第四种弹窗
 写第三个屏）、fail-closed 取消语义、权限选项次序、审批正文里的 diff 预览、
@@ -354,13 +404,18 @@ sink 投递、attach/detach，以及 `ask()` 契约（返回提交的文本，�
 `tests/tui/test_deck.py` 覆盖状态层的两半。纯函数那半（`ui/_deck.py`，不需要
 app）钉住行语义：计划三态与 `activeForm`、全完成折叠成一行、`+N more` 折叠、
 队列 FIFO 与计数、计划/队列共享预算（且较大的块先让位）、舰队行（活动行计入
-预算）、`hints` 关掉 `↓ select · ↵ view` 提示、插件面板跳 `svg:` 且坏 markup
-只影响那一个面板、以及每个 provider 抛异常时的 fail-open。控件那半钉住
-`DeckView`（空则隐藏且不占行、高度等于行数、不折行、点击不夺输入行焦点）、
-compose 顺序（`plan-deck` → 状态行 → 输入行 → `agents-deck`）、回合生命周期
-（`TuiStream.start()` 后四块都在、`TurnEnd` 让 Agents 退场而计划与插件面板留存、
-`todos[:] = …` 下一拍可见、舰队每轮归零）以及 12 行小终端上两个 deck 都在预算
-内、转录仍留三行。
+预算）、`hints` 按界面给提示文案（关掉或替换 `↓ select · ↵ view`）、插件面板
+跳 `svg:` 且坏 markup 只影响那一个面板、以及每个 provider 抛异常时的 fail-open。
+详情视图的行构造同样钉死：头行的身份/状态/耗时与按界面的提示、正文窗口
+（`budget`）、尾部未成行的 `pending` 片段、`(no output yet)`、坏 markup 回落
+纯文本。控件那半钉住 `DeckView`（空则隐藏且不占行、高度等于行数、不折行、点击
+不夺输入行焦点）、compose 顺序（`transcript` → `detail` → `plan-deck` → 状态行
+→ 输入行 → `agents-deck`）、回合生命周期（`TuiStream.start()` 后四块都在、
+`TurnEnd` 让 Agents 退场而计划与插件面板留存、`todos[:] = …` 下一拍可见、舰队
+每轮归零）以及 12 行小终端上两个 deck 都在预算内、转录仍留三行。
+`TestFleetNavigation` 用真实按键驱动详情视图：`Ctrl+O` 循环并隐藏转录、
+`Alt+N` 直选与钳位、Agents 行的 `❯` 标记跟随目标、新回合归零、舰队清空后钳回
+主回答、正文未变时不重写、点详情不夺输入行焦点。
 
 Textual 的 `App.run_test()` + `Pilot` 直接断言**widget 状态**——这正是行内
 实现做不到的（那边流式渲染靠 `pyte` 屏幕快照验证）。五个文件都用

@@ -46,11 +46,12 @@ from ..ui.input_capture import InputCapture
 from ..ui._helpers import DONE_VERBS, done_line, fmt_duration
 # 文本操作（create/update/delete）的变更前后对比渲染：分类 + 多语言高亮 diff
 # （纯展示层，见 ui/_diff.py）。
-from ..ui._diff import classify_text_op, diff_stat, op_style, render_diff_lines
+from ..ui._diff import (
+    TEXT_OP_TOOLS, classify_text_op, diff_line_style, op_style, text_op_lines,
+)
 from ..ui._style import (
-    ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, GUTTER, MARK_FAIL, MARK_INFO,
-    MARK_OK, MARK_PENDING, SPIN_FRAME_MS, SPIN_FRAMES, SUCCESS_STYLE,
-    spin_glyph,
+    ACCENT, ACCENT_BOLD, DIM, GUTTER, MARK_INFO, MARK_PENDING,
+    SPIN_FRAME_MS, SPIN_FRAMES, SUCCESS_STYLE, spin_glyph,
 )
 # deck（状态层：计划 / 队列 / 舰队 / 插件面板）的行格式与全屏 TUI **共用
 # 一份**——两端只差预算与摆放位置，行内容不许各写一套（见 ui/_deck.py）。
@@ -58,9 +59,11 @@ from ..ui._style import (
 from ..ui._deck import (
     deck_line,
     deck_markup,
+    detail_lines,
     fleet_lines,
     plan_queue_lines,
     plugin_lines,
+    to_group,
 )
 
 # 进行中动画字形 = Claude Code 星形家族（定义在 ui/_style.py，与标记
@@ -1783,7 +1786,9 @@ class StreamingService:
             rows.append(Text.from_markup(f"[dim]  {_GUTTER}  (No output)[/]"))
             return rows
         lines = output.splitlines()
-        is_edit = record.name == "edit_file"
+        # 输出里自带 unified diff 的工具：正文按 diff 语义着色。集合在
+        # ui/_diff.py（三端共用），不在这里另写一份名字清单。
+        is_edit = record.name in TEXT_OP_TOOLS
         cap = _ERROR_MAX_LINES if record.is_error else _RESULT_MAX_LINES
         if self._tools_expanded:
             shown, rest = lines[:_EXPAND_HARD_CAP], 0
@@ -1813,29 +1818,20 @@ class StreamingService:
         """文本操作的变更前后对比块：``⎿ +A −D`` 统计行 + 多语言高亮 diff。
 
         折叠 _DIFF_MAX_LINES 行、Ctrl+T 展开（_EXPAND_HARD_CAP）；热键字样
-        只在易变期（``hints``）出现（同既有工具结果块纪律）。diff 行按文件
-        扩展名做语言高亮（``render_diff_lines``），绝不改动模型可见输出。
+        只在易变期（``hints``）出现（同既有工具结果块纪律）。行内容**不在这
+        里拼**：``ui/_diff.text_op_lines`` 与全屏工具块共用一份（全屏那边同
+        样要 ``⎿ +A −D`` + 语言高亮）。绝不改动模型可见输出。
         """
-        path, old, new = record.diff
-        added, removed = diff_stat(old, new)
-        rows: list = [Text.from_markup(
-            f"[dim]  {_GUTTER}  [/][green]+{added}[/] [red]−{removed}[/]")]
         expanded = self._tools_expanded
         cap = _EXPAND_HARD_CAP if expanded else _DIFF_MAX_LINES
         more_hint = " (ctrl+t to expand)" if (hints and not expanded) else ""
         theme = getattr(
             getattr(self._console, "config", None), "syntax_theme", "monokai"
         )
-        diff_lines = render_diff_lines(
-            old, new, path, theme=theme, max_lines=cap, more_hint=more_hint
+        rows = text_op_lines(
+            record.diff, theme=theme, max_lines=cap, more_hint=more_hint,
+            indent="     ",
         )
-        if not diff_lines:
-            rows.append(Text.from_markup("[dim]     (no content change)[/]"))
-            return rows
-        for ln in diff_lines:
-            row = Text("     ", style="dim")
-            row.append_text(ln)
-            rows.append(row)
         if expanded:
             tail = " · ctrl+t to collapse" if hints else ""
             rows.append(Text.from_markup(f"[dim]     (diff{tail})[/]"))
@@ -1843,18 +1839,15 @@ class StreamingService:
 
     @staticmethod
     def _result_line_markup(line: str, is_edit: bool) -> str:
-        """结果行 markup：edit_file 的 diff 行级着色（-红 +绿 @@dim），
-        其余工具原样（markup 转义防输出含方括号）。"""
+        """结果行 markup：edit_file 的 diff 行级着色（-红 +绿 头行dim），
+        其余工具原样（markup 转义防输出含方括号）。
+
+        着色判定来自 ``ui/_diff.diff_line_style``——全屏工具块的正文着色用
+        同一份（两个界面不能一个把 ``--- a/x`` 染红、另一个染 dim）。
+        """
         from rich.markup import escape
-        if is_edit:
-            # diff 头行（---/+++/@@）dim——须先于 -/+ 判断（--- 也以 - 开头）
-            if line.startswith(("@@", "---", "+++")):
-                return f"[dim]{escape(line)}[/]"
-            if line.startswith("-"):
-                return f"[red]{escape(line)}[/]"
-            if line.startswith("+"):
-                return f"[green]{escape(line)}[/]"
-        return escape(line)
+        style = diff_line_style(line) if is_edit else None
+        return f"[{style}]{escape(line)}[/]" if style else escape(line)
 
     @staticmethod
     def _shimmer_spans(label: str, elapsed: float) -> list:
@@ -2006,36 +1999,20 @@ class StreamingService:
     def _detail_view(self, view: dict, deck_h: int):
         """Ctrl-O 切换到的子代理详情视图：头行 + 捕获事件流的末尾窗口。
 
-        纯 Text.from_markup 行（非 Markdown）：子代理流以工具指示行为主，
-        每 tick 重建 ≤200 行成本可忽略，无需缓存、无闪烁面。
+        行怎么拼**不在这里**：``ui/_deck.detail_lines`` 与全屏界面共用一份
+        （``tui/deck.py::DetailView`` 消费同一对 ``detail_header`` /
+        ``detail_body``）。这里只算行内特有的一件事——正文能占几行：``Live``
+        区域是绝对行数，必须从视口高度里把固定件、deck 与头行扣掉。纯
+        Text.from_markup 行（非 Markdown）：子代理流以工具指示行为主，每
+        tick 重建 ≤200 行成本可忽略，无需缓存、无闪烁面。
         """
         try:
             height = self._rich.height
         except Exception:
             height = 24
         max_lines = max(3, height - _VIEWPORT_RESERVE - deck_h - 1)
-        status_label = {
-            "running": f"[{ACCENT}]{self._deck_spin()} running[/{ACCENT}]",
-            "done": f"[{SUCCESS_STYLE}]{MARK_OK} done[/{SUCCESS_STYLE}]",
-            "error": f"[{ERROR_STYLE}]{MARK_FAIL} error[/{ERROR_STYLE}]",
-        }.get(view["status"], view["status"])
-        header = self._deck_markup(
-            f" [bold]Agent {view['id']}: {escape(view['label'])}[/bold]"
-            f" [dim]·[/dim] {status_label}"
-            f" [dim]· {view['tools_count']} tools"
-            f" · {fmt_duration(view['elapsed'])}"
-            f" · ↑/↓ switch · alt+0 back[/dim]",
-        )
-        lines = list(view["lines"])
-        if view["pending"]:
-            lines.append(view["pending"])
-        parts: list = [header]
-        window = lines[-max_lines:]
-        if window:
-            parts.extend(Text.from_markup(ln) for ln in window)
-        else:
-            parts.append(Text("  (no output yet)", style="dim"))
-        return Group(*parts)
+        return to_group(detail_lines(
+            view, budget=max_lines, spin=self._deck_spin))
 
 
 if __name__ == "__main__":

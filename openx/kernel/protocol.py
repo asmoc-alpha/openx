@@ -139,6 +139,7 @@ def tool_use(
     target: str = "",
     call_id: str = "",
     round: int = 0,
+    diff: Optional[dict] = None,
 ) -> dict[str, Any]:
     """一次工具调用开始（可选携带**派生**的展示字段）。
 
@@ -148,13 +149,17 @@ def tool_use(
     - ``call_id``：模型给的 tool_call id（配对键）。**并行批次里同名工具
       会有多个**，缺了它端只能按"同名后进先出"猜，耗时会张冠李戴。
     - ``round``：本回合第几次模型请求产生的调用（任务流按它分组）。
+    - ``diff``：文本操作的变更预览载荷（``path`` / ``added`` / ``removed`` /
+      ``rows``，见 ``ui/_diff.diff_payload``）。行已由服务端**分类**好
+      （``kind`` = add/del/hunk/ctx/more）——前端不认识 diff 语法，只把它
+      映射成 CSS 类。探测不到 → **不出现该键**。
 
     展示字段由 serve 从工具入参**派生**后下发，**不原样回传入参**——
     ``write_file`` 的 ``content`` 可能含整个文件，会把每条下行事件撑大；
     产物路径另走 ``artifact`` 单发事件。可选、默认空/0——既有 NDJSON
     消费者零改动（headless stream-json 不传即不带信息）。
     """
-    return {
+    ev: dict[str, Any] = {
         "type": "tool_use",
         "name": name,
         "args_summary": args_summary,
@@ -162,6 +167,9 @@ def tool_use(
         "call_id": call_id,
         "round": int(round),
     }
+    if diff is not None:
+        ev["diff"] = diff
+    return ev
 
 
 def artifact(path: str, tool: str) -> dict[str, Any]:
@@ -183,6 +191,7 @@ def tool_result(
     duration_ms: Optional[int] = None,
     output_chars: int = 0,
     truncated: bool = False,
+    diff: Optional[dict] = None,
 ) -> dict[str, Any]:
     """一次工具调用结束（serve 增量：配对键 + 服务端实测耗时）。
 
@@ -192,9 +201,13 @@ def tool_result(
       "很快"和"没测到"；
     - ``output_chars``：截断前的原始字符数（``output`` 已按传输上限截断）；
     - ``truncated``：``output`` 是否被截断。
+    - ``diff``：``{"rows": [{kind, text}, …]}``——预览探测失败时的退路：把
+      ``output`` 里自带的那段 unified diff 分类后下发（无 ``path`` /
+      ``added`` / ``removed``，因为这条路上确实不知道）。出错时不下发：
+      未发生的变更不许展示。
 
-    后四项可选、默认不带（``duration_ms=None`` 时省略），既有 NDJSON
-    消费者零改动。
+    后五项可选、默认不带（``duration_ms`` / ``diff`` 为 None 时省略），
+    既有 NDJSON 消费者零改动。
     """
     ev: dict[str, Any] = {
         "type": "tool_result",
@@ -208,6 +221,8 @@ def tool_result(
     }
     if duration_ms is not None:
         ev["duration_ms"] = int(duration_ms)
+    if diff is not None:
+        ev["diff"] = diff
     return ev
 
 

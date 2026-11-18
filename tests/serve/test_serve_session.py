@@ -123,6 +123,148 @@ async def test_late_attach_receives_live_buffer(agent):
     session.stop()
 
 
+# ── 文本操作的变更着色（diff 载荷） ──────────────────────────────
+
+
+class _EditingTool:
+    """``edit_file`` 的最小预览桩（与真工具返回同形状）。"""
+
+    def preview_diff(self, args):
+        return (str(args.get("file_path") or "a.py"),
+                "def f():\n    return 1\n", "def f():\n    return 2\n")
+
+
+def _editing_session(preview_tool=None, error=None):
+    """只演一次编辑的假 agent：ToolStart 带 ``edit_file`` 入参。"""
+
+    class _Agent(FakeAgent):
+        tools = {"edit_file": preview_tool if preview_tool is not None else 1}
+
+        async def stream_run(self, text):
+            yield ToolStartEvent(
+                name="edit_file",
+                arguments='{"file_path": "a.py", "old_text": "1", "new_text": "2"}',
+                call_id="e1", round=1,
+            )
+            if error is not None:
+                yield ToolResultEvent(name="edit_file", output=error,
+                                      is_error=True, call_id="e1", round=1)
+            else:
+                yield ToolResultEvent(
+                    name="edit_file", call_id="e1", round=1,
+                    output="Replaced 1 occurrence(s) in a.py\n"
+                           "--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n"
+                           " def f():\n-    return 1\n+    return 2",
+                )
+
+    return ServeSession(_Agent())
+
+
+async def test_tool_use_carries_preview_diff():
+    """有预览 → tool_use 带 diff：行已由服务端分类，前端只挂 CSS 类。"""
+    session = _editing_session(_EditingTool())
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("改一下")
+    await asyncio.sleep(0.05)
+
+    use = next(e for e in ws.sent if e["type"] == "tool_use")
+    diff = use["diff"]
+    assert diff["path"].endswith("a.py")
+    assert (diff["added"], diff["removed"]) == (1, 1)
+    kinds = [r["kind"] for r in diff["rows"]]
+    assert "add" in kinds and "del" in kinds and "hunk" in kinds, kinds
+    # 结果侧退路也带分类行（预览已在，但仍可用来交叉核对）
+    result = next(e for e in ws.sent if e["type"] == "tool_result")
+    assert result["diff"]["rows"], result
+    session.stop()
+
+
+async def test_tool_result_diff_without_preview():
+    """无 tools 表/探测失败 → tool_use 不带 diff，tool_result 兜底分类。"""
+    session = _editing_session(None)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("改一下")
+    await asyncio.sleep(0.05)
+
+    use = next(e for e in ws.sent if e["type"] == "tool_use")
+    assert "diff" not in use, "探测不到预览就不该带这个键"
+    result = next(e for e in ws.sent if e["type"] == "tool_result")
+    rows = result["diff"]["rows"]
+    assert {"del", "add"} <= {r["kind"] for r in rows}, rows
+    # 退路载荷只有 rows：不知道路径与统计就不编
+    assert "path" not in result["diff"] and "added" not in result["diff"]
+    session.stop()
+
+
+async def test_error_result_has_no_diff():
+    """失败的操作不展示 diff：那个变更并未发生（同行内与全屏）。"""
+    session = _editing_session(_EditingTool(), error="permission denied")
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("改一下")
+    await asyncio.sleep(0.05)
+
+    result = next(e for e in ws.sent if e["type"] == "tool_result")
+    assert result["is_error"] is True
+    assert "diff" not in result
+    session.stop()
+
+
+async def test_non_text_tool_has_no_diff(agent):
+    """普通工具（read_file）永不带 diff：它的输出不是 diff。"""
+    session = ServeSession(agent)
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("读一下")
+    await asyncio.sleep(0.05)
+
+    for ev in ws.sent:
+        if ev["type"] in ("tool_use", "tool_result"):
+            assert "diff" not in ev, ev
+    session.stop()
+
+
+async def test_bad_preview_degrades_silently():
+    """预览探测抛错 → 静默降级（回合照常、事件照发）。"""
+
+    class _Boom:
+        def preview_diff(self, args):
+            raise RuntimeError("坏工具")
+
+    session = _editing_session(_Boom())
+    session.start()
+    ws = FakeWS()
+    client = session.attach(ws)
+    await _flush(client)
+    ws.sent.clear()
+
+    session.submit("改一下")
+    await asyncio.sleep(0.05)
+
+    use = next(e for e in ws.sent if e["type"] == "tool_use")
+    assert "diff" not in use
+    assert ws.sent[-1]["type"] == "result"
+    session.stop()
+
+
 # ── 回合流式 / 广播 ─────────────────────────────────────────────
 
 

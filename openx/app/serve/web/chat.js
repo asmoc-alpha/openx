@@ -4,6 +4,15 @@
    与 AppState 配合：reducer 负责 WS 事件 → DOM，本模块提供可复用渲染函数。
    XSS 纪律：所有模型/工具名走 textContent；助手正文走 renderMarkdown。 */
 
+/** diff 行 kind（服务端 `ui/_diff.py` 分类）→ CSS 类后缀。
+    白名单：未知 kind 一律按普通文本渲染——服务端的字符串绝不拼进类名。 */
+const DIFF_CLASSES = { add: "add", del: "del", hunk: "hunk", ctx: "ctx",
+                       more: "more" };
+
+function diffClass(kind) {
+  return DIFF_CLASSES[String(kind)] || "text";
+}
+
 const Chat = {
   // 渲染缓冲（仅前端展示，不持会话语义）
   streamBuf: "",
@@ -884,7 +893,7 @@ const Chat = {
     this.autoscroll();
   },
 
-  appendToolStart(name, desc, callId) {
+  appendToolStart(name, desc, callId, diff) {
     if (!this.lastAssistant) this.createAssistantCard();
     this._ensureToolFold();
     const tools = this.lastAssistant.tools;
@@ -907,7 +916,10 @@ const Chat = {
     tools.appendChild(wrap);
     // call_id 配对键：并行批次里同名工具会有多个，按名字配会张冠李戴。
     // 索引挂在当前 assistant 卡上——卡片就是配对作用域，换卡即失效。
-    this.lastTool = { name, callId: callId || "", wrap, status, out };
+    // diff 是**执行前**探测的变更预览（服务端分类好），到结果时才画：
+    // 运行中画一份"还没发生的变更"等于撒谎。
+    this.lastTool = { name, callId: callId || "", wrap, status, out,
+                      diff: diff || null };
     if (callId) {
       const a = this.lastAssistant;
       if (a) (a.toolIndex || (a.toolIndex = {}))[callId] = this.lastTool;
@@ -915,7 +927,7 @@ const Chat = {
     this.autoscroll();
   },
 
-  appendToolResult(name, isError, output, callId) {
+  appendToolResult(name, isError, output, callId, diff) {
     // 优先按 call_id 配对（并行批次里同名工具也能各归各位）；
     // 无 id（存量服务端）才退回"同名后进先出"
     const a = this.lastAssistant;
@@ -933,11 +945,43 @@ const Chat = {
     dot.className = "dot " + (isError ? "error" : "done");
     t.status.textContent = isError ? "失败" : "完成";
     t.status.className = "tool-status " + (isError ? "error" : "done");
-    if (output) {
+    // 变更着色：预览（tool_use 带来的）优先，其次是服务端对结果文本的分类。
+    // 出错时两份都不用——失败意味着那个变更并未发生（同行内与全屏的纪律）。
+    const payload = isError ? null : (t.diff || diff || null);
+    if (payload) {
+      this.renderDiff(t.out, payload);
+      t.out.hidden = false;
+    } else if (output) {
       t.out.textContent = output;
       t.out.hidden = false;
     }
     t.wrap.classList.toggle("error", isError);
+  },
+
+  /**
+   * diff 载荷 → 工具卡输出区（`⎿ +A −D` 统计行 + 逐行着色）。
+   *
+   * 行的 **kind 由服务端给**（`ui/_diff.py` 分类），前端只把它映射成 CSS
+   * 类——颜色判定与行内/TUI 是同一份，不在浏览器里另写一套 diff 语法。
+   * kind 走白名单映射（未知一律按普通文本）：服务端字符串绝不拼进类名。
+   * 行文本一律 textContent：文件内容与工具输出都是外部输入。
+   */
+  renderDiff(out, diff) {
+    out.textContent = "";
+    const rows = (diff && Array.isArray(diff.rows)) ? diff.rows : [];
+    if (!rows.length) return;
+    const frag = document.createDocumentFragment();
+    if (diff.added !== undefined || diff.removed !== undefined) {
+      const stat = el("span", "tool-diff-row d-stat");
+      stat.textContent = `⎿ +${Number(diff.added) || 0} −${Number(diff.removed) || 0}`;
+      frag.appendChild(stat);
+    }
+    for (const row of rows) {
+      const line = el("span", "tool-diff-row d-" + diffClass(row && row.kind));
+      line.textContent = String((row && row.text) == null ? "" : row.text);
+      frag.appendChild(line);
+    }
+    out.appendChild(frag);
   },
 
   /**

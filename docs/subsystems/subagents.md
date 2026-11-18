@@ -68,6 +68,11 @@ Press **Ctrl-O** during streaming to cycle the main response area into a sub-age
 detail view (its captured tool activity and text) and back. The deck disappears when
 the turn ends; the short-terminal budget trims it before it can crowd out the response.
 
+The full-screen surface (the default) reaches the same detail view with `Ctrl+O` /
+`Alt+0…9`; there the rows come from the same `ui/_deck.py` builders and the view
+replaces the transcript instead of the inline `Live` body — see
+[Full-screen TUI](tui.md#agent-detail-view).
+
 ## See also
 
 - [Workflows](workflows.md) — orchestrate many sub-agents deterministically

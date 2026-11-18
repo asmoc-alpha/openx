@@ -16,7 +16,11 @@ openx serve --host 0.0.0.0 --port 9000
 
 ## Web UI
 
-- **聊天**：流式文本、thinking 折叠/展开、工具调用块（点击展开输出）；
+- **聊天**：流式文本、thinking 折叠/展开、工具调用块（点击展开输出）；文本操作
+  （`edit_file` / `write_file`）的输出**按 diff 着色**——绿 `+`、红 `-`、灰
+  `@@`/`---`/`+++`，有变更预览时改为 `⎿ +A −D` 统计行 + 逐行 diff。行的分类由
+  **服务端**用 `ui/_diff.py` 给出（`rows[].kind`），前端只把 kind 映射成 CSS 类：
+  同一个变更在行内、全屏、浏览器三处不该有三种颜色判定；
 - **远程权限批准**：写工具逐项弹窗（手动模式默认）——允许一次 / 允许并记住 /
   拒绝；**fail-closed**：无客户端 / 断流 / 超时 / 未匹配 request_id 一律拒绝；
 - **交互弹窗**：`ask_user`（单选/多选 + Other 自由输入 + Skip）与计划审批
@@ -50,8 +54,8 @@ openx serve --host 0.0.0.0 --port 9000
 | `history` | attach 快照：既有对话消息列表 |
 | `user_message` | 一条用户消息 |
 | `text_delta` / `thinking_delta` | 流式文本 / 推理增量（`[dim]` 标签已剥） |
-| `tool_use` | 工具开始：name / args_summary（shell 给**完整命令**）/ target / `call_id`（配对键）/ `round`（本回合第几次模型请求产生这批调用） |
-| `tool_result` | 工具结果：name / is_error / output（上限 2000 字符）/ `call_id` / `round` / `duration_ms`（**服务端实测**，测不到则**不出现该键**）/ `output_chars`（截断前原始长度）/ `truncated` |
+| `tool_use` | 工具开始：name / args_summary（shell 给**完整命令**）/ target / `call_id`（配对键）/ `round`（本回合第几次模型请求产生这批调用）/ `diff`（文本操作的变更预览：`{path, added, removed, rows}`，探测不到则**不出现该键**） |
+| `tool_result` | 工具结果：name / is_error / output（上限 2000 字符）/ `call_id` / `round` / `duration_ms`（**服务端实测**，测不到则**不出现该键**）/ `output_chars`（截断前原始长度）/ `truncated` / `diff`（退路：`{rows}`，无 path/统计；出错时不出现） |
 | `permission_request` | 权限请求：request_id / tool / reason / can_remember |
 | `panels` | 插件 UI 面板快照（ui/v1）：`{name, lines}`，行已剥 rich 标签；变化才广播（常驻 ticker ~4Hz，有客户端才跑），attach 快照含当前面板 |
 | `result` | 单轮终局：subtype / duration_ms / num_turns / usage（`input_tokens` / `output_tokens` / `cached_tokens` / `plugin_tokens`，均**会话累计**口径） |

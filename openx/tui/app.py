@@ -5,6 +5,7 @@
 常驻占一行）：
 
     ┌ transcript (VerticalScroll) ─ 会话流，块可折叠、可鼠标点开
+    │ detail (DetailView)          子代理详情（Ctrl+O），顶掉转录的位置
     │ plan-deck (DeckView)         计划 + 排队队列（输入框之上，空则隐藏）
     │ status line                  转帧 + Thinking…/Answering… + 耗时
     │ PromptEditor                 输入行（Enter 提交 / Ctrl+J 换行 / ↑↓ 历史）
@@ -47,7 +48,7 @@ from textual.widgets import Static
 
 from ..ui._style import ACCENT
 from .blocks import StatusLine, ThinkingBlock
-from .deck import DeckSource, DeckView
+from .deck import DeckSource, DeckView, DetailView
 from .history import PromptHistory
 from .modals import (
     _OTHER,
@@ -111,6 +112,20 @@ class OpenXTui(App[None]):
         height: 1fr;
         padding: 0 1;
         scrollbar-size-vertical: 1;
+    }
+    /* 子代理详情（Ctrl+O）顶掉转录的位置。两个都是 1fr，但同一时刻只有一个
+       在 display 里，所以不存在"抢高度"——空则整块不占（含 padding）。 */
+    #detail {
+        height: 1fr;
+        padding: 0 1;
+        scrollbar-size-vertical: 1;
+        display: none;
+    }
+    /* 详情头行：单行不折（Agent N: 标签 · 状态 · 工具数 · 耗时 · 键位提示），
+       超宽由 Text 的 ellipsis 收尾——与 deck 行同一几何纪律。正文不设高度：
+       它可折行，高度归框架（滚动容器里）。 */
+    #detail-head {
+        height: 1;
     }
     #spinner {
         height: 1;
@@ -232,6 +247,34 @@ class OpenXTui(App[None]):
                 priority=True),
         Binding("ctrl+t", "toggle_all", "全部折叠/展开", show=False,
                 priority=True),
+        # 舰队导航：`Ctrl+O` 循环切换主回答 ⇄ 各子代理详情（行内同一个键、
+        # 同一语义），`Alt+0..9` 直选（0 = 主视图）。同理提权——输入行是
+        # TextArea，全局动作必须先于控件绑定求值。
+        # **不用 ↑/↓**：全屏的输入行始终可编辑，方向键的第一含义是翻历史/
+        # 移光标（tests/tui/test_input.py 钉着）；行内那套"↓ 选中 + ↵ 确认"
+        # 能成立只是因为流式期输入行不接收编辑。
+        Binding("ctrl+o", "fleet_cycle", "子代理视图", show=False,
+                priority=True),
+        Binding("alt+0", "fleet_select(0)", "主回答", show=False,
+                priority=True),
+        Binding("alt+1", "fleet_select(1)", "子代理 1", show=False,
+                priority=True),
+        Binding("alt+2", "fleet_select(2)", "子代理 2", show=False,
+                priority=True),
+        Binding("alt+3", "fleet_select(3)", "子代理 3", show=False,
+                priority=True),
+        Binding("alt+4", "fleet_select(4)", "子代理 4", show=False,
+                priority=True),
+        Binding("alt+5", "fleet_select(5)", "子代理 5", show=False,
+                priority=True),
+        Binding("alt+6", "fleet_select(6)", "子代理 6", show=False,
+                priority=True),
+        Binding("alt+7", "fleet_select(7)", "子代理 7", show=False,
+                priority=True),
+        Binding("alt+8", "fleet_select(8)", "子代理 8", show=False,
+                priority=True),
+        Binding("alt+9", "fleet_select(9)", "子代理 9", show=False,
+                priority=True),
         # **不加 priority**：输入行没有 escape 绑定，按键自然冒泡到 app，
         # 输入行聚焦时照样能打断。而加上 priority 会让 app 抢在**模态屏**
         # 之前吃掉 Esc——弹窗就再也取消不了了（priority 绑定先于屏幕绑定
@@ -278,6 +321,8 @@ class OpenXTui(App[None]):
         self._history = PromptHistory()
         #: 状态层数据源（``TuiStream.start()`` 接线；行格式见 ``ui/_deck.py``）
         self._decks = DeckSource()
+        #: 当前在看的视图：0 = 主回答，1..N = 第 N 个子代理的详情（``Ctrl+O``）
+        self._fleet_focus = 0
         #: 挂起的弹窗：future → 取消默认值。app 被外部关掉时按默认值
         #: resolve——一个 await 着的工具绝不能永远挂着（那是死锁，不是退出）。
         self._pending_dialogs: dict[Any, Any] = {}
@@ -286,6 +331,8 @@ class OpenXTui(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
+        # 子代理详情（Ctrl+O）：与转录**互斥**——同一处位置，谁在看谁显示
+        yield DetailView(id="detail")
         # 输入框之上的状态层：计划 + 队列
         yield DeckView(id="plan-deck")
         yield StatusLine(id="spinner")
@@ -377,10 +424,25 @@ class OpenXTui(App[None]):
                 self._transcript.mount(RichEntry(renderable))
             self._scroll_to_end()
 
+    def _active_scroller(self) -> VerticalScroll:
+        """当前"看得见"的滚动面：详情开着就是它，否则是转录。
+
+        贴底跟随只该作用于用户正看着的那一屏——详情开着时把转录滚到底既
+        不可见，又会在退回来时把用户"回看历史"的位置悄悄冲掉。
+        """
+        if self._fleet_focus > 0:
+            try:
+                detail = self.query_one("#detail", DetailView)
+                if detail.showing:
+                    return detail
+            except Exception:
+                pass
+        return self._transcript
+
     def _scroll_to_end(self) -> None:
         """贴底跟随；用户回看历史时不抢滚动位置。"""
         try:
-            scroller = self._transcript
+            scroller = self._active_scroller()
             offset = getattr(scroller, "scroll_offset", None)
             max_y = getattr(scroller, "max_scroll_y", 0)
             if offset is not None and max_y - offset.y > 2:
@@ -444,8 +506,13 @@ class OpenXTui(App[None]):
         回合结束**不解线**：计划面板与插件面板要留在屏上（``agent.todos``
         本来就跨轮存活，``ui.panel`` 的桌面宠物/监控件按定义该常驻）。
         Agents 的显隐不看这里，看 :attr:`_stream_active`。
+
+        每个回合把视图焦点**归零**（回主回答）：与行内 ``StreamingService.
+        start()`` 的"每轮干净起点"同语义——新回合的第一帧绝不能还停在上一轮
+        的某个子代理详情上（那个视图甚至已经不在新快照里了）。
         """
         self._decks.configure(todos=todos, fleet=fleet, panels=panels)
+        self._fleet_focus = 0
         self._tick_decks()   # 立刻画一帧：别让 deck 晚 200ms 才出现
 
     def detach_decks(self) -> None:
@@ -461,10 +528,10 @@ class OpenXTui(App[None]):
     def _tick_decks(self) -> None:
         """5Hz：四路数据 → 两段行（上半进输入框之上，下半进其下）。
 
-        单一消费者纪律照旧——只有本定时器（app 主循环线程）写这两个控件。
+        单一消费者纪律照旧——只有本定时器（app 主循环线程）写这几个控件。
         高度有变化时补一次贴底滚动：deck 变高会压缩转录，用户正停在底部
         时必须继续跟着底走（``_scroll_to_end`` 自己会放过"正在回看历史"
-        的情形）。
+        的情形）。焦点在子代理详情时同一拍里把它一并刷新（同一份舰队快照）。
         """
         if self._tui_closed:
             return
@@ -473,14 +540,45 @@ class OpenXTui(App[None]):
                 height=self.size.height,
                 turn_active=self._stream_active,
                 queue=self._queued_items(),
+                marked=self._fleet_focus,
             )
             changed = self.query_one("#plan-deck", DeckView).set_rows(top)
             changed = self.query_one(
                 "#agents-deck", DeckView).set_rows(bottom) or changed
+            changed = self._sync_detail() or changed
         except Exception:
             return   # 控件树拆除后的迟到一拍：状态层不值得把退出路径炸掉
         if changed:
             self._scroll_to_end()
+
+    # ── 子代理详情视图（Ctrl+O）──────────────────────────────────
+
+    def _sync_detail(self) -> bool:
+        """焦点 → 详情视图的显隐与内容。返回**是否发生了可见变化**。
+
+        焦点 ≤ 0 且详情本就没开 → 直接返回（不白取一份舰队快照：详情关着
+        的时候这条路径每 200ms 都会走到）。焦点越界（子代理减少、舰队被
+        ``reset()`` 清空）→ 归零回主视图：绝不显示一个已经不存在的代理。
+        """
+        detail = self.query_one("#detail", DetailView)
+        if self._fleet_focus <= 0 and not detail.showing:
+            return False
+        snap = self._decks.fleet_snapshot()
+        focus = self._fleet_focus
+        if focus > len(snap):
+            focus = 0
+            self._fleet_focus = 0
+        if focus <= 0:
+            changed = detail.hide()
+            if not self._transcript.display:
+                self._transcript.display = True
+                changed = True
+            return changed
+        changed = detail.show(snap[focus - 1])
+        if self._transcript.display:
+            self._transcript.display = False
+            changed = True
+        return changed
 
     # ── 弹窗（ModalScreen）──────────────────────────────────────
 
@@ -722,6 +820,45 @@ class OpenXTui(App[None]):
         for block in blocks:
             block.collapsed = not expand
 
+    # ── 舰队导航（Ctrl+O / Alt+0..9）───────────────────────────────
+
+    def action_fleet_cycle(self) -> None:
+        """``Ctrl+O``：主回答 → 子代理 1 → … → 子代理 N → 主回答。
+
+        与行内 ``Ctrl-O`` 逐字同语义（那里的注释是"主视图 ⇄ 各子代理直接
+        循环切换"）。没有子代理时是 no-op——按键**总有响应**但绝不假装有东西
+        可看。
+        """
+        snap = self._decks.fleet_snapshot()
+        if not snap:
+            return
+        self._fleet_focus = (self._fleet_focus + 1) % (len(snap) + 1)
+        self._after_fleet_nav()
+
+    def action_fleet_select(self, index: Any) -> None:
+        """``Alt+0..9``：直选某个视图（``0`` = 主回答）。
+
+        越界钳到最后一个（同行内"按键必须总有响应，静默失败最困惑"）；没有
+        子代理时连主视图也不切——``0`` 的语义本来就是"回主回答"，此时已经在
+        主回答上。
+        """
+        snap = self._decks.fleet_snapshot()
+        if not snap:
+            return
+        n = int(index)
+        self._fleet_focus = 0 if n <= 0 else min(n, len(snap))
+        self._after_fleet_nav()
+
+    def _after_fleet_nav(self) -> None:
+        """切完视图立刻重画（不等下一拍 200ms），并让焦点留在输入行。"""
+        if self._tui_closed:
+            return
+        if len(self.screen_stack) > 1:
+            # 弹窗在场时不动主视图：详情会把转录顶掉，而弹窗正文正是压
+            # 转录之上的——两个可见变化叠在一起只会让人不知道发生了什么。
+            return
+        self._tick_decks()
+
     def _close(self) -> None:
         """收摊：先按取消默认值了结挂起的弹窗，再让 app 退出。
 
@@ -779,6 +916,7 @@ class OpenXTui(App[None]):
             todos_provider=lambda: todos,
             fleet=_DemoFleet(),
             panels=_DemoPanels(),
+            tool_lookup=_demo_tool_lookup,
         )
         exit_phrase = Text(
             "❯ 解释一下这个仓库的流式渲染是怎么做的", style=f"bold {ACCENT}"
@@ -809,6 +947,26 @@ class OpenXTui(App[None]):
             name="grep", call_id="demo-2",
             output="openx/services/streaming.py:1370\n"
                    "openx/services/streaming.py:1576"))
+        # 文本操作：标题用路径、正文是彩色 diff（绿增/红删/语言高亮）——
+        # 演示"edit 的变更看得见区别"，也顺带自检 tool_lookup → preview_diff
+        # → ui/_diff 这条链。
+        stream.feed(ToolStartEvent(
+            name="edit_file",
+            arguments='{"file_path": "openx/services/streaming.py", '
+                      '"old_text": "return Group(*parts)", '
+                      '"new_text": "# deck 在 spinner 之上\\nreturn Group(*parts)"}',
+            call_id="demo-3"))
+        await asyncio.sleep(0.35)
+        stream.feed(ToolResultEvent(
+            name="edit_file", call_id="demo-3",
+            output="Replaced 1 occurrence(s) in openx/services/streaming.py\n"
+                   "--- a/openx/services/streaming.py\n"
+                   "+++ b/openx/services/streaming.py\n"
+                   "@@ -1157,3 +1157,4 @@ def _build_renderable(self):\n"
+                   "     def _build_renderable(self):\n"
+                   "-        return Group(*parts)\n"
+                   "+        # deck 在 spinner 之上\n"
+                   "+        return Group(*parts)\n"))
         # 计划面板推进一格（演示"下一拍就反映变化"）
         todos[1]["status"] = "completed"
         todos[2]["status"] = "in_progress"
@@ -829,6 +987,11 @@ class OpenXTui(App[None]):
         thinking = list(self.query(ThinkingBlock))
         if thinking:
             thinking[0].collapsed = False
+        # 演示舰队导航：切进子代理 1 的详情看一眼再回主回答（Ctrl+O 的真实
+        # 路径——演示即管线的自检，不另造一条仿造路径）
+        self.action_fleet_cycle()
+        await asyncio.sleep(2.0)
+        self.action_fleet_select(0)
 
     def _console_stub(self) -> Any:
         """演示用的最小 console 存根（``TuiStream`` 只用到 ``_input_queue``）。"""
@@ -838,14 +1001,23 @@ class OpenXTui(App[None]):
 
 
 class _DemoFleet:
-    """演示用舰队：形状与 ``FleetMonitor.snapshot()`` 逐键一致。"""
+    """演示用舰队：形状与 ``FleetMonitor.snapshot()`` 逐键一致（含 ``lines``）。"""
 
     _SEEDS = (
         {"id": 1, "label": "explore streaming", "status": "running",
          "tools_count": 3, "elapsed": 4.2,
-         "last_tool": "read_file(services/streaming.py)"},
+         "last_tool": "read_file(services/streaming.py)",
+         "lines": [
+             "[dim]● read_file[/dim][dim](file_path=services/streaming.py)[/dim]",
+             "[dim]  ⎿  [/]1 2200 行 / 逐行固化水印 / _ResizeAwareLive",
+             "[dim]● grep[/dim][dim](pattern=_commit_watermark)[/dim]",
+         ],
+         "pending": "正在核对 deck 预算与视口裁剪…"},
         {"id": 2, "label": "review docs", "status": "done",
-         "tools_count": 5, "elapsed": 9.1, "last_tool": ""},
+         "tools_count": 5, "elapsed": 9.1, "last_tool": "",
+         "lines": ["[dim]● read_file[/dim][dim](docs/subsystems/tui.md)[/dim]",
+                   "文档与实现一致，Decks 一节需补按键说明。"],
+         "pending": ""},
     )
 
     def __init__(self) -> None:
@@ -857,6 +1029,28 @@ class _DemoFleet:
     def reset(self) -> None:
         """演示里的"新一轮"= 回到初始两条（生产侧是清空）。"""
         self._views = [dict(view) for view in self._SEEDS]
+
+
+class _DemoEdit:
+    """演示用的 ``edit_file`` 预览桩：只实现 ``preview_diff``。
+
+    形状与 ``tools/file_tools.py::EditFileTool.preview_diff`` 一致
+    （``(path, old, new)``）——演示因此能画出真实的三色 diff，而不是造一条
+    仿造渲染路径。
+    """
+
+    def preview_diff(self, args: dict) -> Any:
+        path = str(args.get("file_path") or "services/streaming.py")
+        old = "    def _build_renderable(self):\n        return Group(*parts)\n"
+        new = ("    def _build_renderable(self):\n"
+               "        # deck 在 spinner 之上，隔 1 空行\n"
+               "        return Group(*parts)\n")
+        return (path, old, new)
+
+
+def _demo_tool_lookup(name: str) -> Any:
+    """演示用的工具查找：只有 ``edit_file`` 有变更预览。"""
+    return _DemoEdit() if name == "edit_file" else None
 
 
 class _DemoPanels:

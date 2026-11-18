@@ -259,6 +259,175 @@ class TestToolBlocks:
             assert "audit auth" in blocks[0].title
 
 
+class TestToolBlockDiff:
+    """工具块正文的着色：文本操作的 diff 必须有颜色区分（绿增/红删/头行 dim）。
+
+    行内实现早就这么做（``_text_op_body`` + ``_result_line_markup``）；全屏此前
+    把整段输出当纯白 ``Text`` 塞进正文——同一个 diff 在两个界面上一个有色一个
+    没色。判定来源统一在 ``ui/_diff.py``（``diff_line_style`` / ``text_op_lines``）。
+    """
+
+    _OUT = (
+        "Replaced 1 occurrence(s) in /tmp/a.py\n"
+        "--- a//tmp/a.py\n"
+        "+++ b//tmp/a.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def f():\n"
+        "-    return 1\n"
+        "+    return 2"
+    )
+
+    @staticmethod
+    def _line_styles(block) -> list[tuple[str, str]]:
+        """``[(行文本, 该行首 span 的样式), …]`` —— 逐行断言用。"""
+        visual = block.body.visual
+        rows: list[tuple[str, str]] = []
+        offset = 0
+        for line in visual.plain.split("\n"):
+            style = ""
+            for span in visual.spans:
+                if span.start <= offset < span.end:
+                    style = str(span.style)
+                    break
+            rows.append((line, style))
+            offset += len(line) + 1
+        return rows
+
+    async def test_edit_output_is_diff_colored(self):
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            stream = TuiStream(_console(), app=app)   # 无 tool_lookup → 无预览
+            stream.start()
+            stream.feed(ToolStartEvent(name="edit_file", arguments="{}",
+                                       call_id="c1"))
+            stream.feed(ToolResultEvent(name="edit_file", output=self._OUT,
+                                       call_id="c1"))
+            await _settle(pilot)
+            block = list(app.query(ToolBlock))[0]
+            rows = self._line_styles(block)
+            by_prefix = {ln.strip()[:3]: style for ln, style in rows}
+            assert "red" in by_prefix["-  "], rows          # 删除行
+            assert "green" in by_prefix["+  "], rows        # 新增行
+            assert "dim" in by_prefix["@@ "], rows          # 块头
+            assert "dim" in by_prefix["---"], rows          # 文件头（不是删除行）
+            assert "Replaced 1 occurrence" in block.body.visual.plain
+
+    async def test_preview_renders_stat_line_and_colored_diff(self):
+        """有预览：``⎿ +A −D`` + 语言高亮 diff，且不再回显原始输出。"""
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            tools = {"edit_file": _StubEdit()}
+            stream = TuiStream(_console(), app=app,
+                               tool_lookup=lambda name: tools.get(name))
+            stream.start()
+            stream.feed(ToolStartEvent(
+                name="edit_file", arguments='{"file_path": "/tmp/a.py", '
+                '"old_text": "1", "new_text": "2"}', call_id="c1"))
+            stream.feed(ToolResultEvent(name="edit_file", output=self._OUT,
+                                       call_id="c1"))
+            await _settle(pilot)
+            block = list(app.query(ToolBlock))[0]
+            assert block.is_text_op is True
+            text = block.body.visual.plain
+            assert "⎿" in text and "+1" in text and "−1" in text
+            assert "return 2" in text
+            assert "Replaced 1 occurrence" not in text, "diff 不能出现两遍"
+            assert "/tmp/a.py" in block.title, "预览时标题摘要用路径"
+
+    async def test_error_hides_unapplied_diff_and_stays_red(self):
+        """失败的操作绝不展示预览的 diff——那个变更并未发生（同行内）。"""
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            tools = {"edit_file": _StubEdit()}
+            stream = TuiStream(_console(), app=app,
+                               tool_lookup=lambda name: tools.get(name))
+            stream.start()
+            stream.feed(ToolStartEvent(
+                name="edit_file", arguments='{"file_path": "/tmp/a.py", '
+                '"old_text": "1", "new_text": "2"}', call_id="c1"))
+            stream.feed(ToolResultEvent(name="edit_file", output="permission denied",
+                                       is_error=True, call_id="c1"))
+            await _settle(pilot)
+            block = list(app.query(ToolBlock))[0]
+            assert block.is_text_op is False
+            text = block.body.visual.plain
+            assert "permission denied" in text
+            assert "return 2" not in text
+            assert all(
+                "red" in str(span.style) or "error" in str(span.style).lower()
+                for span in block.body.visual.spans
+            ), [str(s.style) for s in block.body.visual.spans]
+
+    async def test_plain_tool_output_is_not_colored(self):
+        """``ls -la`` 的输出以 ``-`` 开头，不该被当删除行染红。"""
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            stream = TuiStream(_console(), app=app)
+            stream.start()
+            stream.feed(ToolStartEvent(name="bash", arguments='{"command":"ls -la"}',
+                                       call_id="c1"))
+            stream.feed(ToolResultEvent(
+                name="bash", output="-rw-r--r--  1 a  b  6 Jul 1 x.py", call_id="c1"))
+            await _settle(pilot)
+            block = list(app.query(ToolBlock))[0]
+            assert "-rw-r--r--" in block.body.visual.plain
+            assert all("red" not in str(span.style).lower()
+                       for span in block.body.visual.spans)
+
+    async def test_preview_probe_is_fail_open(self):
+        """坏 JSON / 探测抛错 → 回退无预览路径，照常着色输出、不抛。"""
+        class Boom:
+            def preview_diff(self, args):
+                raise RuntimeError("坏工具")
+
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            for lookup, arguments in (
+                (lambda name: Boom(), '{"file_path": "/tmp/a.py"}'),
+                (lambda name: _StubEdit(), "not json"),
+                (lambda name: None, '{"file_path": "/tmp/a.py"}'),
+            ):
+                stream = TuiStream(_console(), app=app, tool_lookup=lookup)
+                stream.start()
+                stream.feed(ToolStartEvent(name="edit_file",
+                                           arguments=arguments, call_id="c1"))
+                stream.feed(ToolResultEvent(name="edit_file", output=self._OUT,
+                                           call_id="c1"))
+                await _settle(pilot)
+            blocks = list(app.query(ToolBlock))
+            assert len(blocks) == 3
+            assert all(b.diff is None for b in blocks), [b.diff for b in blocks]
+            # 无预览时输出里的 diff 仍然有色（退化路径也是有色）
+            last = self._line_styles(blocks[-1])
+            assert any("green" in style for _ln, style in last), last
+
+    async def test_write_file_output_is_colored(self):
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            stream = TuiStream(_console(), app=app)
+            stream.start()
+            stream.feed(ToolStartEvent(name="write_file", arguments="{}",
+                                       call_id="c1"))
+            stream.feed(ToolResultEvent(
+                name="write_file", call_id="c1",
+                output="--- a//tmp/n.py\n+++ b//tmp/n.py\n@@ -0,0 +1 @@\n+x = 1"))
+            await _settle(pilot)
+            block = list(app.query(ToolBlock))[0]
+            rows = self._line_styles(block)
+            assert any("green" in style for ln, style in rows
+                       if ln.startswith("+")), rows
+            assert any("dim" in style for ln, style in rows
+                       if ln.startswith("---")), rows
+
+
+class _StubEdit:
+    """``edit_file`` 的最小预览桩（与真工具返回同形状）。"""
+
+    def preview_diff(self, args):
+        return ("/tmp/a.py", "def f():\n    return 1\n",
+                "def f():\n    return 2\n")
+
+
 class TestTurnEnd:
     async def test_done_writes_cook_line_and_returns_elapsed(self):
         app = OpenXTui()
