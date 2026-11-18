@@ -76,7 +76,9 @@ The catalog below is always in context; a pack's FULL text is not — ...
 CLI 里是 `/prompt [list|<name>|off [name]]`。Web 端把同一对能力暴露成 HTTP——
 `GET /api/prompts`（目录 + `active` 标记，**不下发正文**：UI 没有理由替模型付它
 可能永远用不到的 token）与 `POST /api/prompts`（`{"name", "active"}`），走的
-正是同一个 `activate_prompt_pack`，所以账本事件与命令通道一字不差。
+正是同一个 `activate_prompt_pack`，所以账本事件与命令通道一字不差。设置 →
+「提示包」就是这套 API 的界面：每包一张卡（加载/摘下按钮、字符数、触发词标签），
+底部注明状态是会话级的。
 
 ## 作用域与限制
 

@@ -81,7 +81,9 @@ positive costs a full body of tokens, a false negative only costs a `load_prompt
 HTTP — `GET /api/prompts` (catalog + `active` flags, **bodies are not sent**: the UI has no
 reason to pay for tokens the model may never need) and `POST /api/prompts`
 (`{"name", "active"}`), which calls the same `activate_prompt_pack`, so the ledger event is
-identical to the command's.
+identical to the command's. Settings → 提示包 is that API's UI: cards with a
+load/unload button, sizes and trigger tags, and a footer saying the state is
+session-scoped.
 
 ## Scope and limits
 

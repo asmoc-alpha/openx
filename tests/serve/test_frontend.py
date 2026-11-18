@@ -630,3 +630,34 @@ def test_slash_menu_wiring():
     api_src = (Path(__file__).resolve().parents[2]
                / "openx" / "app" / "serve" / "api.py").read_text(encoding="utf-8")
     assert "/api/commands" in api_src and "menu_entries" in api_src
+
+
+def test_prompt_packs_panel_wiring():
+    """设置弹窗的「提示包」页：tab + 面板 + 端点 + XSS 纪律四件齐。
+
+    pack 名与 summary 是产品内置文本，但纪律与 skills/web-plugins 一致：
+    一律 textContent（只有 markdown 正文才走 renderMarkdown）。
+    """
+    html = _read("index.html")
+    assert 'data-tab="prompts"' in html, '缺「提示包」tab'
+    assert 'data-panel="prompts"' in html, '缺「提示包」面板'
+    assert 'id="prompt-list"' in html
+
+    js = _read("settings.js")
+    assert 'OX.get("/api/prompts")' in js
+    assert 'OX.post("/api/prompts", { name, active })' in js
+    # 正文不下发：前端不该读 p.body（后端也不给）
+    assert "p.body" not in js
+    # 名字/描述走 textContent
+    assert "name.textContent = p.name" in js
+    assert "desc.textContent = p.summary" in js
+    # 打开设置时与其它面板一起加载
+    assert "await Settings.loadPrompts();" in js
+
+
+def test_no_skill_style_regression_for_prompts():
+    """提示包面板复用既有卡片样式，不新增一套（少即是多）。"""
+    css = _read("style.css")
+    for sel in (".card-list", ".card", ".card-head", ".card-name", ".card-tags",
+                ".tag", ".pill", ".hint"):
+        assert sel in css, f"缺 {sel}（提示包面板复用它）"

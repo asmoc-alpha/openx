@@ -49,6 +49,9 @@ and `/release-notes`.
 - **`GET` / `POST /api/prompts`** for the Web surface: the catalog with `active` flags
   (no bodies — the UI should not pay for tokens the model may never need) and a toggle that
   calls the same `activate_prompt_pack` as the command, so the ledger event is identical.
+  Settings → 提示包 renders it: one card per pack with a load/unload button, its character
+  count and trigger tags, and a footer that says the state is session-scoped — because
+  "loaded" that silently resets on restart would otherwise look like a bug.
 
 ## 0.1.35 — The Agents panel becomes navigable, and one diff gets one color
 

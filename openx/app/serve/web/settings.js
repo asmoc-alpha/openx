@@ -56,6 +56,7 @@ const Settings = {
     await Settings.loadPlugins();
     await Settings.loadMcp();
     await Settings.loadSkills();
+    await Settings.loadPrompts();
   },
 
   close() {
@@ -611,6 +612,93 @@ const Settings = {
       await Settings.loadSkills();
     } catch (err) {
       OX.toast("卸载失败：" + err.message, "error");
+    }
+  },
+
+  // ── 提示包（prompt packs）────────────────────────────────────
+  // 内置、不可安装：只有"激活/摘下"一个动作（会话级，不落盘）。正文不下发
+  // ——后端只给目录，正文由模型侧 load_prompt 拉，UI 不替模型付 token。
+  async loadPrompts() {
+    const host = $("prompt-list");
+    if (!host) return;
+    const note = $("prompt-note");
+    let data;
+    try {
+      data = await OX.get("/api/prompts");
+    } catch (err) {
+      host.innerHTML = "";
+      const bad = el("div", "hint");
+      bad.textContent = "提示包读取失败：" + err.message;
+      host.appendChild(bad);
+      return;
+    }
+    host.innerHTML = "";
+    const packs = (data && data.packs) || [];
+    if (!packs.length) {
+      const empty = el("div", "hint");
+      empty.textContent = "当前没有可用提示包。";
+      host.appendChild(empty);
+      if (note) note.hidden = true;
+      return;
+    }
+    for (const p of packs) {
+      const card = el("div", "card");
+      const head = el("div", "card-head");
+      const name = el("span", "card-name");
+      name.textContent = p.name;                 // 用户不可控，但纪律统一：textContent
+      head.appendChild(name);
+
+      if (p.active) {
+        const on = el("span", "pill");
+        on.textContent = "loaded";
+        on.title = "正文已在系统提示里（下一轮请求生效）";
+        head.appendChild(on);
+      }
+      const size = el("span", "card-sub");
+      size.textContent = `${p.chars} 字符`;
+      head.appendChild(size);
+
+      const btn = el("button", "btn small" + (p.active ? " danger" : " primary"));
+      btn.textContent = p.active ? "摘下" : "加载";
+      btn.onclick = () => Settings.togglePrompt(p.name, !p.active);
+      head.appendChild(btn);
+      card.appendChild(head);
+
+      const desc = el("div", "hint");
+      desc.textContent = p.summary || "";
+      card.appendChild(desc);
+
+      if ((p.triggers || []).length) {
+        const tags = el("div", "card-tags");
+        for (const t of p.triggers) {
+          const tag = el("span", "tag");
+          tag.textContent = t;
+          tags.appendChild(tag);
+        }
+        card.appendChild(tags);
+      }
+      host.appendChild(card);
+    }
+    if (note) {
+      const active = (data && data.active) || [];
+      note.hidden = false;
+      note.textContent = active.length
+        ? `已激活：${active.join(", ")}（会话级，重启后回到只背目录）`
+        : "全部未激活：系统提示里只有目录。";
+    }
+  },
+
+  async togglePrompt(name, active) {
+    try {
+      const res = await OX.post("/api/prompts", { name, active });
+      if (active && res) {
+        OX.toast(`已加载「${name}」（${res.chars} 字符）——下一轮请求生效`, "ok");
+      } else {
+        OX.toast(`已摘下「${name}」`, "ok");
+      }
+      await Settings.loadPrompts();
+    } catch (err) {
+      OX.toast("操作失败：" + err.message, "error");
     }
   },
 };

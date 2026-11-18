@@ -343,6 +343,7 @@
       <button class="tab" data-tab="plugins">Plugins</button>
       <button class="tab" data-tab="mcp">MCP</button>
       <button class="tab" data-tab="skills">Skills</button>
+      <button class="tab" data-tab="prompts">提示包</button>
     </nav>
     <div class="modal-body scroll">
       <section class="tab-panel" data-panel="general">
@@ -437,6 +438,15 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <section class="tab-panel" data-panel="prompts">
+        <div class="set-head">
+          <h3 class="set-title">提示包</h3>
+          <p class="set-desc">产品内置的专业化提示片段（如编写插件契约）。系统提示里只常驻<strong>目录</strong>，正文仅在激活后才进上下文——激活是会话级的，绝不落盘，重启即回到只背目录。也可在输入框里用 <code>/prompt &lt;name&gt;</code>，或让模型自己调 <code>load_prompt</code>。</p>
+        </div>
+        <div id="prompt-list" class="card-list"></div>
+        <p class="hint" id="prompt-note" hidden></p>
       </section>
     </div>
   </div>
