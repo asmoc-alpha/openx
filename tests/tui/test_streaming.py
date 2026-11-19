@@ -683,3 +683,72 @@ class TestArgSummary:
 
     def test_non_dict_json(self):
         assert arg_summary("[1, 2]") == "[1, 2]"
+
+
+# ── 滚动条：视觉隐藏，能力保留 ──────────────────────────────────
+
+
+class TestScrollbarHidden:
+    """正文侧边不显示滚动条（用户明确不要那一列可拖动的滑块）。
+
+    隐藏的只是**视觉**：``overflow-y`` 仍是 auto，滚轮与 ``_scroll_to_end``
+    照常工作——这条测试同时钉住两者，避免"藏了滚动条顺手把滚动也关了"。
+    """
+
+    async def test_no_vertical_scrollbar_on_scrollers(self):
+        app = OpenXTui()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            for sel in ("#transcript", "#detail"):
+                assert app.query_one(sel).styles.scrollbar_size_vertical == 0, sel
+
+    async def test_content_does_not_lose_a_column_to_a_gutter(self):
+        """真正常见的后果：滚动条的槽位会从正文里切走一列。
+
+        ``show_vertical_scrollbar`` 不能用来断言"不显示"——它表示"容器可竖向
+        滚动"，滚动条尺寸为 0 时内容超高它依然是 True。可观察的事实是
+        ``scrollable_content_region`` 比 ``content_region`` 窄了几列。
+        """
+        from textual.widgets import Label
+
+        app = OpenXTui()
+        async with app.run_test(size=(80, 24)) as pilot:
+            transcript = app._transcript
+            for i in range(60):
+                await transcript.mount(Label(f"line {i}"))
+            await pilot.pause()
+            assert transcript.max_scroll_y > 0, "本用例要有溢出内容"
+            assert (
+                transcript.scrollable_content_region.width
+                == transcript.content_region.width
+            ), "滚动条槽位不得从正文里切走宽度"
+            assert transcript.scrollable_content_region.width == 78  # 80 - 左右 padding
+
+    async def test_scrolling_still_works_without_scrollbar(self):
+        from textual.widgets import Label
+
+        app = OpenXTui()
+        async with app.run_test(size=(100, 20)) as pilot:
+            transcript = app._transcript
+            for i in range(60):
+                await transcript.mount(Label(f"line {i}"))
+            await pilot.pause()
+            assert transcript.max_scroll_y > 0, "内容超高时仍可滚（藏的是视觉）"
+
+            # ① 贴底时跟随：每次落地后都贴回去（模拟 _drain 的排空节拍——
+            #    一次灌 10 行会被"离底 >2"判据当成用户回看，那是设计如此）
+            transcript.scroll_end(animate=False)
+            await pilot.pause()
+            for i in range(10):
+                await transcript.mount(Label(f"more {i}"))
+                await pilot.pause()
+                app._scroll_to_end()
+            await pilot.pause()
+            assert transcript.scroll_y == transcript.max_scroll_y
+
+            # ② 用户上翻：跟随不得抢回位置（语义与隐藏滚动条前一致）
+            transcript.scroll_to(y=0, animate=False)
+            await pilot.pause()
+            app._scroll_to_end()
+            await pilot.pause()
+            assert transcript.scroll_y == 0

@@ -409,9 +409,14 @@ In a dialog: `↑`/`↓` move, `space` toggles (multi-select only), `Enter` conf
 same `PromptEditor`, so `Ctrl+J` breaks the line and the box grows — multi-line
 answers and `/skill add` instructions are typed in one dialog.
 
-Clicking a block's title bar toggles it; the vertical scrollbar and mouse wheel
-scroll the transcript, and the view stops following the bottom while you are
-reading history. Clicks never move focus off the input line: the transcript
+Clicking a block's title bar toggles it; the mouse wheel scrolls the transcript,
+and the view stops following the bottom while you are reading history. There is
+**no scrollbar** — `scrollbar-size-vertical: 0` on both scroll containers. A
+terminal scrollbar is a draggable column nothing in the key map drags, and the
+wheel passes events by pointer position (no focus, no visible thumb needed). It
+also costs a column: Textual reserves a gutter for a visible bar, so hiding it
+gives the body that column back (77 → 78 usable columns in an 80-column
+terminal). Clicks never move focus off the input line: the transcript
 container and dialog bodies are non-focusable, and a click anywhere on the
 main screen hands focus back to the prompt — typing keeps working right after
 a click (`Tab` still walks the focus chain; a focused title still toggles on

@@ -108,17 +108,21 @@ class OpenXTui(App[None]):
     Screen {
         layout: vertical;
     }
+    /* 滚动条一律不显示（scrollbar-size-vertical: 0）：终端里那一列可拖动
+       的竖条太扎眼，也没有用处——回看历史靠滚轮（事件按指针位置派发，不需要
+       可见的滑块），键位里没有任何东西去拖它。副作用是好的：Textual 会给可
+       见的滚动条留一列槽位，隐藏后这列归正文（80 列终端里 77 → 78 可用）。 */
     #transcript {
         height: 1fr;
         padding: 0 1;
-        scrollbar-size-vertical: 1;
+        scrollbar-size-vertical: 0;
     }
     /* 子代理详情（Ctrl+O）顶掉转录的位置。两个都是 1fr，但同一时刻只有一个
        在 display 里，所以不存在"抢高度"——空则整块不占（含 padding）。 */
     #detail {
         height: 1fr;
         padding: 0 1;
-        scrollbar-size-vertical: 1;
+        scrollbar-size-vertical: 0;
         display: none;
     }
     /* 详情头行：单行不折（Agent N: 标签 · 状态 · 工具数 · 耗时 · 键位提示），
