@@ -219,6 +219,39 @@ _INTERRUPTED_NO_TEXT = (
     "[Response interrupted by the user before any output was produced.]"
 )
 
+# ── 计划面板新鲜度（todo staleness）────────────────────────────────
+#
+# 计划面板（deck 的 Plan 块）渲染的就是 ``agent.todos``，而这份清单只在模型
+# 主动调 ``todo_write`` 时才变。一次长回合里模型能连着跑十几轮工具再想起更新
+# 它——过期期间面板以**现在进行时**显示旧账（``✢ 编写 X`` 用的是 activeForm，
+# 语义就是"正在做什么"），于是它一直在说早已干完的活。用户报告"Plan 与实际
+# 进展完全不匹配"，根因就在这里：面板没画错，数据过期了，而且没有任何人提醒。
+#
+# 两道闸一起上：
+#   1. 计数 + 提醒（本模块）：越过阈值就把一段提醒拼进系统提示，让模型自己
+#      去更新——闭环靠的是"模型看到 → 写一次 → 计数归零 → 提醒消失"；
+#   2. 面板标注（``ui/_deck.plan_queue_lines``）：过期期间 Plan 头行带
+#      ``▲ stale``，用户永远能分清"这是旧账"与"这是卡住了"。
+#
+# 阈值按**工具往返**计（一次带工具调用的模型请求 = 决策点一次），不按工具调用
+# 数计：并行批次里一次往返可能有五六个调用，而"你有 6 次机会更新计划都没更新"
+# 才是要盯的事实。
+TODO_STALE_ROUNDS = 6
+
+# 过期提醒正文。**刻意不含计数字面量**：文本恒定，``message[0]`` 在过期期间
+# 逐轮不变，不会打断 provider 侧的前缀缓存（``_sync_system_message`` 的等值
+# 判断也只在"新鲜 ↔ 过期"翻转时写一次）。两条出路都写明白——更新，或传空
+# 清单收摊——让退出比硬扛便宜，否则模型会对着提醒一轮轮地装作没看见。
+_TODO_STALE_NOTE = (
+    "\n\n## Plan freshness\n\n"
+    "The task list above has not been updated for several tool rounds, so it "
+    "probably no longer matches what you have actually done. The Plan panel the "
+    "user is looking at renders exactly this list, including the `in_progress` "
+    "line that claims you are still working on something you may have finished. "
+    "Call `todo_write` now with the real state (the full list, exactly one "
+    "`in_progress`) — or with an empty list if this plan is done or abandoned."
+)
+
 
 @dataclass
 class ToolStartEvent:
@@ -432,6 +465,10 @@ class OpenXAgent:
         self._usage_turns: int = 0
         # 任务清单：与 TodoWriteTool 共享同一 list 对象
         self.todos: list[dict[str, Any]] = []
+        # 距上次写清单已过去的工具往返数（计划面板新鲜度，见 MODULE 常量
+        # ``TODO_STALE_ROUNDS``）。只在 ``todo_write`` 真被调用时归零——
+        # 跨轮累加是刻意的：上一轮遗留的未完成计划同样会过期。
+        self._todo_rounds_since_write: int = 0
         # 最近一次 run() 的工具往返数（headless JSON 输出的 num_turns）
         self.last_tool_rounds: int = 0
         # 子代理舰队监视器（v0.4.0 状态层）：task 工具 / 工作流在此登记
@@ -1291,9 +1328,13 @@ class OpenXAgent:
           读的也是这个列表。
         - 重建缓存系统提示——否则 ``## Current Task List`` 注入块残留，
           ``/clear`` 后模型仍看得到已清空的旧计划。
+        - 计划新鲜度计数归零——新会话的第一轮不该带着上一份清单的"过期"
+          印记（``todos`` 已空，``todos_stale`` 本就是假，这里只是别留脏值
+          给下一次计划造成假过期）。
         """
         self.history.clear()
         self.todos.clear()
+        self._todo_rounds_since_write = 0
         self._system_prompt = self._build_system_prompt()
 
     def history_token_estimate(self) -> int:
@@ -1737,6 +1778,9 @@ class OpenXAgent:
         由 CLI 在 ``--continue`` / ``--resume`` 路径上、构造 agent 之后调用。
         ``todos`` 原地替换（TodoWriteTool 共享同一 list 对象）；hooks 的
         session_id 一并同步，保证钩子 payload 与恢复的会话一致。
+
+        计划新鲜度计数归零：恢复出来的清单是"这个会话上次留下的状态"，还没
+        在本进程里跑过任何一轮工具——拿旧计数去标它过期是凭空的指控。
         """
         self.history.clear()
         self.history.messages.extend(messages)
@@ -1745,6 +1789,7 @@ class OpenXAgent:
         self.total_cached_tokens = meta.total_cached_tokens
         self.total_plugin_tokens = meta.total_plugin_tokens
         self.todos[:] = meta.todos
+        self._todo_rounds_since_write = 0
         self.session_id = meta.session_id
         self.hooks.session_id = meta.session_id
         # 低提示行（Rich [dim]）；console 异常绝不影响恢复本身
@@ -2101,6 +2146,8 @@ class OpenXAgent:
                     new_turn.append(msg)
 
                 state.tool_rounds += 1
+                # 计划新鲜度：本批里没写 todo_write 就记一笔"又过了一轮"
+                self._note_tool_round(prepared)
                 # 结构化输出已捕获 → 立即结束本轮：structured_output 已
                 # 校验并落库结果，继续循环只会产出被丢弃的废话
                 if self._structured_result is not _UNSET:
@@ -2253,6 +2300,52 @@ class OpenXAgent:
             modal,
         )
 
+    # ── 计划面板新鲜度（todo staleness，见 TODO_STALE_ROUNDS）───────
+    #
+    # 面板与真实进展脱节的根因不是渲染，而是"没人提醒模型该更新"。这里只记
+    # 三个事实：**多久没写**（计数）、**要不要管**（todos_stale）、以及
+    # **怎么让计数归零**（真调了 todo_write）。
+
+    def _note_tool_round(self, prepared: list[Any]) -> None:
+        """一个工具往返收口：本批里有 ``todo_write`` 就归零，否则 +1。
+
+        在**批次**粒度判断而不是在工具内部挂回调：并行批次里"这一轮到底更没更
+        新过计划"是个批级事实，且 ``prepared`` 已经带着工具名（``tool_name``）。
+        同批既有 ``todo_write`` 又有别的工具 → 记为已更新（模型反正看到了回执）。
+        """
+        wrote = any(
+            getattr(pc, "tool_name", "") == "todo_write" for pc in prepared
+        )
+        self._todo_rounds_since_write = 0 if wrote else self._todo_rounds_since_write + 1
+
+    @property
+    def tool_rounds_since_todo_write(self) -> int:
+        """距上次写任务清单已过去的工具往返数（原始计数，0 = 刚写过）。
+
+        ``/todos`` 用它说人话（"12 轮没动了"）；要不要提醒/标注由
+        :attr:`todos_stale` 决定——阈值只在一处。
+        """
+        return self._todo_rounds_since_write
+
+    @property
+    def todos_stale(self) -> bool:
+        """计划面板是否已经不可信（需要提醒模型更新、需要标注给用户）。
+
+        三个条件全满足才算过期，每个都是必要的：
+
+        - **顶层代理**：子代理也带 ``todo_write``，但它的清单没有任何界面在
+          渲染——给它发提醒只是白付 token（与"模式指令仅顶层注入"同一口径）；
+        - **有清单**：没有计划就无所谓过期；
+        - **未全完成**：全部完成时面板折叠成一行 `✓ Plan N/N`，那是"已收尾"
+          的记录而不是"进度"，没有要维护的东西（也就不会每小时提醒模型去
+          更新一条已完成的清单）。
+        """
+        if self._parent is not None or not self.todos:
+            return False
+        if self._todo_rounds_since_write < TODO_STALE_ROUNDS:
+            return False
+        return any(t.get("status") != "completed" for t in self.todos)
+
     def _sync_system_message(self, state: AgentState) -> None:
         """把**最新**的系统提示同步进本轮消息序列（每轮请求前调用）。
 
@@ -2266,12 +2359,20 @@ class OpenXAgent:
 
         "下一轮生效"正是这些重建点早已声明的语义（见 ``_rebuild_tools``），
         这里只是把它落到消息序列上。
+
+        计划过期提醒（:data:`_TODO_STALE_NOTE`）也拼在这一层：它是**易变的
+        旁注**，不属于 ``_system_prompt`` 的身份（那份字段只在装配变化时重建，
+        不该为了一个逐轮变化的计数而重算 context 片段）。提醒正文恒定，故
+        过期期间下发的 ``message[0]`` 逐轮字节一致，不打断前缀缓存。
         """
         messages = state.messages
         if not messages or messages[0].get("role") != "system":
             return
-        if messages[0].get("content") != self._system_prompt:
-            messages[0] = {"role": "system", "content": self._system_prompt}
+        content = self._system_prompt
+        if self.todos_stale:
+            content += _TODO_STALE_NOTE
+        if messages[0].get("content") != content:
+            messages[0] = {"role": "system", "content": content}
 
     async def stream_run(
         self,
@@ -2424,6 +2525,8 @@ class OpenXAgent:
                     new_turn.append(msg)
 
                 state.tool_rounds += 1
+                # 计划新鲜度：本批里没写 todo_write 就记一笔"又过了一轮"
+                self._note_tool_round(prepared)
                 # 结构化输出已捕获 → 立即收尾（同 run() 语义）：结果不
                 # 经文本流——调用方从 structured_result 属性读取对象
                 if self._structured_result is not _UNSET:

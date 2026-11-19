@@ -23,6 +23,8 @@ import pytest
 
 pytest.importorskip("textual", reason="TUI 依赖 textual")
 
+from rich.text import Text                                             # noqa: E402
+
 from openx.tui.app import OpenXTui                                     # noqa: E402
 from openx.tui.deck import (                                           # noqa: E402
     MAX_DECK_ROWS,
@@ -153,6 +155,51 @@ class TestPlanQueueLines:
         lines = _planes(plan_queue_lines(todos, [], budget=10))
         assert len(lines) == 1
         assert lines[0].strip() == "✓ Plan 5/5"
+
+    # ── 过期标记（计划面板新鲜度）─────────────────────────────────
+    #
+    # 用户报告"Plan 与实际进展完全不匹配"：面板渲染的清单若干轮没更新过，
+    # 却仍以现在进行时显示旧账。标记让"旧账"与"卡住"在屏上可分辨。
+
+    def test_stale_marker_on_header(self):
+        todos = [
+            {"content": "a", "status": "in_progress", "activeForm": "doing a"},
+            {"content": "b", "status": "pending"},
+        ]
+        lines = _planes(plan_queue_lines(todos, [], budget=10, stale=True))
+        assert lines[0].strip() == "Plan 0/2 · ▲ stale"
+        # 行数不变——标记拼在同一条头行里，不额外占行（1 行 ≡ 1 终端行的
+        # 几何不变量与视口预算都不受影响）
+        assert len(lines) == 1 + 2
+
+    def test_no_marker_by_default(self):
+        """默认 ``stale=False`` —— 既有调用方输出逐字节不变。"""
+        todos = [{"content": "a", "status": "pending"}]
+        lines = _planes(plan_queue_lines(todos, [], budget=10))
+        assert lines[0].strip() == "Plan 0/1"
+        assert "stale" not in lines[0]
+
+    def test_all_done_never_marked_stale(self):
+        """折叠态是"已收尾"的记录，没有要维护的东西 → 不标。"""
+        todos = [{"content": "a", "status": "completed"}]
+        lines = _planes(plan_queue_lines(todos, [], budget=10, stale=True))
+        assert len(lines) == 1
+        assert lines[0].strip() == "✓ Plan 1/1"
+        assert "stale" not in lines[0]
+
+    def test_marker_does_not_leak_into_queue_only_deck(self):
+        """只有队列、没有计划 → 没有可标记的东西。"""
+        lines = _planes(plan_queue_lines([], ["a"], budget=10, stale=True))
+        assert lines[0].strip() == "Queue (1)"
+        assert not any("stale" in ln for ln in lines)
+
+    def test_stale_header_stays_single_row(self):
+        """硬不变量：头行仍是单行 no_wrap（Rich 按 width 截断而非折行）。"""
+        todos = [{"content": "a", "status": "pending"}]
+        row = plan_queue_lines(todos, [], budget=10, stale=True)[0]
+        assert isinstance(row, Text)
+        assert row.no_wrap is True
+        assert row.overflow == "ellipsis"
 
     def test_plan_overflow_folds(self):
         todos = [{"content": f"t{i}", "status": "pending"} for i in range(12)]
@@ -347,8 +394,8 @@ class TestPluginLines:
 
 
 class TestDeckSource:
-    def _source(self, *, todos=None, fleet=None, panels=None) -> DeckSource:
-        return DeckSource(todos=todos, fleet=fleet, panels=panels)
+    def _source(self, *, todos=None, stale=None, fleet=None, panels=None) -> DeckSource:
+        return DeckSource(todos=todos, stale=stale, fleet=fleet, panels=panels)
 
     def test_not_attached_renders_nothing(self):
         source = self._source()
@@ -409,6 +456,53 @@ class TestDeckSource:
         source.configure()
         assert source.attached is False
 
+    # ── 计划新鲜度（过期标记）─────────────────────────────────────
+
+    def test_stale_provider_marks_the_plan_header(self):
+        source = self._source(
+            todos=lambda: [{"content": "x", "status": "in_progress",
+                            "activeForm": "doing x"}],
+            stale=lambda: True,
+        )
+        top, _bottom = source.rows(height=30, turn_active=False)
+        assert "▲ stale" in top[0].plain
+
+    def test_fresh_provider_leaves_the_header_alone(self):
+        source = self._source(
+            todos=lambda: [{"content": "x", "status": "pending"}],
+            stale=lambda: False,
+        )
+        top, _bottom = source.rows(height=30, turn_active=False)
+        assert top[0].plain.strip() == "Plan 0/1"
+
+    def test_missing_stale_provider_is_not_stale(self):
+        """None = 旧调用方 / 演示 → 不标注（零行为变化）。"""
+        source = self._source(todos=lambda: [{"content": "x", "status": "pending"}])
+        top, _bottom = source.rows(height=30, turn_active=False)
+        assert "stale" not in top[0].plain
+
+    def test_broken_stale_provider_degrades_to_fresh(self):
+        """取不到新鲜度就当新鲜：缺个标注好过整块面板消失。"""
+        def boom():
+            raise RuntimeError("坏 stale")
+
+        source = self._source(
+            todos=lambda: [{"content": "x", "status": "pending"}], stale=boom)
+        top, _bottom = source.rows(height=30, turn_active=False)
+        assert top and "▲ stale" not in top[0].plain
+
+    def test_stale_alone_counts_as_attached(self):
+        """只接了 stale 也算有线——否则 configure 的语义会自相矛盾。"""
+        assert self._source(stale=lambda: True).attached is True
+
+    def test_stale_marker_survives_the_budget_clamp(self):
+        """标记拼在头行里，不额外占行 → 裁剪前后行数语义不变。"""
+        todos = [{"content": f"t{i}", "status": "pending"} for i in range(20)]
+        source = self._source(todos=lambda: todos, stale=lambda: True)
+        top, _bottom = source.rows(height=20, turn_active=False)
+        assert len(top) <= deck_budget(20)
+        assert "▲ stale" in top[0].plain
+
 
 # ── 4. DeckView：承载与不变量 ──────────────────────────────────────
 
@@ -467,6 +561,34 @@ class TestDeckView:
             await pilot.click("#plan-deck")
             await pilot.pause()
             assert isinstance(app.focused, PromptEditor)
+
+    async def test_stale_flag_reaches_the_widget(self):
+        """端到端：``attach_decks(stale=...)`` → 屏上那行真的带 ``▲ stale``。
+
+        ``DeckSource`` 的纯函数测试只能证明"给了 stale 会标"；这条证明
+        "生产路径真的把 stale 给到了"。两者缺一，功能都可能在真实界面里不出现。
+        """
+        app = OpenXTui()
+        async with app.run_test(size=(80, 24)) as pilot:
+            stale = {"v": False}
+            view = app.query_one("#plan-deck", DeckView)
+            app.attach_decks(
+                todos=lambda: [{"content": "x", "status": "in_progress",
+                                "activeForm": "doing x"}],
+                stale=lambda: stale["v"],
+            )
+            await pilot.pause()
+            assert "▲ stale" not in view.rows()[0].plain, "先是不新鲜的"
+
+            stale["v"] = True
+            _pump(app)
+            await pilot.pause()
+            assert "▲ stale" in view.rows()[0].plain, "过期后下一拍就该标上"
+
+            stale["v"] = False
+            _pump(app)
+            await pilot.pause()
+            assert "▲ stale" not in view.rows()[0].plain, "写完之后标记撤掉"
 
 
 class TestFleetNavigation:

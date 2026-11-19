@@ -237,6 +237,57 @@ auto-height（deck 行恒 `no_wrap`，一行就是一个终端行）；空时用
 参与渲染会让 `render_strips` 崩）。deck 高度变化后 app 会补一次贴底滚动，
 免得"长高了就不再跟随"。
 
+### 计划新鲜度（`▲ stale` 标记）
+
+Plan 面板逐字渲染 `agent.todos`——而这份清单只在模型决定调 `todo_write` 时才变。
+一个长回合里它能连着跑十几轮工具才想起更新，或者干脆不想。于是面板继续以
+**现在进行时**渲染旧清单：`in_progress` 那行显示的是 `activeForm`，它的语义
+就是"我正在做什么"，所以它一直在说早就干完的活。**过期计划比没有计划更坏**：
+没有计划什么也没说，过期计划在说谎。
+
+两道闸，因为有两个读者：
+
+| 读者 | 闸 | 位置 |
+|---|---|---|
+| 模型 | 过期后把一段旁注拼进 `message[0]` | `agent.py`（`_TODO_STALE_NOTE`、`TODO_STALE_ROUNDS`） |
+| 用户 | Plan 头行标 `▲ stale` | `ui/_deck.py`（`plan_queue_lines(stale=…)`） |
+
+**计数口径。** `agent._todo_rounds_since_write` 数的是**工具往返**（一次产出
+工具调用的模型请求 = 一个决策点），不是单个工具调用——并行批次里 6 个调用只是
+一次"更新计划的机会"，而"你有 6 次机会都没更新"才是值得钉住的事实。批次里有
+`todo_write` 就归零，否则加一。它**刻意跨轮累加**：上一轮留下的未完成计划，
+和这一轮写下的一样会过期。
+
+**`todos_stale`** 只在以下全部成立时为真，每一条都必要：
+
+- agent 是顶层——子代理也带 `todo_write`，但没有任何界面渲染它的清单，
+  给它发提醒纯粹是白付 token（与"模式指令仅顶层注入"同一口径）；
+- 确实有清单；
+- 至少一项不是 `completed`——全部完成时面板折叠成 `✓ Plan N/N`，那是已收尾的
+  记录，不是进度声明；
+- 计数达到 `TODO_STALE_ROUNDS`（6）。
+
+**旁注是字节稳定的。** 它不含轮数字面量：带数字就会让字符串逐轮变化，
+`message[0]` 跟着变，整个会话的 provider 前缀缓存就断了。稳定还有一个好处：
+`_sync_system_message` 只在"新鲜 ↔ 过期"翻转时才重写消息。旁注只拼进**下发的**
+`message[0]`，绝不烘进 `self._system_prompt`——那份字段是装配变化才重建的可缓存
+身份，不该为一个逐轮计数重算。
+
+**标记不占行。** 它拼在已有的 `Plan` 头行里，所以"1 deck 行 ≡ 1 终端行"的几何、
+视口预算、行内的擦除算术全都不受影响（`stale` 默认 `False`，既有调用点输出
+逐字节不变）。折叠态刻意不标：全部完成的 deck 是汇总，没有要维护的东西。
+
+**两个循环、两个界面。** `_note_tool_round` 在 `_run_inner` **和** `_turn_stream`
+里都调用——TUI 与 REPL 走的都是流式，只接 `run()` 等于把用户真正看得见的路径
+漏掉。`todos_stale` 作为**独立一路 provider** 传给面板（`StreamingService` /
+`TuiStream` → `DeckSource`），而不是塞进 todo 字典里当合成字段：那个字典的每个
+键都会被回显进系统提示，塞在里面的标记会漏进模型上下文。
+
+`/todos` 用文字说同一件事：`print_todos(..., stale=…, stale_rounds=…)` 会补一行
+`▲ 12 tool rounds since the last update — this plan may be behind what the agent
+actually did`。**判定归 `agent.todos_stale`**，不归 console——`openx/ui` 不
+import `Agent`，阈值只存在于一处。
+
 ### 子代理详情视图
 
 `Ctrl+O` 循环切换观看目标（`Alt+0…9` 直选）：目标 `0` 是主回答、`1..N` 是第 N

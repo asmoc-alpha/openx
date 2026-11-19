@@ -213,6 +213,8 @@ def _make_display(agent: OpenXAgent, console: Console):
     common = dict(
         input_tokens=agent.total_input_tokens,
         todos_provider=lambda: agent.todos,
+        # 计划新鲜度：清单过期时 Plan 面板标 ▲ stale（见 agent.TODO_STALE_ROUNDS）
+        todos_stale=lambda: agent.todos_stale,
         fleet=agent.fleet,
         panels=getattr(agent, "ui_panels", None),
         # 展示层：文本操作块经此对工具调只读 preview_diff（执行前）取变更

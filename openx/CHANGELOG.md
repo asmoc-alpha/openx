@@ -4,6 +4,50 @@ All notable changes to OpenX. One `## <version> — <title>` section per release
 newest first; parsed at runtime by `openx/changelog.py` into the startup panel
 and `/release-notes`.
 
+## 0.1.37 — The plan stops lying when nobody updates it
+
+- **A stale plan is worse than no plan.** The Plan panel renders `agent.todos`
+  verbatim, and that list only changes when the model decides to call `todo_write`.
+  In one long turn it can run a dozen tool rounds first, or never — and the panel kept
+  rendering the old list **in the present tense**, because the `in_progress` row shows
+  `activeForm`, whose entire meaning is "what I am doing right now". Reported as "the
+  plan does not match what the model is actually doing"; the panel was not misdrawn, the
+  data was stale and nothing ever told the model so.
+- **The model now gets told.** `_todo_rounds_since_write` counts *tool rounds* (one
+  model request that produced tool calls = one decision point), reset by any batch
+  containing `todo_write`. Past `TODO_STALE_ROUNDS` (6) a note is appended to the
+  outgoing `message[0]` naming the tool and both ways out — rewrite the list, or pass an
+  empty one if the plan is done or abandoned, so exiting is cheaper than ignoring it.
+  It carries **no round number**: a number would change the string every round, which
+  changes `message[0]` every round, which breaks the provider's prefix cache for the
+  whole conversation. The note is never baked into `self._system_prompt` — that field is
+  the cacheable identity rebuilt by assembly changes.
+- **The user gets told too**, because a reminder is a request, not a guarantee: the Plan
+  header carries `▲ stale` while the list is suspect, so "old news" and "stuck" are
+  distinguishable at a glance. It is appended to the existing header line, so the
+  `1 row ≡ 1 terminal row` geometry, the viewport budget and the inline erase arithmetic
+  are untouched; `stale` defaults to `False`, so every pre-existing call site renders
+  byte-identical output. `/todos` says it in words (`▲ 12 tool rounds since the last
+  update — this plan may be behind what the agent actually did`).
+- **Not stale** when the agent is a subagent (nothing renders its list — pure token
+  waste, same rule as "mode instructions are injected top-level only"), when there is no
+  list, or when every item is `completed` (an all-done deck collapses to `✓ Plan N/N`,
+  a record of finished work rather than a progress claim). The counter deliberately
+  carries across turns: a plan left unfinished last turn goes stale exactly like one
+  written this turn.
+- **Both loops, both surfaces.** `_note_tool_round` is called from `_run_inner` *and*
+  `_turn_stream` — the TUI and the REPL both stream, so wiring only `run()` would have
+  left the surfaces users actually see unpatched. `todos_stale` reaches the panels as its
+  own provider (`StreamingService` / `TuiStream` → `DeckSource`) rather than a synthetic
+  key inside the todo dicts, because every key of those dicts is echoed into the system
+  prompt and the marker would leak into the model's context.
+- **No scrollbar in the full-screen TUI.** The draggable column on the right of the
+  transcript and the subagent detail view is gone (`scrollbar-size-vertical: 0`): nothing
+  in the key map drags it and the wheel dispatches by pointer position, so it was pure
+  chrome — and it cost a column, since Textual reserves a gutter for a visible bar
+  (77 → 78 usable columns in an 80-column terminal). Scrolling and the
+  follow-unless-you-scrolled-up behaviour are unchanged.
+
 ## 0.1.36 — The plugin contract stops riding along on every request
 
 - **The system prompt now carries a catalog of `prompt packs`, not their text.**

@@ -103,11 +103,16 @@ class DeckSource:
         self,
         *,
         todos: Optional[Callable[[], Sequence[Any]]] = None,
+        stale: Optional[Callable[[], bool]] = None,
         fleet: Optional[Any] = None,
         panels: Optional[Any] = None,
     ) -> None:
         #: ``() -> list[dict]``（``agent.todos`` 的只读投影）
         self._todos = todos
+        #: ``() -> bool``（``agent.todos_stale``：清单是否已过期）。None →
+        #: 不标注（旧调用方 / 演示）。独立一路见 ``services/streaming.py``
+        #: 同名字段的说明：清单里的键会漏进系统提示，不能塞合成字段。
+        self._stale = stale
         #: ``FleetMonitor``（``.snapshot()``）；None = 无舰队面板
         self._fleet = fleet
         #: ``UiPanelCollector``（``.panels()``）；None = 无插件面板
@@ -119,11 +124,13 @@ class DeckSource:
         self,
         *,
         todos: Optional[Callable[[], Sequence[Any]]] = None,
+        stale: Optional[Callable[[], bool]] = None,
         fleet: Optional[Any] = None,
         panels: Optional[Any] = None,
     ) -> None:
         """接线/换线（每个回合 ``TuiStream`` 构造时调一次）。"""
         self._todos = todos
+        self._stale = stale
         self._fleet = fleet
         self._panels = panels
 
@@ -132,6 +139,7 @@ class DeckSource:
         """是否有任何一路数据源（全 None = 空闲期、还没跑过回合）。"""
         return (
             self._todos is not None
+            or self._stale is not None
             or self._fleet is not None
             or self._panels is not None
         )
@@ -145,6 +153,15 @@ class DeckSource:
             return list(self._todos())
         except Exception:
             return []
+
+    def _stale_snapshot(self) -> bool:
+        """清单是否已过期。取不到就当新鲜——缺个标注好过整块消失。"""
+        if self._stale is None:
+            return False
+        try:
+            return bool(self._stale())
+        except Exception:
+            return False
 
     def _fleet_snapshot(self) -> list[dict]:
         if self._fleet is None:
@@ -185,7 +202,9 @@ class DeckSource:
         """
         budget = deck_budget(height)
         top = self._clamp(
-            plan_queue_lines(self._todos_snapshot(), queue, budget=budget),
+            plan_queue_lines(
+                self._todos_snapshot(), queue, budget=budget,
+                stale=self._stale_snapshot()),
             budget)
         bottom: list[Text] = []
         if turn_active:

@@ -1278,7 +1278,9 @@ async def _cmd_image(agent, console, args):
     user_content = agent.build_user_content(prompt, images=[data_url])
     display = StreamingService(
         console, agent.total_input_tokens,
-        todos_provider=lambda: agent.todos, fleet=agent.fleet,
+        todos_provider=lambda: agent.todos,
+        todos_stale=lambda: agent.todos_stale,
+        fleet=agent.fleet,
         panels=getattr(agent, "ui_panels", None),
         tool_lookup=lambda name: agent.tools.get(name),
     )
@@ -1321,7 +1323,9 @@ async def _cmd_clipboard(agent, console, args):
     user_content = agent.build_user_content(question, images=[data_url])
     display = StreamingService(
         console, agent.total_input_tokens,
-        todos_provider=lambda: agent.todos, fleet=agent.fleet,
+        todos_provider=lambda: agent.todos,
+        todos_stale=lambda: agent.todos_stale,
+        fleet=agent.fleet,
         panels=getattr(agent, "ui_panels", None),
         tool_lookup=lambda name: agent.tools.get(name),
     )
@@ -1734,7 +1738,13 @@ async def _cmd_release_notes(agent, console, args):
 
 @register("todos", description="Show the agent's task list")
 async def _cmd_todos(agent, console, args):
-    console.print_todos(agent.todos)
+    # 带上"多久没更新了"：清单过期时 print_todos 会补一行警示——否则用户看到的
+    # 是一份可能早已不代表实际进展的进度，而面板上「working」还写得理直气壮。
+    console.print_todos(
+        agent.todos,
+        stale=agent.todos_stale,
+        stale_rounds=agent.tool_rounds_since_todo_write,
+    )
     return True
 
 

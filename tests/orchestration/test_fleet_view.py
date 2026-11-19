@@ -229,7 +229,7 @@ class Harness:
     """带 providers 的 StreamingService + pyte 屏幕。"""
 
     def __init__(self, rows: int = 24, cols: int = 80,
-                 todos=None, fleet=None):
+                 todos=None, fleet=None, stale=None):
         self.screen = pyte.Screen(cols, rows)
         self.screen.set_mode(pyte.modes.LNM)
         self.pyte = pyte.Stream(self.screen)
@@ -247,6 +247,9 @@ class Harness:
         self.svc = StreamingService(
             console, input_tokens=0,
             todos_provider=(lambda: todos) if todos is not None else None,
+            # stale 可以是值或可调用（None = 不接线，旧调用方语义）
+            todos_stale=(stale if callable(stale) else (lambda: bool(stale)))
+            if stale is not None else None,
             fleet=fleet,
         )
 
@@ -484,6 +487,85 @@ class TestPlanCollapse:
         h.svc.start()
         _deck, deck_h = h.svc._deck_renderable([])
         assert deck_h == 1
+
+
+class TestPlanStaleness:
+    """计划面板新鲜度：清单过期时头行标 ``▲ stale``（行内这一侧）。
+
+    用户报告"Plan 与实际进展完全不匹配"：清单若干轮没更新过，而面板仍以现在
+    进行时渲染旧账。标记是给用户的那半道闸——模型侧提醒在
+    ``tests/test_todo_staleness.py``。**行数不变**（标记拼在同一条头行里），
+    否则视口预算与 ``_last_deck_h`` 的擦除算术全都得跟着改。
+    """
+
+    _PLAN = [
+        {"content": "task0", "activeForm": "doing0", "status": "completed"},
+        {"content": "task1", "activeForm": "doing1", "status": "in_progress"},
+        {"content": "task2", "activeForm": "", "status": "pending"},
+    ]
+
+    @staticmethod
+    def _text(h) -> str:
+        deck, _deck_h = h.svc._deck_renderable([])
+        return "\n".join(
+            "".join(s.text for s in ln if not s.is_control)
+            for ln in h.svc._rich.render_lines(deck, pad=False)
+        )
+
+    def test_stale_marks_the_header(self, deterministic_live):
+        h = Harness(todos=self._PLAN, stale=True)
+        h.svc.start()
+        assert "Plan 1/3" in self._text(h)
+        assert "▲ stale" in self._text(h)
+
+    def test_fresh_has_no_marker(self, deterministic_live):
+        h = Harness(todos=self._PLAN, stale=False)
+        h.svc.start()
+        assert "▲ stale" not in self._text(h)
+
+    def test_unwired_service_has_no_marker(self, deterministic_live):
+        """None（旧调用方 / 测试替身）→ 与旧版逐字节一致。"""
+        h = Harness(todos=self._PLAN)
+        h.svc.start()
+        assert "▲ stale" not in self._text(h)
+
+    def test_marker_does_not_change_the_row_count(self, deterministic_live):
+        """行数必须与未标记时相同——它是视口预算与擦除算术的输入。"""
+        fresh = Harness(todos=self._PLAN, stale=False)
+        fresh.svc.start()
+        _d, fresh_h = fresh.svc._deck_renderable([])
+
+        stale = Harness(todos=self._PLAN, stale=True)
+        stale.svc.start()
+        _d, stale_h = stale.svc._deck_renderable([])
+
+        assert fresh_h == stale_h == 4        # 头部 + 三行项
+        # 单行不变量照旧：返回行数 ≡ 实际渲染行数
+        deck, _h = stale.svc._deck_renderable([])
+        assert len(stale.svc._rich.render_lines(deck, pad=False)) == stale_h
+
+    def test_broken_provider_degrades_to_fresh(self, deterministic_live):
+        """取不到就当新鲜：状态层绝不因为一个标注拖垮主渲染。"""
+        def boom():
+            raise RuntimeError("坏 stale")
+
+        h = Harness(todos=self._PLAN, stale=boom)
+        h.svc.start()
+        text = self._text(h)
+        assert "Plan 1/3" in text and "▲ stale" not in text
+
+    def test_provider_is_re_read_every_frame(self, deterministic_live):
+        """标记跟着数据走，不是一次性快照。"""
+        state = {"stale": False}
+        h = Harness(todos=self._PLAN, stale=lambda: state["stale"])
+        h.svc.start()
+        assert "▲ stale" not in self._text(h)
+
+        state["stale"] = True
+        assert "▲ stale" in self._text(h)
+
+        state["stale"] = False
+        assert "▲ stale" not in self._text(h)
 
 
 class TestFleetActivityLine:

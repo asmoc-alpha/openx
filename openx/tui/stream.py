@@ -165,9 +165,10 @@ class TuiStream:
     - **事件**：``feed()`` 把 chunk 归一成 :class:`Answer` / :class:`Reasoning`
       / :class:`ToolStarted` / :class:`ToolFinished` 入队，``StreamView`` 在
       app 的排空节拍里落成 widget；
-    - **状态层（deck）**：``todos_provider`` / ``fleet`` / ``panels`` 在
-      ``start()`` 时交给 ``app.attach_decks``——计划、队列、Agents、插件面板
-      从此由 app 的 5Hz 定时器渲染（行格式与行内共用 ``ui/_deck.py``）；
+    - **状态层（deck）**：``todos_provider`` / ``todos_stale`` / ``fleet`` /
+      ``panels`` 在 ``start()`` 时交给 ``app.attach_decks``——计划、队列、
+      Agents、插件面板从此由 app 的 5Hz 定时器渲染（行格式与行内共用
+      ``ui/_deck.py``）；
     - **舰队生命周期**：构造时 ``fleet.reset()``（与行内 ``StreamingService``
       逐字同位置同理由——实例每轮新建，等于每轮重置）。
 
@@ -181,6 +182,7 @@ class TuiStream:
         app: Any,
         input_tokens: int = 0,
         todos_provider: Optional[Any] = None,
+        todos_stale: Optional[Any] = None,
         fleet: Optional[Any] = None,
         panels: Optional[Any] = None,
         tool_lookup: Optional[Any] = None,
@@ -194,6 +196,8 @@ class TuiStream:
         self._queue: SinkQueue = queue if queue is not None else SinkQueue()
         # 状态层数据源：start() 时交给 app 的 deck 定时器渲染
         self._todos_provider = todos_provider
+        # 计划新鲜度（清单过期时面板标 ▲ stale）；None = 不标注
+        self._todos_stale = todos_stale
         self._fleet = fleet
         self._panels = panels
         self._input_tokens = input_tokens
@@ -240,8 +244,8 @@ class TuiStream:
         attach = getattr(self._app, "attach_decks", None)
         if callable(attach):
             with contextlib.suppress(Exception):
-                attach(todos=self._todos_provider, fleet=self._fleet,
-                       panels=self._panels)
+                attach(todos=self._todos_provider, stale=self._todos_stale,
+                       fleet=self._fleet, panels=self._panels)
         self._queue.push(StreamStart())
 
     def feed(self, chunk: Any) -> None:

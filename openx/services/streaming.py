@@ -417,6 +417,7 @@ class StreamingService:
         console,
         input_tokens: int = 0,
         todos_provider: Optional[Any] = None,
+        todos_stale: Optional[Any] = None,
         fleet: Optional[Any] = None,
         panels: Optional[Any] = None,
         tool_lookup: Optional[Any] = None,
@@ -434,6 +435,10 @@ class StreamingService:
         # 无需加锁）；fleet → FleetMonitor，子代理运行态与 Ctrl-O 详情。
         # 两者皆 None（旧调用方 / 测试 Harness）→ 整组与旧版逐字节一致。
         self._todos_provider = todos_provider
+        # 计划新鲜度：todos_stale() → bool（清单是否已过期，见 agent.
+        # TODO_STALE_ROUNDS）。独立一路而不是塞进 todos 数据里——清单里的
+        # 每个键都会被写进系统提示，塞一个合成字段就漏进模型上下文了。
+        self._todos_stale = todos_stale
         self._fleet = fleet
         # 插件 UI 面板（ui/v1，P-D）：panels → UiPanelCollector（每帧征集
         # + 崩溃跳过 + 熔断，见 services/assembly.py）。None → 零变化。
@@ -1937,7 +1942,8 @@ class StreamingService:
         （FIFO 全列：跨轮留存的 ``console._input_queue`` + 本轮流式中新排的
         ``self._queued``；后者 ``stop()`` 时才并入前者，故两源从不同帧出现，
         顺序拼接即全貌、无重复）。行格式与折叠语义见
-        ``ui/_deck.plan_queue_lines``。
+        ``ui/_deck.plan_queue_lines``。``todos_stale`` 决定 Plan 头行是否标
+        ``▲ stale``（清单过期——模型若干轮没更新过它）。
 
         fail-open：任何异常（坏 todos 数据、console 取高失败……）落回
         无 deck——与 _LiveView 的回落哲学一致，状态层绝不拖垮主渲染。
@@ -1946,6 +1952,14 @@ class StreamingService:
             todos = list(self._todos_provider()) if self._todos_provider else []
         except Exception:
             todos = []
+        # 新鲜度与取数分开兜底：过期标记取不到就当"新鲜"（面板照旧渲染，
+        # 缺一个标注总好过整块消失）。
+        stale = False
+        if self._todos_stale is not None:
+            try:
+                stale = bool(self._todos_stale())
+            except Exception:
+                stale = False
         with self._queued_lock:
             queued_now = list(self._queued)
         console_q = getattr(self._console, "_input_queue", None) or []
@@ -1953,7 +1967,7 @@ class StreamingService:
         queue_items += [str(q) for q in queued_now]
         rows = plan_queue_lines(
             todos, queue_items, budget=self._deck_budget(extra_reserve),
-            spin=self._deck_spin)
+            stale=stale, spin=self._deck_spin)
         if not rows:
             return None, 0
         return Group(*rows), len(rows)

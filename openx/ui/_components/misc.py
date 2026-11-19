@@ -24,7 +24,7 @@ from rich.markup import escape
 from .._helpers import box_rounded
 from .._style import (
     ACCENT, CHROME, DIM, MARK_FAIL, MARK_INFO, MARK_OK, MARK_PENDING,
-    MARK_WARN, SUCCESS_STYLE,
+    MARK_WARN, SUCCESS_STYLE, WARNING_STYLE,
 )
 
 
@@ -86,8 +86,24 @@ class MiscMixin:
 
     # ── todos ───────────────────────────────────────────────────
 
-    def print_todos(self, todos: list[dict]) -> None:
-        """Render the agent's task list with status coloring."""
+    def print_todos(
+        self,
+        todos: list[dict],
+        *,
+        stale: bool = False,
+        stale_rounds: int = 0,
+    ) -> None:
+        """Render the agent's task list with status coloring.
+
+        ``stale``：这份清单**已不可信**（``agent.todos_stale``——顶层、有未
+        完成项、且模型若干轮没更新过它）。为真时在面板下方补一行警示——面板
+        上「working」那行显示的是 ``activeForm``（"正在做什么"），过期时不
+        说清楚就等于在骗人。``stale_rounds`` 只是那句话里的细节（多久没动）。
+
+        **判定不在这里**：阈值属于 agent 的循环逻辑（``agent.
+        TODO_STALE_ROUNDS``），UI 层只负责显示——``openx/ui`` 不 import
+        Agent 是既有纪律（见 ``tui/deck.py`` 的鸭子类型说明）。
+        """
         if not todos:
             self._console.print(
                 "[dim]No tasks. The agent will create todos for multi-step work.[/dim]"
@@ -124,6 +140,15 @@ class MiscMixin:
                 padding=(0, 1),
             )
         )
+        if stale:
+            detail = (
+                f"{stale_rounds} tool rounds since the last update"
+                if stale_rounds else "not updated for a while"
+            )
+            self._console.print(
+                f"[{WARNING_STYLE}]{MARK_WARN} {detail} — this plan may be behind "
+                f"what the agent actually did[/{WARNING_STYLE}]"
+            )
 
     # ── cost ────────────────────────────────────────────────────
 

@@ -502,6 +502,7 @@ class OpenXTui(App[None]):
         self,
         *,
         todos: Optional[Callable[[], Any]] = None,
+        stale: Optional[Callable[[], bool]] = None,
         fleet: Optional[Any] = None,
         panels: Optional[Any] = None,
     ) -> None:
@@ -510,12 +511,14 @@ class OpenXTui(App[None]):
         回合结束**不解线**：计划面板与插件面板要留在屏上（``agent.todos``
         本来就跨轮存活，``ui.panel`` 的桌面宠物/监控件按定义该常驻）。
         Agents 的显隐不看这里，看 :attr:`_stream_active`。
+        ``stale`` 是计划新鲜度（``agent.todos_stale``）：清单过期时 Plan
+        头行标 ``▲ stale``——面板照旧渲染，但不再冒充实时进度。
 
         每个回合把视图焦点**归零**（回主回答）：与行内 ``StreamingService.
         start()`` 的"每轮干净起点"同语义——新回合的第一帧绝不能还停在上一轮
         的某个子代理详情上（那个视图甚至已经不在新快照里了）。
         """
-        self._decks.configure(todos=todos, fleet=fleet, panels=panels)
+        self._decks.configure(todos=todos, stale=stale, fleet=fleet, panels=panels)
         self._fleet_focus = 0
         self._tick_decks()   # 立刻画一帧：别让 deck 晚 200ms 才出现
 

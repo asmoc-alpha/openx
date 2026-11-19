@@ -280,6 +280,67 @@ a container that briefly renders an empty visual crashes `render_strips`). When 
 deck changes height the app re-pins the transcript to the bottom, so growth does
 not silently stop the follow-scroll.
 
+### Plan freshness (the `▲ stale` marker)
+
+The Plan deck renders `agent.todos` verbatim — and that list only changes when the
+model decides to call `todo_write`. During one long turn it can run a dozen tool
+rounds before thinking of it, or never. The panel then keeps rendering the old
+list **in the present tense**: the `in_progress` row shows `activeForm`, whose whole
+meaning is "what I am doing right now", so it keeps claiming work that finished long
+ago. A stale plan is worse than no plan — no plan says nothing, a stale plan lies.
+
+Two gates, because there are two audiences:
+
+| Audience | Gate | Where |
+|---|---|---|
+| The model | a salt note appended to `message[0]` once stale | `agent.py` (`_TODO_STALE_NOTE`, `TODO_STALE_ROUNDS`) |
+| The user | `▲ stale` on the Plan header | `ui/_deck.py` (`plan_queue_lines(stale=…)`) |
+
+**The counter.** `agent._todo_rounds_since_write` counts *tool rounds* (one model
+request that produced tool calls = one decision point), not individual tool calls —
+a parallel batch of six calls is one chance to have updated the plan, and "you had
+six chances and did not" is the fact worth pinning. A batch containing
+`todo_write` resets it to zero; anything else increments. It deliberately **carries
+across turns**: a plan left unfinished by the previous turn goes stale exactly like
+one written this turn.
+
+**`todos_stale`** is true only when all of these hold, and every one of them is
+necessary:
+
+- the agent is top-level — subagents get `todo_write` too, but nothing renders
+  their list, so a reminder there is pure token waste (same reasoning as
+  "mode instructions are injected top-level only");
+- there is a list at all;
+- at least one item is not `completed` — an all-done list collapses to `✓ Plan N/N`,
+  which is a record of finished work, not a progress claim;
+- the counter reached `TODO_STALE_ROUNDS` (6).
+
+**The note is byte-stable.** It carries no round count: a number would change the
+string every round, which changes `message[0]` every round, which breaks the
+provider's prefix cache for the whole conversation. Stability also means
+`_sync_system_message` rewrites the message only when the fresh↔stale edge is
+crossed. The note is appended to the *outgoing* `message[0]` and never baked into
+`self._system_prompt` — that field is the cacheable identity rebuilt by assembly
+changes, and it must not be recomputed for a per-round counter.
+
+**The marker costs no rows.** It is appended to the existing `Plan` header line, so
+the `1 row ≡ 1 terminal row` geometry, the viewport budget and the inline erase
+arithmetic are all untouched (`stale` defaults to `False`, so every pre-existing
+call site renders byte-identical output). Folding is skipped on purpose: an all-done
+deck is a summary, and there is nothing left to keep fresh.
+
+**Both loops, both surfaces.** `_note_tool_round` is called from `_run_inner` *and*
+`_turn_stream` — the TUI and the REPL both stream, so wiring only `run()` would have
+left the surfaces users actually see unpatched. `todos_stale` travels to the panels
+as its own provider (`StreamingService` / `TuiStream` → `DeckSource`), not as a
+synthetic key inside the todo dicts: every key of that dict is echoed into the
+system prompt, so a marker planted there would leak into the model's context.
+
+`/todos` says the same thing in words: `print_todos(..., stale=…, stale_rounds=…)`
+appends `▲ 12 tool rounds since the last update — this plan may be behind what the
+agent actually did`. The *verdict* is `agent.todos_stale`'s job, not the console's —
+`openx/ui` does not import `Agent`, and the threshold lives in exactly one place.
+
 ### Agent detail view
 
 `Ctrl+O` cycles the viewing target (`Alt+0…9` jumps): target `0` is the main

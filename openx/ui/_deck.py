@@ -43,7 +43,7 @@ from rich.text import Text
 from ._helpers import fmt_duration
 from ._style import (
     ACCENT, ACCENT_BOLD, DIM, ERROR_STYLE, GUTTER, MARK_BULLET, MARK_FAIL,
-    MARK_OK, MARK_PENDING, SUCCESS_STYLE, spin_glyph,
+    MARK_OK, MARK_PENDING, MARK_WARN, SUCCESS_STYLE, WARNING_STYLE, spin_glyph,
 )
 
 #: 各块的行数上限（超出折叠成 "+N more"）。实际渲染还会被 ``budget``
@@ -77,6 +77,7 @@ def plan_queue_lines(
     queue_items: Sequence[str],
     *,
     budget: int,
+    stale: bool = False,
     spin: Callable[[], str] = spin_glyph,
 ) -> list[Text]:
     """计划面板 + 队列面板（渲染在输入框**之上**）→ 行列表。
@@ -87,6 +88,12 @@ def plan_queue_lines(
 
     全部完成的计划折叠成单行汇总：逐条列出已完成项只是占地方，收尾时把
     版面还给正文。折叠态没有逐条项，也不产生 "+N more" 折叠行。
+
+    ``stale``：这份清单**已不可信**（模型若干轮没更新过它）。为真时头行尾
+    补一个 ``▲ stale`` 标记——面板照旧渲染，但它不再冒充实时进度。这不是
+    装饰：逐条态的进行中项显示的是 ``activeForm``（"正在做什么"），过期时
+    那句话会一直在说早就干完的活；用户看到标记就知道这是旧账，而不是卡住。
+    折叠态（全部完成）**不加**标记——那是已收尾的记录，没有要维护的东西。
 
     ``spin``：进行中项的转帧来源。行内实现传它自己的 ``_deck_spin``（那里的
     ``_SPIN_MS`` 是模块级名字、测试要 monkeypatch 它），全屏用默认值——
@@ -139,8 +146,16 @@ def plan_queue_lines(
             rows.append(deck_line(
                 f"  {MARK_OK} Plan {done}/{len(plan_items)}", SUCCESS_STYLE))
         else:
+            # 过期标记只挂在逐条态：折叠态是"已收尾"，没有可维护的东西。
+            # 用 MARK_WARN + WARNING_STYLE 而不是 dim——这条是唯一提醒用户
+            # "下面的进度不可信"的信号，压暗就等于没说。
+            stale_tag = (
+                f" [{WARNING_STYLE}]· {MARK_WARN} stale[/{WARNING_STYLE}]"
+                if stale else ""
+            )
             rows.append(deck_markup(
-                f" [bold]Plan[/bold] [dim]{done}/{len(plan_items)}[/dim]"))
+                f" [bold]Plan[/bold] [dim]{done}/{len(plan_items)}[/dim]{stale_tag}"
+            ))
         for item in plan_items[:plan_allow]:
             status = item.get("status")
             if status == "completed":
